@@ -1,0 +1,21 @@
+[package]
+name = "browser-engine"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+uuid = { version = "1", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+tar = "0.4"
+xz2 = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+browser-fingerprint = { path = "../fingerprint" }
+browser-profile = { path = "../profile" }
+tempfile = "3"

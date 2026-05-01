@@ -1,0 +1,97 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.crt
+*.p12
+
+# Build artifacts
+bin/
+dist/
+build/
+docs/build/
+site/
+.docusaurus/
+coverage/
+*.coverprofile
+coverage.out
+*.test
+*.out
+
+# Caches
+.cache/
+.turbo/
+.gocache/
+.gomodcache/
+target/
+ui/desktop/src-tauri/target/
+.cargo/
+
+# Dependency folders
+node_modules/
+node_modules/.cache/
+**/node_modules/
+pnpm-store/
+.pnpm-store/
+npm-cache/
+yarn-error.log
+yarn-debug.log
+
+# Python/tooling caches
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+scc/
+waf-old/
+WAF/
+donut-browser/
+
+# IDE/editor
+.idea/
+.vscode/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temp and backup files
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*~
+.tmp_cookie*.txt
+
+# Local Terraform binaries
+deploy/lab-k8s-terraform/terraform/terraform.exe
+
+# Logs and local runtime files
+*.log
+*.pid
+stdout
+*.stackdump
+
+# Local overrides
+docker-compose.local.yml
+LOCAL_RELEASE_RULES.md
+local_checks/
+TASKS*.md
+ROADMAP*.md
+PROMPT_UPDATED.md
+scripts/build-installer.ps1
+scripts/generate-release-artifacts.ps1
+scripts/git-hygiene-preflight.ps1
+scripts/local-ci-preflight.ps1
+scripts/release.ps1
+scripts/security-gates-preflight.ps1
+scripts/vulnerability-gates-preflight.ps1
+
+# Local planning and scratch space
+.work/

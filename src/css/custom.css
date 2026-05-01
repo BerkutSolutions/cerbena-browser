@@ -1,0 +1,182 @@
+:root {
+  --ifm-color-primary: #c7922b;
+  --ifm-color-primary-dark: #b28224;
+  --ifm-color-primary-darker: #a87720;
+  --ifm-color-primary-darkest: #895f17;
+  --ifm-color-primary-light: #d4a44a;
+  --ifm-color-primary-lighter: #deb56a;
+  --ifm-color-primary-lightest: #ebcf98;
+  --ifm-background-color: #fff9ee;
+  --ifm-background-surface-color: rgba(255, 251, 241, 0.94);
+  --ifm-navbar-background-color: rgba(17, 18, 24, 0.9);
+  --ifm-footer-background-color: #171920;
+  --ifm-code-font-size: 95%;
+  --cerbena-shadow: 0 28px 72px rgba(18, 13, 5, 0.22);
+  --cerbena-line: rgba(193, 145, 49, 0.22);
+}
+
+[data-theme="dark"] {
+  --ifm-background-color: #101217;
+  --ifm-background-surface-color: rgba(19, 22, 29, 0.92);
+  --ifm-navbar-background-color: rgba(11, 13, 18, 0.88);
+  --ifm-footer-background-color: #16181f;
+  --cerbena-shadow: 0 30px 72px rgba(0, 0, 0, 0.42);
+  --cerbena-line: rgba(229, 180, 83, 0.18);
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(225, 173, 70, 0.08), transparent 26%),
+    radial-gradient(circle at top right, rgba(112, 77, 20, 0.16), transparent 28%),
+    linear-gradient(180deg, rgba(12, 14, 19, 1) 0%, rgba(18, 20, 27, 1) 100%);
+}
+
+.navbar {
+  border-bottom: 1px solid var(--cerbena-line);
+  backdrop-filter: blur(14px);
+}
+
+.navbar__brand:hover,
+.navbar__link:hover {
+  color: var(--ifm-color-primary-lightest);
+}
+
+.navbar__logo img {
+  height: 2rem;
+  width: auto;
+}
+
+.footer {
+  border-top: 1px solid var(--cerbena-line);
+}
+
+.hero-page,
+.overview-page {
+  padding: 2.5rem 1rem 4rem;
+}
+
+.hero-panel {
+  max-width: 1180px;
+  margin: 0 auto 1.4rem;
+  padding: clamp(2rem, 4vw, 3rem);
+  border-radius: 2rem;
+  border: 1px solid rgba(235, 198, 119, 0.16);
+  background:
+    linear-gradient(135deg, rgba(14, 15, 21, 0.98) 0%, rgba(34, 26, 15, 0.96) 48%, rgba(82, 56, 14, 0.94) 100%);
+  color: #fff8ea;
+  box-shadow: var(--cerbena-shadow);
+}
+
+.hero-panel--home {
+  display: grid;
+  gap: 2rem;
+  align-items: center;
+}
+
+@media (min-width: 960px) {
+  .hero-panel--home {
+    grid-template-columns: minmax(0, 1.25fr) minmax(220px, 280px);
+  }
+}
+
+.hero-mark {
+  width: min(280px, 54vw);
+  justify-self: center;
+  filter: drop-shadow(0 20px 42px rgba(0, 0, 0, 0.36));
+}
+
+.eyebrow {
+  margin: 0 0 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  opacity: 0.76;
+  font-size: 0.82rem;
+}
+
+.hero-copy {
+  max-width: 720px;
+  margin: 0;
+  font-size: 1.06rem;
+  line-height: 1.72;
+  color: rgba(255, 245, 221, 0.88);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin-top: 1.6rem;
+}
+
+.hero-actions .button {
+  min-width: 220px;
+  justify-content: center;
+}
+
+.hero-actions .button--secondary {
+  border: 1px solid rgba(255, 235, 194, 0.2);
+  background: rgba(255, 248, 234, 0.08);
+  color: #fff8ea;
+}
+
+.hero-actions .button--secondary:hover {
+  border-color: rgba(255, 235, 194, 0.38);
+  background: rgba(255, 248, 234, 0.16);
+}
+
+.hero-actions .button--primary {
+  color: #1d1406;
+}
+
+.card-grid {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.portal-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 1.4rem;
+  border-radius: 1.4rem;
+  text-decoration: none;
+  color: inherit;
+  background: var(--ifm-background-surface-color);
+  border: 1px solid var(--cerbena-line);
+  box-shadow: 0 18px 36px rgba(15, 15, 22, 0.08);
+  backdrop-filter: blur(12px);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.portal-card:hover {
+  transform: translateY(-3px);
+  text-decoration: none;
+  border-color: rgba(226, 180, 76, 0.42);
+  box-shadow: 0 20px 38px rgba(15, 15, 22, 0.18);
+}
+
+.portal-card h2 {
+  margin: 0;
+  font-size: 1.12rem;
+}
+
+.portal-card p {
+  margin: 0;
+  line-height: 1.6;
+  color: inherit;
+  opacity: 0.9;
+}
+
+.overview-page > h1,
+.overview-page > p {
+  max-width: 1180px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.overview-page > p {
+  margin-bottom: 1.3rem;
+  color: rgba(229, 234, 245, 0.84);
+}

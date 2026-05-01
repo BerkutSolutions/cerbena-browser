@@ -1,0 +1,24 @@
+{
+  "name": "browser-docs-site",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "start": "npm run clear && docusaurus start --host 127.0.0.1 --port 3000",
+    "docs:start": "npm run clear && docusaurus start --host 127.0.0.1 --port 3000",
+    "build": "npm run clear && docusaurus build",
+    "docs:build": "npm run clear && docusaurus build",
+    "serve": "docusaurus serve --host 127.0.0.1 --port 3000",
+    "clear": "docusaurus clear"
+  },
+  "dependencies": {
+    "@docusaurus/core": "^3.10.0",
+    "@docusaurus/preset-classic": "^3.10.0",
+    "@easyops-cn/docusaurus-search-local": "^0.55.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "uuid": "^14.0.0"
+  }
+}

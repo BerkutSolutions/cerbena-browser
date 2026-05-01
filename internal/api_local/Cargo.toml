@@ -1,0 +1,15 @@
+[package]
+name = "browser-api-local"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+browser-network-policy = { path = "../network_policy" }
+browser-profile = { path = "../profile" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+uuid = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,20 @@
+pub mod audit;
+pub mod cache;
+pub mod crypto;
+pub mod errors;
+pub mod lock;
+pub mod manager;
+pub mod model;
+pub mod profile_modal;
+pub mod sqlite_retention;
+pub mod storage;
+pub mod wipe;
+
+pub use audit::{AuditEvent, AuditFilter};
+pub use cache::CacheCleanupResult;
+pub use lock::LockPolicy;
+pub use manager::ProfileManager;
+pub use model::{CreateProfileInput, Engine, PatchProfileInput, ProfileMetadata, ProfileState};
+pub use profile_modal::{validate_modal_payload, ProfileModalPayload};
+pub use storage::ProfileStorage;
+pub use wipe::{SelectiveWipeRequest, WipeDataType};

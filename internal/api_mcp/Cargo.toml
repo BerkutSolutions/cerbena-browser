@@ -1,0 +1,12 @@
+[package]
+name = "browser-api-mcp"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+browser-api-local = { path = "../api_local" }
+browser-network-policy = { path = "../network_policy" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+uuid = { version = "1", features = ["serde"] }

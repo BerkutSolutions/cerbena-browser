@@ -1,0 +1,53 @@
+name: ci-quality
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  docs-and-ui-quality:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run docs:build
+      - working-directory: ui/desktop
+        run: npm ci
+      - working-directory: ui/desktop
+        run: npm test
+
+  rust-workspace:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+
+  desktop-tauri-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+        working-directory: ui/desktop/src-tauri
+
+  release-artifacts-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - working-directory: ui/desktop
+        run: npm ci
+      - shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -Mode package -SkipVulnerabilityGates -CompactOutput

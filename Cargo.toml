@@ -1,0 +1,21 @@
+[workspace]
+members = [
+  "cmd/launcher",
+  "internal/api_local",
+  "internal/api_mcp",
+  "internal/engine",
+  "internal/extensions",
+  "internal/fingerprint",
+  "internal/installer",
+  "internal/import_export",
+  "internal/network_policy",
+  "internal/profile",
+  "internal/security_pack",
+  "internal/sync_client",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "1.0.0"

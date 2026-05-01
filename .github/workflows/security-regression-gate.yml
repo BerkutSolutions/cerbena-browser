@@ -1,0 +1,23 @@
+name: security-regression-gate
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  launcher-security-preflight:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - working-directory: ui/desktop
+        run: npm ci
+      - shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\security-gates-preflight.ps1

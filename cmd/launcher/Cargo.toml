@@ -1,0 +1,14 @@
+[package]
+name = "cerbena-launcher"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+browser-engine = { path = "../../internal/engine" }
+browser-profile = { path = "../../internal/profile" }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+regex = "1"
+tempfile = "3"

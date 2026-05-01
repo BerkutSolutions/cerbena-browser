@@ -1,0 +1,16 @@
+[package]
+name = "browser-security-pack"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+browser-extensions = { path = "../extensions" }
+browser-network-policy = { path = "../network_policy" }
+browser-profile = { path = "../profile" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"

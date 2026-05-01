@@ -1,0 +1,40 @@
+[package]
+name = "browser-desktop-ui"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+thiserror = "1"
+uuid = { version = "1", features = ["serde", "v4"] }
+base64 = "0.22"
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+rand = "0.8"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+browser-profile = { path = "../../../internal/profile" }
+browser-fingerprint = { path = "../../../internal/fingerprint" }
+browser-import-export = { path = "../../../internal/import_export" }
+browser-network-policy = { path = "../../../internal/network_policy" }
+browser-extensions = { path = "../../../internal/extensions" }
+browser-sync-client = { path = "../../../internal/sync_client" }
+browser-api-local = { path = "../../../internal/api_local" }
+browser-engine = { path = "../../../internal/engine" }
+sysinfo = "0.30"
+sha2 = "0.10"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+
+[workspace]

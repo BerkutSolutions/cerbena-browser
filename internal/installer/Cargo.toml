@@ -1,0 +1,10 @@
+[package]
+name = "browser-installer"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror = "1"

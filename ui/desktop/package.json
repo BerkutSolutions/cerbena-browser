@@ -1,0 +1,20 @@
+{
+    "name":  "browser-desktop-ui",
+    "private":  true,
+    "version":  "1.0.0",
+    "type":  "module",
+    "scripts":  {
+                    "style:sync":  "powershell -ExecutionPolicy Bypass -File ./scripts/sync-styles.ps1",
+                    "i18n:check":  "node ./scripts/check-i18n.mjs",
+                    "dev:web":  "node ./scripts/dev-web-server.mjs",
+                    "dev:web:stop":  "powershell -ExecutionPolicy Bypass -File ./scripts/stop-dev-web.ps1",
+                    "tauri":  "tauri",
+                    "dev":  "npm run style:sync \u0026\u0026 npm run i18n:check \u0026\u0026 tauri dev --features custom-protocol",
+                    "build":  "npm run style:sync \u0026\u0026 npm run i18n:check \u0026\u0026 tauri build",
+                    "test:ui":  "node ./scripts/ui-smoke-test.mjs",
+                    "test":  "npm run i18n:check \u0026\u0026 npm run test:ui"
+                },
+    "devDependencies":  {
+                            "@tauri-apps/cli":  "^2.0.0"
+                        }
+}
