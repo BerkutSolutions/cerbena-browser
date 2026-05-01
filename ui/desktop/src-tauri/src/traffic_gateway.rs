@@ -13,12 +13,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
+use crate::launcher_commands::load_global_security_record;
 use crate::route_runtime::{
     route_runtime_required_for_profile, runtime_proxy_endpoint, runtime_session_active,
 };
 use crate::service_domains::service_domain_seeds;
 use crate::state::AppState;
-use crate::launcher_commands::load_global_security_record;
 
 const TRAFFIC_RETENTION_MS: u128 = 24 * 60 * 60 * 1000;
 const ROUTE_HEALTH_TTL_MS: u128 = 30_000;
@@ -105,14 +105,32 @@ pub fn load_traffic_log(path: &PathBuf) -> Result<Vec<TrafficLogEntry>, String> 
         return Ok(Vec::new());
     }
     let bytes = fs::read(path).map_err(|e| format!("read traffic log: {e}"))?;
-    let mut parsed =
-        serde_json::from_slice::<Vec<TrafficLogEntry>>(&bytes).map_err(|e| format!("parse traffic log: {e}"))?;
+    let mut parsed = match serde_json::from_slice::<Vec<TrafficLogEntry>>(&bytes) {
+        Ok(entries) => entries,
+        Err(error) => {
+            backup_corrupt_traffic_log(path, &bytes);
+            eprintln!(
+                "[traffic-gateway] ignoring corrupt traffic log at {}: {error}",
+                path.display()
+            );
+            return Ok(Vec::new());
+        }
+    };
     prune_traffic_log(&mut parsed);
     Ok(parsed)
 }
 
+fn backup_corrupt_traffic_log(path: &PathBuf, bytes: &[u8]) {
+    let backup_path = path.with_extension(format!("corrupt-{}.json", now_epoch_ms()));
+    if fs::rename(path, &backup_path).is_err() {
+        let _ = fs::write(backup_path, bytes);
+        let _ = fs::remove_file(path);
+    }
+}
+
 fn persist_traffic_log(path: &PathBuf, entries: &[TrafficLogEntry]) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(entries).map_err(|e| format!("serialize traffic log: {e}"))?;
+    let bytes =
+        serde_json::to_vec_pretty(entries).map_err(|e| format!("serialize traffic log: {e}"))?;
     fs::write(path, bytes).map_err(|e| format!("write traffic log: {e}"))
 }
 
@@ -1290,7 +1308,19 @@ fn now_epoch_ms() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::service_matches_host;
+    use super::{load_traffic_log, service_matches_host};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_path(prefix: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("cerbena-{prefix}-{unique}.json"))
+    }
 
     #[test]
     fn vk_service_does_not_match_unrelated_com_domains() {
@@ -1302,5 +1332,34 @@ mod tests {
     fn vk_service_matches_vk_domains() {
         assert!(service_matches_host("vk.com", "vk_com"));
         assert!(service_matches_host("m.vk.com", "vk_com"));
+    }
+
+    #[test]
+    fn corrupt_traffic_log_is_ignored_instead_of_crashing() {
+        let path = temp_path("traffic-log-corrupt");
+        fs::write(&path, b"[]\ncorrupt").expect("write corrupt traffic log");
+
+        let loaded = load_traffic_log(&path).expect("load traffic log");
+
+        assert!(loaded.is_empty());
+        let corrupt_backup = fs::read_dir(path.parent().expect("temp parent"))
+            .expect("read temp dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(|value| {
+                        value.contains("traffic-log-corrupt") && value.contains(".corrupt-")
+                    })
+                    .unwrap_or(false)
+            });
+        assert!(corrupt_backup.is_some());
+
+        let _ = fs::remove_file(path);
+        if let Some(backup) = corrupt_backup {
+            let _ = fs::remove_file(backup);
+        }
     }
 }

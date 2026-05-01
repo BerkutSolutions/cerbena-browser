@@ -400,9 +400,23 @@
     margin-right: 0 !important;
   }
 
+  .sidebar-link-icon img {
+    width: 18px;
+    height: 18px;
+    display: block;
+    object-fit: contain;
+    filter: brightness(0) invert(1);
+    opacity: 0.9;
+  }
+
   .sidebar-link:hover .sidebar-link-icon,
   .sidebar-link.active .sidebar-link-icon {
     color: inherit;
+  }
+
+  .sidebar-link:hover .sidebar-link-icon img,
+  .sidebar-link.active .sidebar-link-icon img {
+    opacity: 1;
   }
 
   /* (reserved for future sidebar nesting) */

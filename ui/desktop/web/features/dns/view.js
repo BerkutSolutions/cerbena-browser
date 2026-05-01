@@ -229,9 +229,9 @@ function accordionSection(id, title, subtitle, open, body, actions = "") {
           <span class="dns-accordion-title">${escapeHtml(title)}</span>
           ${subtitle ? `<span class="meta">${escapeHtml(subtitle)}</span>` : ""}
         </button>
-        ${actions}
       </div>
       <div class="dns-accordion-body ${open ? "" : "hidden"}" id="dns-accordion-${id}">
+        ${actions}
         ${body}
       </div>
     </section>
@@ -428,12 +428,8 @@ export function renderDns(t, model) {
   `;
 
   const serviceCatalogBody = `
-    <div class="dns-section-head dns-services-head">
-      <input id="dns-service-search" value="${draft.search}" placeholder="${t("dns.searchPlaceholder")}" />
-    </div>
-
+    <input id="dns-service-search" value="${draft.search}" placeholder="${t("dns.searchPlaceholder")}" />
     ${templateToolbarHtml(draft, model.dnsTemplates, t, model)}
-
     <div class="dns-categories">
       ${categories.map((category) => categoryCard(category, draft, draft.search, t)).join("") || `<p class="meta">${t("dns.catalogEmpty")}</p>`}
     </div>
@@ -506,7 +502,7 @@ export function renderDns(t, model) {
       ${accordionSection(
         "blocklists",
         t("profile.dns.blocklists"),
-        t("security.blocklists.hint"),
+        "",
         blocklistsOpen,
         blocklistsBody,
         `<div class="top-actions"><button type="button" id="dns-blocklist-add">${t("security.blocklists.addUrl")}</button><button type="button" id="dns-blocklist-file">${t("security.blocklists.addFile")}</button><button type="button" id="dns-global-save">${t("action.save")}</button></div>`
@@ -546,7 +542,7 @@ export function renderDns(t, model) {
       ${accordionSection(
         "catalog",
         t("dns.serviceCatalog"),
-        t("dns.refreshEvery12h"),
+        "",
         serviceCatalogOpen,
         serviceCatalogBody
       )}

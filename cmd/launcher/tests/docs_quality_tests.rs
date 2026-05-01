@@ -110,24 +110,8 @@ fn docs_ru_wiki_is_fully_russian_except_allowed_terms() {
     let allowed = allowed_ru_terms();
 
     let mut issues = Vec::new();
-    let mandatory = [
-        "README.md",
-        "index.md",
-        "navigator.md",
-        "core-docs/ui.md",
-        "core-docs/network-routing.md",
-        "core-docs/dns-and-filters.md",
-        "core-docs/security.md",
-        "release-runbook.md",
-        "release-troubleshooting.md",
-    ];
 
-    for rel in mandatory {
-        let path = docs_ru_root.join(rel);
-        if !path.is_file() {
-            issues.push(format!("{rel}: file is missing"));
-            continue;
-        }
+    for path in collect_markdown_files(&docs_ru_root) {
         let rel = relative_to(&docs_ru_root, &path);
         let raw = fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", rel));
         if std::str::from_utf8(&raw).is_err() {
@@ -216,6 +200,7 @@ fn allowed_ru_terms() -> BTreeSet<&'static str> {
         "checks",
         "cidr",
         "cli",
+        "chromium",
         "cloudflare",
         "compose",
         "contract",
@@ -295,6 +280,7 @@ fn allowed_ru_terms() -> BTreeSet<&'static str> {
         "nodes",
         "npm",
         "openvpn",
+        "os",
         "operator",
         "operators",
         "passkey",
@@ -306,6 +292,7 @@ fn allowed_ru_terms() -> BTreeSet<&'static str> {
         "profile",
         "profiles",
         "proxy",
+        "qubes",
         "reason",
         "reasons",
         "readme",
@@ -335,6 +322,7 @@ fn allowed_ru_terms() -> BTreeSet<&'static str> {
         "snapshots",
         "socks4",
         "socks5",
+        "sqlite",
         "standalone",
         "start",
         "state",

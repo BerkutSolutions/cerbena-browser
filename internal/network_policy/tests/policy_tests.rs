@@ -244,6 +244,8 @@ fn blocklist_updater_reads_remote_hosts_source() {
             "remote",
             &BlocklistSource::RemoteUrl {
                 url: format!("http://{addr}/list.txt"),
+                require_https: false,
+                expected_sha256: None,
             },
         )
         .expect("update");
@@ -251,6 +253,53 @@ fn blocklist_updater_reads_remote_hosts_source() {
         snap.domains,
         vec!["ads.test".to_string(), "tracker.test".to_string()]
     );
+}
+
+#[test]
+fn blocklist_updater_rejects_plain_http_when_https_required() {
+    let updater = DnsBlocklistUpdater::new();
+    let error = updater
+        .update_from_source(
+            "remote",
+            &BlocklistSource::RemoteUrl {
+                url: "http://example.test/list.txt".to_string(),
+                require_https: true,
+                expected_sha256: None,
+            },
+        )
+        .expect_err("http source must be rejected");
+    assert!(error.to_string().contains("https"));
+}
+
+#[test]
+fn blocklist_updater_validates_remote_checksum_for_curated_sources() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buffer = [0u8; 1024];
+        let _ = stream.read(&mut buffer);
+        let body = "0.0.0.0 ads.test\n";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).expect("write");
+    });
+
+    let updater = DnsBlocklistUpdater::new();
+    let error = updater
+        .update_from_source(
+            "remote",
+            &BlocklistSource::RemoteUrl {
+                url: format!("http://{addr}/list.txt"),
+                require_https: false,
+                expected_sha256: Some("deadbeef".to_string()),
+            },
+        )
+        .expect_err("checksum mismatch must fail");
+    assert!(error.to_string().contains("checksum mismatch"));
 }
 
 #[test]

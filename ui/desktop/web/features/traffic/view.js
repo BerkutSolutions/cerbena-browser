@@ -121,7 +121,7 @@ function filtersFrame(model, t, profiles) {
     profileOptions.push(`<option value="${profile.id}" ${filters.profileId === profile.id ? "selected" : ""}>${escapeHtml(profile.name)}</option>`);
   }
   return `
-    <div class="security-frame traffic-filters-frame">
+    <div class="panel traffic-filters-frame">
       <div class="traffic-filters-grid">
         <label>${t("traffic.filter.fromTime")}
           <input type="datetime-local" id="traffic-filter-from" value="${escapeHtml(filters.fromTime)}" />

@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use browser_sync_client::{
     decrypt_sync_payload, encrypt_sync_payload, BackupSnapshot, InMemorySyncServer,
-    ManifestVerifier, MergePolicy, PerformanceBudget, PerformanceMeasurement, PerformanceProfiler,
+    E2EEnvelope, ManifestVerifier, MergePolicy, PerformanceBudget, PerformanceMeasurement, PerformanceProfiler,
     RestorePlanner, RestoreRequest, RestoreScope, SnapshotManager, SyncConflictResolution,
     SyncControlsModel, SyncKeyMaterial, SyncMutation, SyncPayload, SyncProtocolVersion,
     SyncServerConfig, SyncStatusLevel, SyncStatusView, TlsPolicy, TransportGuard,
@@ -44,6 +44,42 @@ fn e2e_envelope_roundtrip_works() {
     };
     let envelope = encrypt_sync_payload(&key, b"payload").expect("encrypt");
     let plain = decrypt_sync_payload(&key, &envelope).expect("decrypt");
+    assert_eq!(plain, b"payload");
+}
+
+#[test]
+fn e2e_envelope_rejects_tampered_wrapped_key_payload() {
+    let key = SyncKeyMaterial {
+        profile_id: Uuid::new_v4(),
+        key_id: "k1".to_string(),
+        wrapping_secret: "sync-secret".to_string(),
+    };
+    let mut envelope = encrypt_sync_payload(&key, b"payload").expect("encrypt");
+    envelope.wrapped_data_key_b64 = B64.encode(b"forged-wrapped-key");
+    assert!(decrypt_sync_payload(&key, &envelope).is_err());
+}
+
+#[test]
+fn e2e_envelope_keeps_legacy_decrypt_compatibility() {
+    let key = SyncKeyMaterial {
+        profile_id: Uuid::new_v4(),
+        key_id: "k1".to_string(),
+        wrapping_secret: "sync-secret".to_string(),
+    };
+    let encrypted_payload = browser_profile::crypto::encrypt_blob(
+        &key.profile_id.to_string(),
+        &key.wrapping_secret,
+        b"payload",
+    )
+    .expect("legacy encrypt");
+    let envelope = E2EEnvelope {
+        key_id: key.key_id.clone(),
+        wrap_version: 0,
+        wrap_nonce_b64: String::new(),
+        wrapped_data_key_b64: B64.encode(format!("{}:{}", key.key_id, key.profile_id)),
+        encrypted_payload,
+    };
+    let plain = decrypt_sync_payload(&key, &envelope).expect("legacy decrypt");
     assert_eq!(plain, b"payload");
 }
 
@@ -121,6 +157,30 @@ fn transport_guard_enforces_pinning_and_replay() {
     guard.enforce_pinning(&policy, "fp1").expect("pin");
     assert!(guard.enforce_no_replay("nonce-1").is_ok());
     assert!(guard.enforce_no_replay("nonce-1").is_err());
+}
+
+#[test]
+fn transport_guard_rejects_tls_downgrade_structurally() {
+    let guard = TransportGuard::default();
+    let policy = TlsPolicy {
+        min_version: "TLS1.3".to_string(),
+        certificate_pinning: false,
+        allowed_fingerprints: vec![],
+    };
+    assert!(guard.enforce_tls(&policy, "TLS1.2").is_err());
+    assert!(guard.enforce_tls(&policy, "1.3").is_ok());
+}
+
+#[test]
+fn transport_guard_tracks_replay_window_beyond_last_nonce() {
+    let mut guard = TransportGuard::default();
+    for index in 0..8 {
+        guard
+            .enforce_no_replay(&format!("nonce-{index}"))
+            .expect("unique nonce");
+    }
+    assert!(guard.enforce_no_replay("nonce-3").is_err());
+    assert!(guard.enforce_no_replay("nonce-8").is_ok());
 }
 
 #[test]

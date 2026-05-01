@@ -237,21 +237,10 @@ function Run-VulnerabilityGates([string]$Root) {
     if ($CompactOutput) {
         $vulnArgs += "-CompactOutput"
     }
-    Invoke-Native "powershell" $vulnArgs
-
-    if (-not $SkipLocalDockerVulnerabilityGates) {
-        $localDockerScript = Join-Path $Root ".work\local-scripts\vulnerability-docker-preflight.ps1"
-        if (Test-Path $localDockerScript) {
-            $dockerArgs = @(
-                "-ExecutionPolicy", "Bypass",
-                "-File", $localDockerScript
-            )
-            if ($CompactOutput) {
-                $dockerArgs += "-CompactOutput"
-            }
-            Invoke-Native "powershell" $dockerArgs
-        }
+    if ($SkipLocalDockerVulnerabilityGates) {
+        $vulnArgs += "-DisableLocalDockerSandbox"
     }
+    Invoke-Native "powershell" $vulnArgs
 }
 
 function Generate-Artifacts([string]$Root, [string]$Version) {
@@ -260,6 +249,14 @@ function Generate-Artifacts([string]$Root, [string]$Version) {
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $Root "scripts\generate-release-artifacts.ps1"),
         "-Version", $Version
+    )
+}
+
+function Build-Installer([string]$Root) {
+    Write-Title "Build Installer"
+    Invoke-Native "powershell" @(
+        "-ExecutionPolicy", "Bypass",
+        "-File", (Join-Path $Root "scripts\build-installer.ps1")
     )
 }
 
@@ -323,6 +320,7 @@ switch ($Mode) {
         Run-Checks $repoRoot
         Run-VulnerabilityGates $repoRoot
         Generate-Artifacts $repoRoot $version
+        Build-Installer $repoRoot
     }
     "publish" {
         Run-VulnerabilityGates $repoRoot
@@ -333,6 +331,7 @@ switch ($Mode) {
         Run-VulnerabilityGates $repoRoot
         Generate-Artifacts $repoRoot $version
         Publish-Release $repoRoot $version
+        Build-Installer $repoRoot
     }
 }
 

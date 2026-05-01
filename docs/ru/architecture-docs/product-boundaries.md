@@ -3,21 +3,21 @@ title: Границы продукта
 sidebar_position: 3
 ---
 
-Cerbena Browser проектируется как standalone browser launcher platform.
+Cerbena Browser проектируется как самостоятельная браузерная launcher-платформа.
 
-## В scope
+## В базовом контуре
 
-- desktop launcher и profile lifecycle;
-- изоляция профилей по данным, сети, extension state и crypto context;
-- adapters для `Wayfern` и `Camoufox`;
-- per-profile `VPN` / `Proxy` / `TOR` / `DNS`;
-- domain и service restrictions;
+- desktop launcher и жизненный цикл профиля;
+- изоляция профилей по данным, сети, состоянию расширений и криптографическому контексту;
+- адаптеры для `Wayfern` и `Camoufox`;
+- профильно-специфичные `VPN` / `Proxy` / `TOR` / `DNS`;
+- доменные и сервисные ограничения;
 - local API и `MCP`;
-- import/export, password lock и `ephemeral`-режим.
+- импорт/экспорт, парольная блокировка и `ephemeral`-режим.
 
-## Вне scope базового контура
+## Вне базового контура
 
-- облачный multi-tenant control plane;
-- мобильные native-клиенты;
-- billing и organization management;
-- marketplace governance.
+- облачная многопользовательская плоскость управления;
+- мобильные нативные клиенты;
+- биллинг и управление организациями;
+- управление маркетплейсом.

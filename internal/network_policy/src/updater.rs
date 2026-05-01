@@ -7,13 +7,20 @@ use std::{
 
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlocklistSource {
     LocalFile { path: PathBuf },
-    RemoteUrl { url: String },
+    RemoteUrl {
+        url: String,
+        #[serde(default = "default_true")]
+        require_https: bool,
+        #[serde(default)]
+        expected_sha256: Option<String>,
+    },
     InlineDomains { domains: Vec<String> },
 }
 
@@ -35,6 +42,8 @@ pub enum UpdaterError {
     InvalidSource(String),
     #[error("download error: {0}")]
     Download(String),
+    #[error("integrity error: {0}")]
+    Integrity(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -53,7 +62,11 @@ impl DnsBlocklistUpdater {
     ) -> Result<DnsListSnapshot, UpdaterError> {
         let domains = match source {
             BlocklistSource::LocalFile { path } => parse_local_file(path)?,
-            BlocklistSource::RemoteUrl { url } => parse_remote_url(url)?,
+            BlocklistSource::RemoteUrl {
+                url,
+                require_https,
+                expected_sha256,
+            } => parse_remote_url(url, *require_https, expected_sha256.as_deref())?,
             BlocklistSource::InlineDomains { domains } => normalize(domains.clone()),
         };
         Ok(DnsListSnapshot {
@@ -88,9 +101,24 @@ fn parse_local_file(path: &Path) -> Result<Vec<String>, UpdaterError> {
     Ok(normalize(items))
 }
 
-fn parse_remote_url(url: &str) -> Result<Vec<String>, UpdaterError> {
+fn parse_remote_url(
+    url: &str,
+    require_https: bool,
+    expected_sha256: Option<&str>,
+) -> Result<Vec<String>, UpdaterError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|e| UpdaterError::InvalidSource(format!("bad url: {e}")))?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if require_https && scheme != "https" {
+        return Err(UpdaterError::InvalidSource(
+            "remote blocklist URL must use https".to_string(),
+        ));
+    }
+    if scheme != "https" && scheme != "http" {
+        return Err(UpdaterError::InvalidSource(format!(
+            "unsupported remote blocklist url scheme: {scheme}"
+        )));
+    }
     let client = Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30))
@@ -110,6 +138,16 @@ fn parse_remote_url(url: &str) -> Result<Vec<String>, UpdaterError> {
     let content = response
         .text()
         .map_err(|e| UpdaterError::Download(e.to_string()))?;
+    if let Some(expected_sha256) = expected_sha256 {
+        let actual = sha256_hex(content.as_bytes());
+        if !actual.eq_ignore_ascii_case(expected_sha256.trim()) {
+            return Err(UpdaterError::Integrity(format!(
+                "remote blocklist checksum mismatch: expected {}, got {}",
+                expected_sha256.trim(),
+                actual
+            )));
+        }
+    }
     Ok(parse_blocklist_content(&content))
 }
 
@@ -166,4 +204,14 @@ fn now_epoch() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn default_true() -> bool {
+    true
 }

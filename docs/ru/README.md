@@ -14,6 +14,7 @@
 - обзор продукта и маршрутов чтения;
 - описание реальных разделов desktop UI;
 - документы по профилям, сети, DNS, фильтрам, расширениям, `Links`, `Sync` и обновлениям;
+- материалы по доверенному обновлению, подписанным контрольным суммам, самостоятельному апдейтеру и защищенному хранению состояния оболочки;
 - архитектурные контракты по изоляции профилей и zero-trust;
 - операторские материалы по runtime-контуру, контрольным проверкам качества и безопасности, а также стабильности;
 - руководство по релизу, пакету установщика и диагностике.
@@ -23,7 +24,7 @@
 1. Прочитайте [главный индекс](index.md).
 2. Откройте [Навигатор](navigator.md), если нужна роль-ориентированная траектория.
 3. Для интерфейса перейдите в [UI и рабочие сценарии](core-docs/ui.md).
-4. Для сетевого контура откройте [Маршрутизацию и route runtime](core-docs/network-routing.md) и [DNS, blocklists и сервисные фильтры](core-docs/dns-and-filters.md).
+4. Для сетевого контура откройте [Маршрутизацию и маршрутный runtime](core-docs/network-routing.md) и [DNS, blocklists и сервисные фильтры](core-docs/dns-and-filters.md).
 5. Для архитектурного фундамента используйте [Архитектуру](architecture-docs/architecture.md), [Изоляцию профилей](architecture-docs/profile-isolation.md) и [Zero-trust](architecture-docs/zero-trust.md).
 
 ## Ключевые разделы
@@ -31,8 +32,8 @@
 - Архитектура: `docs/ru/architecture-docs/*`
 - Основные документы: `docs/ru/core-docs/*`
 - Операторские материалы: `docs/ru/operators/*`
-- Интеграции и tooling: `docs/ru/integration-docs/*`
-- Release и восстановление: `docs/ru/release-runbook.md`, `docs/ru/release-troubleshooting.md`
+- Интеграции и инструментальные материалы: `docs/ru/integration-docs/*`
+- Релиз и восстановление: `docs/ru/release-runbook.md`, `docs/ru/release-troubleshooting.md`
 
 ## Принцип синхронизации
 

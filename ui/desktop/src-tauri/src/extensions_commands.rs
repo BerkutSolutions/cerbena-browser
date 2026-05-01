@@ -11,13 +11,15 @@ use browser_profile::Engine;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeSet,
     fs,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
+    process::Command,
     time::Duration,
 };
 use tauri::State;
-use zip::ZipArchive;
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,7 +31,11 @@ pub struct ImportExtensionLibraryRequest {
     pub version: Option<String>,
     pub logo_url: Option<String>,
     pub engine_scope: Option<String>,
+    pub tags: Option<Vec<String>>,
     pub assigned_profile_ids: Vec<String>,
+    pub auto_update_enabled: Option<bool>,
+    pub preserve_on_panic_wipe: Option<bool>,
+    pub protect_data_from_panic_wipe: Option<bool>,
     pub package_file_name: Option<String>,
     pub package_bytes_base64: Option<String>,
 }
@@ -43,6 +49,25 @@ pub struct UpdateExtensionLibraryRequest {
     pub engine_scope: Option<String>,
     pub store_url: Option<String>,
     pub logo_url: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub auto_update_enabled: Option<bool>,
+    pub preserve_on_panic_wipe: Option<bool>,
+    pub protect_data_from_panic_wipe: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateExtensionLibraryPreferencesRequest {
+    pub auto_update_enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshExtensionLibraryUpdatesResponse {
+    pub checked: usize,
+    pub updated: usize,
+    pub skipped: usize,
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +82,58 @@ pub struct SetExtensionProfilesRequest {
 pub struct RemoveExtensionRequest {
     pub extension_id: String,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferExtensionLibraryRequest {
+    pub mode: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferExtensionLibraryResponse {
+    pub directory: String,
+    pub file_name: Option<String>,
+    pub imported: usize,
+    pub exported: usize,
+    pub skipped: usize,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionLibraryTransferManifest {
+    version: u32,
+    mode: String,
+    items: Vec<ExtensionLibraryTransferItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionLibraryTransferItem {
+    display_name: String,
+    version: String,
+    engine_scope: String,
+    source_kind: String,
+    source_value: String,
+    logo_url: Option<String>,
+    store_url: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    auto_update_enabled: bool,
+    #[serde(default)]
+    preserve_on_panic_wipe: bool,
+    #[serde(default)]
+    protect_data_from_panic_wipe: bool,
+    package_file_name: Option<String>,
+    package_relative_path: Option<String>,
+}
+
+const EXTENSION_LINKS_FILE_NAME: &str = "cerbena-extensions-links.json";
+const EXTENSION_ARCHIVE_DIR_NAME: &str = "cerbena-extensions-archive";
+const EXTENSION_ARCHIVE_MANIFEST_FILE_NAME: &str = "manifest.json";
+const EXTENSION_ARCHIVE_PACKAGES_DIR_NAME: &str = "packages";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,71 +205,15 @@ pub fn import_extension_library_item(
     request: ImportExtensionLibraryRequest,
     correlation_id: String,
 ) -> Result<UiEnvelope<String>, String> {
-    let mut library = state
-        .extension_library
-        .lock()
-        .map_err(|_| "extension library lock poisoned".to_string())?;
-    let normalized_store_url = request
-        .store_url
-        .clone()
-        .filter(|value| !value.trim().is_empty());
-    let package_metadata = derive_extension_metadata(&request, normalized_store_url.as_deref())?;
-    let id = build_extension_id(
-        request
-            .display_name
-            .as_deref()
-            .or(package_metadata.stable_id.as_deref())
-            .or(package_metadata.display_name.as_deref())
-            .or(normalized_store_url.as_deref())
-            .unwrap_or(&request.source_value),
-        &library,
-    );
-    let inferred_name = request
-        .display_name
-        .filter(|value| !value.trim().is_empty())
-        .or(package_metadata.display_name)
-        .unwrap_or_else(|| {
-            infer_extension_name(normalized_store_url.as_deref(), &request.source_value)
-        });
-    let inferred_engine = request
-        .engine_scope
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or(package_metadata.engine_scope)
-        .unwrap_or_else(|| {
-            infer_engine_scope(normalized_store_url.as_deref(), &request.source_value)
-        });
-    validate_assigned_profiles(&state, &inferred_engine, &request.assigned_profile_ids)?;
-    let (package_path, package_file_name) = persist_extension_package(
-        &state,
-        &id,
-        package_metadata.package_bytes.as_deref(),
-        package_metadata.package_extension.as_deref(),
-        package_metadata.package_file_name.as_deref(),
-    )?;
-    let item = ExtensionLibraryItem {
-        id: id.clone(),
-        display_name: inferred_name,
-        version: request
-            .version
-            .filter(|value| !value.trim().is_empty())
-            .or(package_metadata.version)
-            .unwrap_or_else(|| "1.0.1".to_string()),
-        engine_scope: inferred_engine,
-        source_kind: request.source_kind,
-        source_value: request.source_value,
-        logo_url: request
-            .logo_url
-            .filter(|value| !value.trim().is_empty())
-            .or(package_metadata.logo_url),
-        store_url: normalized_store_url,
-        assigned_profile_ids: request.assigned_profile_ids,
-        package_path,
-        package_file_name,
-    };
-    library.items.insert(id.clone(), item);
-    persist_library(&state, &library)?;
-    Ok(ok(correlation_id, id))
+    let imported_ids = import_extension_library_item_impl(&state, request)?;
+    Ok(ok(
+        correlation_id,
+        if imported_ids.len() == 1 {
+            imported_ids.into_iter().next().unwrap_or_default()
+        } else {
+            format!("imported:{}", imported_ids.len())
+        },
+    ))
 }
 
 #[tauri::command]
@@ -230,8 +251,72 @@ pub fn update_extension_library_item(
         .logo_url
         .filter(|value| !value.trim().is_empty())
         .or(item.logo_url.clone());
+    if let Some(tags) = request.tags {
+        item.tags = normalize_tags(tags);
+    }
+    if let Some(auto_update_enabled) = request.auto_update_enabled {
+        item.auto_update_enabled = auto_update_enabled;
+    }
+    if let Some(preserve_on_panic_wipe) = request.preserve_on_panic_wipe {
+        item.preserve_on_panic_wipe = preserve_on_panic_wipe;
+    }
+    if let Some(protect_data_from_panic_wipe) = request.protect_data_from_panic_wipe {
+        item.protect_data_from_panic_wipe = protect_data_from_panic_wipe;
+    }
     persist_library(&state, &library)?;
     Ok(ok(correlation_id, true))
+}
+
+#[tauri::command]
+pub fn export_extension_library(
+    state: State<AppState>,
+    request: TransferExtensionLibraryRequest,
+    correlation_id: String,
+) -> Result<UiEnvelope<TransferExtensionLibraryResponse>, String> {
+    let directory = pick_folder()?;
+    let response = match normalize_transfer_mode(&request.mode)? {
+        TransferMode::File => export_extension_links_file(&state, &directory)?,
+        TransferMode::Archive => export_extension_archive_folder(&state, &directory)?,
+    };
+    Ok(ok(correlation_id, response))
+}
+
+#[tauri::command]
+pub fn import_extension_library(
+    state: State<AppState>,
+    request: TransferExtensionLibraryRequest,
+    correlation_id: String,
+) -> Result<UiEnvelope<TransferExtensionLibraryResponse>, String> {
+    let directory = pick_folder()?;
+    let response = match normalize_transfer_mode(&request.mode)? {
+        TransferMode::File => import_extension_links_file(&state, &directory)?,
+        TransferMode::Archive => import_extension_archive_folder(&state, &directory)?,
+    };
+    Ok(ok(correlation_id, response))
+}
+
+#[tauri::command]
+pub fn update_extension_library_preferences(
+    state: State<AppState>,
+    request: UpdateExtensionLibraryPreferencesRequest,
+    correlation_id: String,
+) -> Result<UiEnvelope<bool>, String> {
+    let mut library = state
+        .extension_library
+        .lock()
+        .map_err(|_| "extension library lock poisoned".to_string())?;
+    library.auto_update_enabled = request.auto_update_enabled;
+    persist_library(&state, &library)?;
+    Ok(ok(correlation_id, true))
+}
+
+#[tauri::command]
+pub fn refresh_extension_library_updates(
+    state: State<AppState>,
+    correlation_id: String,
+) -> Result<UiEnvelope<RefreshExtensionLibraryUpdatesResponse>, String> {
+    let summary = refresh_extension_library_updates_impl(&state, None)?;
+    Ok(ok(correlation_id, summary))
 }
 
 #[tauri::command]
@@ -335,9 +420,652 @@ pub fn evaluate_extension_policy(
     Ok(ok(correlation_id, payload))
 }
 
+fn import_extension_library_item_impl(
+    state: &AppState,
+    request: ImportExtensionLibraryRequest,
+) -> Result<Vec<String>, String> {
+    let mut library = state
+        .extension_library
+        .lock()
+        .map_err(|_| "extension library lock poisoned".to_string())?;
+    let normalized_store_url = request
+        .store_url
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let package_metadata_batch =
+        derive_extension_metadata_batch(&request, normalized_store_url.as_deref())?;
+    let display_name_override = request
+        .display_name
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let version_override = request
+        .version
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let engine_scope_override = request
+        .engine_scope
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let logo_url_override = request
+        .logo_url
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let normalized_tags = normalize_tags(request.tags.unwrap_or_default());
+    let is_single_import = package_metadata_batch.len() == 1;
+    let mut imported_ids = Vec::new();
+
+    for package_metadata in package_metadata_batch {
+        let seed = display_name_override
+            .as_deref()
+            .filter(|_| imported_ids.is_empty())
+            .or(package_metadata.stable_id.as_deref())
+            .or(package_metadata.display_name.as_deref())
+            .or(normalized_store_url.as_deref())
+            .unwrap_or(&request.source_value);
+        let id = build_extension_id(seed, &library);
+        let inferred_name = display_name_override
+            .clone()
+            .filter(|_| is_single_import)
+            .or(package_metadata.display_name)
+            .unwrap_or_else(|| {
+                infer_extension_name(normalized_store_url.as_deref(), &request.source_value)
+            });
+        let inferred_engine = engine_scope_override
+            .clone()
+            .or(package_metadata.engine_scope)
+            .unwrap_or_else(|| {
+                infer_engine_scope(normalized_store_url.as_deref(), &request.source_value)
+            });
+        validate_assigned_profiles(state, &inferred_engine, &request.assigned_profile_ids)?;
+        let (package_path, package_file_name) = persist_extension_package(
+            state,
+            &id,
+            package_metadata.package_bytes.as_deref(),
+            package_metadata.package_extension.as_deref(),
+            package_metadata.package_file_name.as_deref(),
+        )?;
+        let item = ExtensionLibraryItem {
+            id: id.clone(),
+            display_name: inferred_name,
+            version: version_override
+                .clone()
+                .filter(|_| is_single_import)
+                .or(package_metadata.version)
+                .unwrap_or_else(|| "1.0.2".to_string()),
+            engine_scope: inferred_engine,
+            source_kind: request.source_kind.clone(),
+            source_value: request.source_value.clone(),
+            logo_url: logo_url_override
+                .clone()
+                .filter(|_| is_single_import)
+                .or(package_metadata.logo_url),
+            store_url: normalized_store_url.clone(),
+            tags: normalized_tags.clone(),
+            assigned_profile_ids: request.assigned_profile_ids.clone(),
+            auto_update_enabled: request.auto_update_enabled.unwrap_or(false),
+            preserve_on_panic_wipe: request.preserve_on_panic_wipe.unwrap_or(false),
+            protect_data_from_panic_wipe: request.protect_data_from_panic_wipe.unwrap_or(false),
+            package_path,
+            package_file_name,
+        };
+        library.items.insert(id.clone(), item);
+        imported_ids.push(id);
+    }
+    persist_library(state, &library)?;
+    Ok(imported_ids)
+}
+
 fn persist_library(state: &AppState, store: &ExtensionLibraryStore) -> Result<(), String> {
     let path = state.extension_library_path(&state.app_handle)?;
     persist_extension_library_store(&path, store)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferMode {
+    File,
+    Archive,
+}
+
+fn normalize_transfer_mode(value: &str) -> Result<TransferMode, String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "file" => Ok(TransferMode::File),
+        "archive" => Ok(TransferMode::Archive),
+        _ => Err("unsupported transfer mode".to_string()),
+    }
+}
+
+fn pick_folder() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.ShowNewFolderButton = $true
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  $dialog.SelectedPath | ConvertTo-Json -Compress
+}
+"#;
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", script])
+            .output()
+            .map_err(|e| format!("folder picker failed: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                "folder picker failed".to_string()
+            } else {
+                format!("folder picker failed: {stderr}")
+            });
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            return Err("folder selection was cancelled".to_string());
+        }
+        return serde_json::from_str::<String>(&stdout)
+            .map_err(|e| format!("folder picker parse failed: {e}"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("folder picker is not supported on this platform".to_string())
+    }
+}
+
+fn export_extension_links_file(
+    state: &AppState,
+    directory: &str,
+) -> Result<TransferExtensionLibraryResponse, String> {
+    let library = state
+        .extension_library
+        .lock()
+        .map_err(|_| "extension library lock poisoned".to_string())?
+        .clone();
+    let mut skipped = 0usize;
+    let manifest = ExtensionLibraryTransferManifest {
+        version: 1,
+        mode: "file".to_string(),
+        items: library
+            .items
+            .values()
+            .filter_map(|item| {
+                let linkable = item
+                    .store_url
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty())
+                    || item.source_value.trim().starts_with("http://")
+                    || item.source_value.trim().starts_with("https://");
+                if !linkable {
+                    skipped += 1;
+                    return None;
+                }
+                Some(transfer_item_from_library_item(item.clone(), None))
+            })
+            .collect(),
+    };
+    let target_dir = PathBuf::from(directory);
+    fs::create_dir_all(&target_dir).map_err(|e| format!("create export dir: {e}"))?;
+    let file_path = target_dir.join(EXTENSION_LINKS_FILE_NAME);
+    let bytes =
+        serde_json::to_vec_pretty(&manifest).map_err(|e| format!("serialize export: {e}"))?;
+    fs::write(&file_path, bytes).map_err(|e| format!("write export file: {e}"))?;
+    Ok(TransferExtensionLibraryResponse {
+        directory: target_dir.to_string_lossy().to_string(),
+        file_name: Some(EXTENSION_LINKS_FILE_NAME.to_string()),
+        imported: 0,
+        exported: manifest.items.len(),
+        skipped,
+        errors: Vec::new(),
+    })
+}
+
+fn export_extension_archive_folder(
+    state: &AppState,
+    directory: &str,
+) -> Result<TransferExtensionLibraryResponse, String> {
+    let library = state
+        .extension_library
+        .lock()
+        .map_err(|_| "extension library lock poisoned".to_string())?
+        .clone();
+    let target_root = PathBuf::from(directory).join(EXTENSION_ARCHIVE_DIR_NAME);
+    let packages_dir = target_root.join(EXTENSION_ARCHIVE_PACKAGES_DIR_NAME);
+    fs::create_dir_all(&packages_dir).map_err(|e| format!("create archive dir: {e}"))?;
+    let mut errors = Vec::new();
+    let mut manifest_items = Vec::new();
+
+    for item in library.items.values() {
+        let package_relative_path = item.package_path.as_deref().and_then(|package_path| {
+            let source_path = PathBuf::from(package_path);
+            if !source_path.is_file() {
+                errors.push(format!("{}: package file is missing", item.display_name));
+                return None;
+            }
+            let file_name = item
+                .package_file_name
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| {
+                    source_path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("extension.zip")
+                        .to_string()
+                });
+            let safe_name = sanitize_file_name(&file_name);
+            let unique_name = unique_archive_file_name(&packages_dir, &item.id, &safe_name);
+            let dest_path = packages_dir.join(&unique_name);
+            match fs::copy(&source_path, &dest_path) {
+                Ok(_) => Some(format!(
+                    "{EXTENSION_ARCHIVE_PACKAGES_DIR_NAME}/{unique_name}"
+                )),
+                Err(error) => {
+                    errors.push(format!(
+                        "{}: copy package failed: {error}",
+                        item.display_name
+                    ));
+                    None
+                }
+            }
+        });
+        manifest_items.push(transfer_item_from_library_item(
+            item.clone(),
+            package_relative_path,
+        ));
+    }
+
+    let manifest = ExtensionLibraryTransferManifest {
+        version: 1,
+        mode: "archive".to_string(),
+        items: manifest_items,
+    };
+    let manifest_path = target_root.join(EXTENSION_ARCHIVE_MANIFEST_FILE_NAME);
+    let bytes =
+        serde_json::to_vec_pretty(&manifest).map_err(|e| format!("serialize archive: {e}"))?;
+    fs::write(&manifest_path, bytes).map_err(|e| format!("write archive manifest: {e}"))?;
+
+    Ok(TransferExtensionLibraryResponse {
+        directory: target_root.to_string_lossy().to_string(),
+        file_name: Some(EXTENSION_ARCHIVE_MANIFEST_FILE_NAME.to_string()),
+        imported: 0,
+        exported: manifest.items.len(),
+        skipped: 0,
+        errors,
+    })
+}
+
+fn import_extension_links_file(
+    state: &AppState,
+    directory: &str,
+) -> Result<TransferExtensionLibraryResponse, String> {
+    let manifest_path = PathBuf::from(directory).join(EXTENSION_LINKS_FILE_NAME);
+    let manifest = read_transfer_manifest(&manifest_path)?;
+    import_transfer_manifest(state, &manifest, Path::new(directory), TransferMode::File)
+}
+
+fn import_extension_archive_folder(
+    state: &AppState,
+    directory: &str,
+) -> Result<TransferExtensionLibraryResponse, String> {
+    let chosen = PathBuf::from(directory);
+    let archive_root = if chosen.join(EXTENSION_ARCHIVE_MANIFEST_FILE_NAME).is_file() {
+        chosen.clone()
+    } else {
+        chosen.join(EXTENSION_ARCHIVE_DIR_NAME)
+    };
+    let manifest_path = archive_root.join(EXTENSION_ARCHIVE_MANIFEST_FILE_NAME);
+    let manifest = read_transfer_manifest(&manifest_path)?;
+    import_transfer_manifest(state, &manifest, &archive_root, TransferMode::Archive)
+}
+
+fn read_transfer_manifest(path: &Path) -> Result<ExtensionLibraryTransferManifest, String> {
+    let bytes = fs::read(path).map_err(|e| format!("read manifest {}: {e}", path.display()))?;
+    serde_json::from_slice::<ExtensionLibraryTransferManifest>(&bytes)
+        .map_err(|e| format!("parse manifest {}: {e}", path.display()))
+}
+
+fn import_transfer_manifest(
+    state: &AppState,
+    manifest: &ExtensionLibraryTransferManifest,
+    base_dir: &Path,
+    mode: TransferMode,
+) -> Result<TransferExtensionLibraryResponse, String> {
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    let mut errors = Vec::new();
+
+    for item in &manifest.items {
+        let import_request = match build_import_request_from_transfer_item(item, base_dir, mode) {
+            Ok(Some(request)) => request,
+            Ok(None) => {
+                skipped += 1;
+                continue;
+            }
+            Err(error) => {
+                errors.push(format!("{}: {error}", item.display_name));
+                skipped += 1;
+                continue;
+            }
+        };
+        match import_extension_library_item_impl(state, import_request) {
+            Ok(ids) => imported += ids.len(),
+            Err(error) => errors.push(format!("{}: {error}", item.display_name)),
+        }
+    }
+
+    Ok(TransferExtensionLibraryResponse {
+        directory: base_dir.to_string_lossy().to_string(),
+        file_name: Some(match mode {
+            TransferMode::File => EXTENSION_LINKS_FILE_NAME.to_string(),
+            TransferMode::Archive => EXTENSION_ARCHIVE_MANIFEST_FILE_NAME.to_string(),
+        }),
+        imported,
+        exported: 0,
+        skipped,
+        errors,
+    })
+}
+
+fn transfer_item_from_library_item(
+    item: ExtensionLibraryItem,
+    package_relative_path: Option<String>,
+) -> ExtensionLibraryTransferItem {
+    ExtensionLibraryTransferItem {
+        display_name: item.display_name,
+        version: item.version,
+        engine_scope: item.engine_scope,
+        source_kind: item.source_kind,
+        source_value: item.source_value,
+        logo_url: item.logo_url,
+        store_url: item.store_url,
+        tags: normalize_tags(item.tags),
+        auto_update_enabled: item.auto_update_enabled,
+        preserve_on_panic_wipe: item.preserve_on_panic_wipe,
+        protect_data_from_panic_wipe: item.protect_data_from_panic_wipe,
+        package_file_name: item.package_file_name,
+        package_relative_path,
+    }
+}
+
+fn build_import_request_from_transfer_item(
+    item: &ExtensionLibraryTransferItem,
+    base_dir: &Path,
+    mode: TransferMode,
+) -> Result<Option<ImportExtensionLibraryRequest>, String> {
+    let package_bytes_base64 = match mode {
+        TransferMode::Archive => match item.package_relative_path.as_deref() {
+            Some(relative_path) => {
+                let package_path = base_dir.join(relative_path.replace('/', "\\"));
+                if !package_path.is_file() {
+                    None
+                } else {
+                    let bytes = fs::read(&package_path)
+                        .map_err(|e| format!("read package {}: {e}", package_path.display()))?;
+                    Some(BASE64_STANDARD.encode(bytes))
+                }
+            }
+            None => None,
+        },
+        TransferMode::File => None,
+    };
+
+    let source_kind = if package_bytes_base64.is_some() {
+        "local_file".to_string()
+    } else {
+        item.source_kind.clone()
+    };
+    let source_value = if package_bytes_base64.is_some() {
+        item.package_file_name
+            .clone()
+            .unwrap_or_else(|| item.display_name.clone())
+    } else if let Some(store_url) = item
+        .store_url
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
+        store_url
+    } else if item.source_value.trim().starts_with("http://")
+        || item.source_value.trim().starts_with("https://")
+    {
+        item.source_value.clone()
+    } else {
+        return Ok(None);
+    };
+
+    Ok(Some(ImportExtensionLibraryRequest {
+        source_kind,
+        source_value: source_value.clone(),
+        store_url: item.store_url.clone(),
+        display_name: Some(item.display_name.clone()),
+        version: Some(item.version.clone()),
+        logo_url: item.logo_url.clone(),
+        engine_scope: Some(item.engine_scope.clone()),
+        tags: Some(item.tags.clone()),
+        assigned_profile_ids: Vec::new(),
+        auto_update_enabled: Some(item.auto_update_enabled),
+        preserve_on_panic_wipe: Some(item.preserve_on_panic_wipe),
+        protect_data_from_panic_wipe: Some(item.protect_data_from_panic_wipe),
+        package_file_name: item.package_file_name.clone(),
+        package_bytes_base64,
+    }))
+}
+
+fn sanitize_file_name(value: &str) -> String {
+    let mut cleaned = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while cleaned.contains("__") {
+        cleaned = cleaned.replace("__", "_");
+    }
+    let trimmed = cleaned.trim_matches('_').trim().to_string();
+    if trimmed.is_empty() {
+        "extension.zip".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn unique_archive_file_name(
+    packages_dir: &Path,
+    extension_id: &str,
+    original_name: &str,
+) -> String {
+    let extension = Path::new(original_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("zip");
+    let stem = Path::new(original_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("extension");
+    let base = format!(
+        "{}-{}",
+        sanitize_file_name(extension_id),
+        sanitize_file_name(stem)
+    );
+    let mut candidate = format!("{base}.{extension}");
+    let mut counter = 2usize;
+    while packages_dir.join(&candidate).exists() {
+        candidate = format!("{base}-{counter}.{extension}");
+        counter += 1;
+    }
+    candidate
+}
+
+fn normalize_tags(tags: Vec<String>) -> Vec<String> {
+    let mut unique = Vec::new();
+    let mut seen = BTreeSet::new();
+    for value in tags {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let normalized = trimmed.to_ascii_lowercase();
+        if seen.insert(normalized) {
+            unique.push(trimmed.to_string());
+        }
+    }
+    unique
+}
+
+pub fn refresh_extension_library_updates_impl(
+    state: &AppState,
+    profile_filter: Option<&str>,
+) -> Result<RefreshExtensionLibraryUpdatesResponse, String> {
+    let snapshot = state
+        .extension_library
+        .lock()
+        .map_err(|_| "extension library lock poisoned".to_string())?
+        .clone();
+    if !snapshot.auto_update_enabled {
+        return Ok(RefreshExtensionLibraryUpdatesResponse {
+            checked: 0,
+            updated: 0,
+            skipped: snapshot.items.len(),
+            errors: Vec::new(),
+        });
+    }
+
+    let items = snapshot
+        .items
+        .values()
+        .filter(|item| item.auto_update_enabled)
+        .filter(|item| {
+            item.store_url
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+        })
+        .filter(|item| {
+            profile_filter
+                .map(|profile_id| item.assigned_profile_ids.iter().any(|id| id == profile_id))
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut summary = RefreshExtensionLibraryUpdatesResponse {
+        checked: items.len(),
+        updated: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    };
+
+    for item in items {
+        match refresh_extension_library_item(state, &item.id) {
+            Ok(updated) => {
+                if updated {
+                    summary.updated += 1;
+                } else {
+                    summary.skipped += 1;
+                }
+            }
+            Err(error) => {
+                summary
+                    .errors
+                    .push(format!("{}: {error}", item.display_name));
+            }
+        }
+    }
+
+    Ok(summary)
+}
+
+fn refresh_extension_library_item(state: &AppState, extension_id: &str) -> Result<bool, String> {
+    let item_snapshot = {
+        let library = state
+            .extension_library
+            .lock()
+            .map_err(|_| "extension library lock poisoned".to_string())?;
+        library
+            .items
+            .get(extension_id)
+            .cloned()
+            .ok_or_else(|| "extension not found".to_string())?
+    };
+
+    let store_url = item_snapshot
+        .store_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "store URL is not configured".to_string())?;
+    let metadata = download_store_extension_metadata(store_url)?;
+    let (package_path, package_file_name) = persist_extension_package(
+        state,
+        &item_snapshot.id,
+        metadata.package_bytes.as_deref(),
+        metadata.package_extension.as_deref(),
+        metadata.package_file_name.as_deref(),
+    )?;
+
+    let mut library = state
+        .extension_library
+        .lock()
+        .map_err(|_| "extension library lock poisoned".to_string())?;
+    let item = library
+        .items
+        .get_mut(extension_id)
+        .ok_or_else(|| "extension not found".to_string())?;
+
+    let mut changed = false;
+    if let Some(display_name) = metadata
+        .display_name
+        .filter(|value| !value.trim().is_empty())
+    {
+        if item.display_name != display_name {
+            item.display_name = display_name;
+            changed = true;
+        }
+    }
+    if let Some(version) = metadata.version.filter(|value| !value.trim().is_empty()) {
+        if item.version != version {
+            item.version = version;
+            changed = true;
+        }
+    }
+    if let Some(engine_scope) = metadata
+        .engine_scope
+        .filter(|value| !value.trim().is_empty())
+    {
+        if item.engine_scope != engine_scope {
+            item.engine_scope = engine_scope;
+            changed = true;
+        }
+    }
+    if let Some(logo_url) = metadata.logo_url.filter(|value| !value.trim().is_empty()) {
+        if item.logo_url.as_deref() != Some(logo_url.as_str()) {
+            item.logo_url = Some(logo_url);
+            changed = true;
+        }
+    }
+    if let Some(package_path) = package_path {
+        if item.package_path.as_deref() != Some(package_path.as_str()) {
+            item.package_path = Some(package_path);
+            changed = true;
+        }
+    }
+    if let Some(package_file_name) = package_file_name {
+        if item.package_file_name.as_deref() != Some(package_file_name.as_str()) {
+            item.package_file_name = Some(package_file_name);
+            changed = true;
+        }
+    }
+
+    if changed {
+        persist_library(state, &library)?;
+    }
+    Ok(changed)
 }
 
 fn build_extension_id(seed: &str, library: &ExtensionLibraryStore) -> String {
@@ -447,10 +1175,10 @@ fn normalize_engine_scope(value: &str) -> String {
     }
 }
 
-fn derive_extension_metadata(
+fn derive_extension_metadata_batch(
     request: &ImportExtensionLibraryRequest,
     store_url: Option<&str>,
-) -> Result<DerivedExtensionMetadata, String> {
+) -> Result<Vec<DerivedExtensionMetadata>, String> {
     if let Some(raw_bytes) = request
         .package_bytes_base64
         .as_deref()
@@ -464,40 +1192,54 @@ fn derive_extension_metadata(
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(&request.source_value);
-        return read_extension_archive_metadata_from_bytes(&bytes, file_name, store_url);
+        return read_extension_archive_metadata_batch_from_bytes(&bytes, file_name, store_url);
     }
 
     let lower_kind = request.source_kind.to_lowercase();
     if lower_kind == "store_url" {
         return download_store_extension_metadata(
             store_url.unwrap_or(request.source_value.as_str()),
-        );
+        )
+        .map(|metadata| vec![metadata]);
     }
 
     if matches!(lower_kind.as_str(), "local_file" | "dropped_file") {
         let path = Path::new(&request.source_value);
         if path.exists() {
-            return read_extension_archive_metadata(path, store_url);
+            return read_extension_archive_metadata_batch(path, store_url);
         }
     }
 
-    Ok(DerivedExtensionMetadata {
+    Ok(vec![DerivedExtensionMetadata {
         stable_id: store_url_fallback_id(store_url),
         engine_scope: Some(infer_engine_scope(store_url, &request.source_value)),
         ..DerivedExtensionMetadata::default()
-    })
+    }])
 }
 
+#[allow(dead_code)]
 fn read_extension_archive_metadata(
     path: &Path,
     store_url: Option<&str>,
 ) -> Result<DerivedExtensionMetadata, String> {
+    let mut batch = read_extension_archive_metadata_batch(path, store_url)?;
+    let first = batch
+        .drain(..)
+        .next()
+        .ok_or_else(|| "extension package manifest.json not found".to_string());
+    first
+}
+
+fn read_extension_archive_metadata_batch(
+    path: &Path,
+    store_url: Option<&str>,
+) -> Result<Vec<DerivedExtensionMetadata>, String> {
     let bytes = fs::read(path).map_err(|e| format!("read extension package: {e}"))?;
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("extension.zip");
-    read_extension_archive_metadata_from_bytes(&bytes, file_name, store_url)
+    read_extension_archive_metadata_batch_from_bytes(&bytes, file_name, store_url)
 }
 
 fn read_extension_archive_metadata_from_bytes(
@@ -505,6 +1247,19 @@ fn read_extension_archive_metadata_from_bytes(
     file_name: &str,
     store_url: Option<&str>,
 ) -> Result<DerivedExtensionMetadata, String> {
+    let mut batch = read_extension_archive_metadata_batch_from_bytes(bytes, file_name, store_url)?;
+    let first = batch
+        .drain(..)
+        .next()
+        .ok_or_else(|| "extension package manifest.json not found".to_string());
+    first
+}
+
+fn read_extension_archive_metadata_batch_from_bytes(
+    bytes: &[u8],
+    file_name: &str,
+    store_url: Option<&str>,
+) -> Result<Vec<DerivedExtensionMetadata>, String> {
     let package_extension = infer_package_extension(file_name, store_url);
     let archive_bytes = if package_extension.eq_ignore_ascii_case("crx") {
         extract_embedded_zip_bytes(bytes)?
@@ -513,8 +1268,30 @@ fn read_extension_archive_metadata_from_bytes(
     };
     let cursor = Cursor::new(archive_bytes);
     let mut zip = ZipArchive::new(cursor).map_err(|e| format!("open extension archive: {e}"))?;
-    let manifest = read_zip_text(&mut zip, "manifest.json")
-        .ok_or_else(|| "extension package manifest.json not found".to_string())?;
+    let Some(manifest) = read_zip_text(&mut zip, "manifest.json") else {
+        if package_extension.eq_ignore_ascii_case("zip") {
+            let roots = discover_nested_extension_roots(&mut zip)?;
+            if roots.is_empty() {
+                return Err("extension package manifest.json not found".to_string());
+            }
+            let mut batch = Vec::new();
+            for root in roots {
+                let nested_bytes = repackage_nested_extension(bytes, &root)?;
+                let nested_file_name = package_display_name(&format!("{root}.zip"), "zip");
+                let mut metadata = read_extension_archive_metadata_from_bytes(
+                    &nested_bytes,
+                    &nested_file_name,
+                    store_url,
+                )?;
+                metadata.package_bytes = Some(nested_bytes);
+                metadata.package_extension = Some("zip".to_string());
+                metadata.package_file_name = Some(nested_file_name);
+                batch.push(metadata);
+            }
+            return Ok(batch);
+        }
+        return Err("extension package manifest.json not found".to_string());
+    };
     let manifest_json = serde_json::from_str::<serde_json::Value>(&manifest)
         .map_err(|e| format!("parse manifest: {e}"))?;
 
@@ -530,7 +1307,7 @@ fn read_extension_archive_metadata_from_bytes(
     let engine_scope = manifest_engine_scope(&manifest_json, file_name, store_url);
     let logo_url = manifest_logo_data_url(&mut zip, &manifest_json);
 
-    Ok(DerivedExtensionMetadata {
+    Ok(vec![DerivedExtensionMetadata {
         stable_id: manifest_stable_id(&manifest_json).or_else(|| store_url_fallback_id(store_url)),
         display_name,
         version,
@@ -539,7 +1316,7 @@ fn read_extension_archive_metadata_from_bytes(
         package_bytes: Some(bytes.to_vec()),
         package_extension: Some(package_extension.clone()),
         package_file_name: Some(package_display_name(file_name, &package_extension)),
-    })
+    }])
 }
 
 fn extract_embedded_zip_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -558,6 +1335,77 @@ fn read_zip_text<R: Read + std::io::Seek>(zip: &mut ZipArchive<R>, name: &str) -
     let mut out = String::new();
     file.read_to_string(&mut out).ok()?;
     Some(out)
+}
+
+fn discover_nested_extension_roots<R: Read + std::io::Seek>(
+    zip: &mut ZipArchive<R>,
+) -> Result<Vec<String>, String> {
+    let mut roots = BTreeSet::new();
+    for index in 0..zip.len() {
+        let entry_name = zip
+            .by_index(index)
+            .map_err(|e| format!("scan extension archive: {e}"))?
+            .name()
+            .replace('\\', "/");
+        if !entry_name.ends_with("/manifest.json") {
+            continue;
+        }
+        let root = entry_name.trim_end_matches("/manifest.json");
+        if root.is_empty() {
+            continue;
+        }
+        let segments = root
+            .split('/')
+            .filter(|segment| !segment.trim().is_empty())
+            .collect::<Vec<_>>();
+        if segments.len() == 1 {
+            roots.insert(segments[0].to_string());
+        }
+    }
+    Ok(roots.into_iter().collect())
+}
+
+fn repackage_nested_extension(bytes: &[u8], root: &str) -> Result<Vec<u8>, String> {
+    let cursor = Cursor::new(bytes.to_vec());
+    let mut source = ZipArchive::new(cursor).map_err(|e| format!("open extension archive: {e}"))?;
+    let mut output = Cursor::new(Vec::<u8>::new());
+    let mut writer = ZipWriter::new(&mut output);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let prefix = format!("{root}/");
+
+    for index in 0..source.len() {
+        let mut file = source
+            .by_index(index)
+            .map_err(|e| format!("read nested extension archive entry: {e}"))?;
+        let entry_name = file.name().replace('\\', "/");
+        if !entry_name.starts_with(&prefix) {
+            continue;
+        }
+        let relative = entry_name[prefix.len()..].to_string();
+        if relative.is_empty() {
+            continue;
+        }
+        if file.is_dir() {
+            writer
+                .add_directory(relative, options)
+                .map_err(|e| format!("write nested extension directory: {e}"))?;
+            continue;
+        }
+        writer
+            .start_file(relative, options)
+            .map_err(|e| format!("write nested extension file header: {e}"))?;
+        let mut file_bytes = Vec::new();
+        file.read_to_end(&mut file_bytes)
+            .map_err(|e| format!("read nested extension file: {e}"))?;
+        writer
+            .write_all(&file_bytes)
+            .map_err(|e| format!("write nested extension file: {e}"))?;
+    }
+
+    writer
+        .finish()
+        .map_err(|e| format!("finalize nested extension archive: {e}"))?;
+    Ok(output.into_inner())
 }
 
 fn manifest_engine_scope(
@@ -784,15 +1632,17 @@ fn download_amo_extension_metadata(store_url: &str) -> Result<DerivedExtensionMe
             .map(|value| value.to_string());
     }
     if metadata.logo_url.is_none() {
-        metadata.logo_url = amo_icon_data_url(&client, &details)
-            .or_else(|| details.get("icon_url").and_then(|value| value.as_str()).map(str::to_string));
+        metadata.logo_url = amo_icon_data_url(&client, &details).or_else(|| {
+            details
+                .get("icon_url")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
     }
     Ok(metadata)
 }
 
-fn download_chrome_extension_metadata(
-    store_url: &str,
-) -> Result<DerivedExtensionMetadata, String> {
+fn download_chrome_extension_metadata(store_url: &str) -> Result<DerivedExtensionMetadata, String> {
     let client = extension_http_client()?;
     let extension_id = extract_chrome_web_store_id(store_url)
         .ok_or_else(|| "unsupported Chrome Web Store URL".to_string())?;
@@ -823,7 +1673,7 @@ fn extension_http_client() -> Result<Client, String> {
         .timeout(Duration::from_secs(45))
         .user_agent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Cerbena/1.0.1",
+             (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Cerbena/1.0.2",
         )
         .build()
         .map_err(|e| format!("extension http client: {e}"))
@@ -837,7 +1687,10 @@ fn download_binary(client: &Client, url: &str) -> Result<Vec<u8>, String> {
     if !response.status().is_success() {
         return Err(format!("download {url}: http {}", response.status()));
     }
-    response.bytes().map(|value| value.to_vec()).map_err(|e| e.to_string())
+    response
+        .bytes()
+        .map(|value| value.to_vec())
+        .map_err(|e| e.to_string())
 }
 
 fn download_text(client: &Client, url: &str) -> Result<String, String> {
@@ -991,7 +1844,9 @@ fn parse_html_meta_content(html: &str, marker: &str) -> Option<String> {
 
 fn parse_html_title(html: &str) -> Option<String> {
     let start = html.find("<title>")? + "<title>".len();
-    let end = html[start..].find("</title>").map(|offset| start + offset)?;
+    let end = html[start..]
+        .find("</title>")
+        .map(|offset| start + offset)?;
     let title = html_entity_decode(html[start..end].trim());
     Some(
         title
@@ -1062,4 +1917,56 @@ fn delete_extension_package(package_path: Option<&str>) {
         return;
     };
     let _ = fs::remove_file(PathBuf::from(path));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_zip(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut output = Cursor::new(Vec::<u8>::new());
+        let mut writer = ZipWriter::new(&mut output);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (name, body) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(body.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+        output.into_inner()
+    }
+
+    #[test]
+    fn reads_single_extension_archive_metadata() {
+        let archive = build_zip(&[(
+            "manifest.json",
+            r#"{"name":"Single","version":"1.2.3","minimum_chrome_version":"120"}"#,
+        )]);
+        let batch =
+            read_extension_archive_metadata_batch_from_bytes(&archive, "single.zip", None).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].display_name.as_deref(), Some("Single"));
+        assert_eq!(batch[0].version.as_deref(), Some("1.2.3"));
+        assert_eq!(batch[0].engine_scope.as_deref(), Some("chromium"));
+    }
+
+    #[test]
+    fn reads_multi_extension_archive_metadata_from_nested_folders() {
+        let archive = build_zip(&[
+            (
+                "alpha/manifest.json",
+                r#"{"name":"Alpha","version":"1.0.0","minimum_chrome_version":"120"}"#,
+            ),
+            (
+                "beta/manifest.json",
+                r#"{"name":"Beta","version":"2.0.0","browser_specific_settings":{"gecko":{"id":"beta@example.com"}}}"#,
+            ),
+        ]);
+        let batch =
+            read_extension_archive_metadata_batch_from_bytes(&archive, "bundle.zip", None).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].display_name.as_deref(), Some("Alpha"));
+        assert_eq!(batch[1].display_name.as_deref(), Some("Beta"));
+        assert_eq!(batch[0].package_file_name.as_deref(), Some("alpha.zip"));
+        assert_eq!(batch[1].package_file_name.as_deref(), Some("beta.zip"));
+    }
 }

@@ -1,5 +1,9 @@
+use std::collections::{HashSet, VecDeque};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+const NONCE_WINDOW_SIZE: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsPolicy {
@@ -18,6 +22,12 @@ impl Default for TlsPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TlsVersion {
+    Tls12,
+    Tls13,
+}
+
 #[derive(Debug, Error)]
 pub enum TransportError {
     #[error("tls version too weak")]
@@ -28,6 +38,8 @@ pub enum TransportError {
     SignatureMismatch,
     #[error("replay blocked")]
     ReplayBlocked,
+    #[error("unsupported tls version")]
+    UnsupportedTlsVersion,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -47,9 +59,19 @@ impl ManifestVerifier {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct TransportGuard {
-    last_nonce: Option<String>,
+    recent_nonces: VecDeque<String>,
+    recent_nonce_index: HashSet<String>,
+}
+
+impl Default for TransportGuard {
+    fn default() -> Self {
+        Self {
+            recent_nonces: VecDeque::with_capacity(NONCE_WINDOW_SIZE),
+            recent_nonce_index: HashSet::with_capacity(NONCE_WINDOW_SIZE),
+        }
+    }
 }
 
 impl TransportGuard {
@@ -58,7 +80,9 @@ impl TransportGuard {
         policy: &TlsPolicy,
         actual_tls_version: &str,
     ) -> Result<(), TransportError> {
-        if actual_tls_version < policy.min_version.as_str() {
+        let actual = parse_tls_version(actual_tls_version)?;
+        let minimum = parse_tls_version(&policy.min_version)?;
+        if actual < minimum {
             return Err(TransportError::WeakTls);
         }
         Ok(())
@@ -80,10 +104,27 @@ impl TransportGuard {
     }
 
     pub fn enforce_no_replay(&mut self, nonce: &str) -> Result<(), TransportError> {
-        if self.last_nonce.as_deref() == Some(nonce) {
+        if self.recent_nonce_index.contains(nonce) {
             return Err(TransportError::ReplayBlocked);
         }
-        self.last_nonce = Some(nonce.to_string());
+        let nonce_owned = nonce.to_string();
+        self.recent_nonce_index.insert(nonce_owned.clone());
+        self.recent_nonces.push_back(nonce_owned);
+
+        while self.recent_nonces.len() > NONCE_WINDOW_SIZE {
+            if let Some(expired) = self.recent_nonces.pop_front() {
+                self.recent_nonce_index.remove(&expired);
+            }
+        }
         Ok(())
+    }
+}
+
+fn parse_tls_version(raw: &str) -> Result<TlsVersion, TransportError> {
+    let normalized = raw.trim().to_ascii_uppercase().replace(' ', "");
+    match normalized.as_str() {
+        "TLS1.2" | "TLSV1.2" | "1.2" => Ok(TlsVersion::Tls12),
+        "TLS1.3" | "TLSV1.3" | "1.3" => Ok(TlsVersion::Tls13),
+        _ => Err(TransportError::UnsupportedTlsVersion),
     }
 }

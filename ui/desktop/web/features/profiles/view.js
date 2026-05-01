@@ -34,6 +34,7 @@ import { getSyncOverview, saveSyncControls } from "../sync/api.js";
 import { blockedServicesToPairs, loadDnsTemplates, loadProfileDnsDraft, saveProfileDnsDraft } from "../dns/store.js";
 import { applyPolicyPresetToDraft, loadPolicyPresets, summarizePolicyPreset } from "../dns/policy-store.js";
 import { askConfirmModal, askInputModal, closeModalOverlay, showModalOverlay } from "../../core/modal.js";
+import { buildTagPickerMarkup, collectTagOptions, uniqueTags, wireTagPicker } from "../../core/tag-picker.js";
 
 const DOMAIN_OPTIONS = [
   "cloudflare.com",
@@ -112,6 +113,10 @@ function profileTags(profile) {
     && !tag.startsWith("cert:")
     && tag !== "ext-system-access"
     && tag !== "ext-keepassxc");
+}
+
+function collectProfileTags(profiles) {
+  return collectTagOptions(profiles ?? [], (profile) => profileTags(profile));
 }
 
 function certificateIds(profile) {
@@ -559,11 +564,14 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
               <label>${t("profile.field.engine")}<select name="engine">${option("wayfern", "Wayfern Chromium", profile?.engine === "wayfern")}${option("camoufox", "Camoufox Firefox", profile?.engine === "camoufox")}</select></label>
               <label class="profile-modal-span-2 profile-description-field">${t("profile.field.description")}<textarea name="description" rows="4">${escapeHtml(profile?.description ?? "")}</textarea></label>
               <label class="profile-modal-span-2">${t("profile.field.tags")}
-                <div class="profiles-tags-editor" id="profile-tags-editor" data-tags="${escapeHtml(JSON.stringify(profileTags(profile ?? { tags: [] }) ?? []))}">
-                  <div class="profiles-tags-hint">${t("profile.tags.enterHint")}</div>
-                  <input name="tagsInput" id="profile-tags-input" placeholder="${t("profile.tags.placeholder")}" />
-                  <div class="profiles-tags-list" id="profile-tags-list"></div>
-                </div>
+                ${buildTagPickerMarkup({
+                  id: "profile-tags",
+                  selectedTags: profileTags(profile ?? { tags: [] }) ?? [],
+                  availableTags: collectProfileTags(model.profiles),
+                  emptyLabel: t("profile.tags.empty"),
+                  searchPlaceholder: t("profile.tags.search"),
+                  createLabel: (value) => t("profile.tags.create").replace("{tag}", value)
+                })}
               </label>
               <label>${t("profile.field.defaultStartPage")}<input name="defaultStartPage" value="${profile?.default_start_page ?? "https://duckduckgo.com"}" /></label>
               <label>${t("profile.field.defaultSearch")}<select name="defaultSearchProvider">${searchOptions(searchDefault)}</select></label>
@@ -1367,15 +1375,8 @@ async function openProfileModal(root, model, rerender, t, existing) {
   });
   identityTemplateSearch?.addEventListener("input", applyIdentityTemplateSearch);
   renderIdentityControls();
-  const tagsEditor = overlay.querySelector("#profile-tags-editor");
-  const tagsList = overlay.querySelector("#profile-tags-list");
-  const tagsInput = overlay.querySelector("#profile-tags-input");
   const tagsState = (() => {
-    try {
-      return JSON.parse(tagsEditor?.dataset?.tags ?? "[]");
-    } catch {
-      return [];
-    }
+    return uniqueTags(profileTags(existing ?? { tags: [] }) ?? []);
   })();
   const extensionsTable = overlay.querySelector("#profile-extensions-table");
   const extensionSelect = overlay.querySelector("[name='extensionSelect']");
@@ -1445,26 +1446,22 @@ async function openProfileModal(root, model, rerender, t, existing) {
     filter: "all"
   };
 
-  const renderTags = () => {
-    if (!tagsList) return;
-    tagsList.innerHTML = tagsState.map((tag, idx) => `
-      <span class="profiles-tag">
-        ${escapeHtml(tag)}
-        <button type="button" class="profiles-tag-remove" data-remove-tag="${idx}" aria-label="remove">x</button>
-      </span>
-    `).join("");
-    for (const btn of tagsList.querySelectorAll("[data-remove-tag]")) {
-      btn.addEventListener("click", () => {
-        const index = Number(btn.getAttribute("data-remove-tag"));
-        if (Number.isInteger(index) && index >= 0 && index < tagsState.length) {
-          tagsState.splice(index, 1);
-          dirty = true;
-          renderTags();
-        }
-      });
-    }
+  const profileTagState = {
+    selected: [...tagsState],
+    available: collectProfileTags(model.profiles)
   };
-  renderTags();
+  const profileTagPicker = wireTagPicker(overlay, {
+    id: "profile-tags",
+    state: profileTagState,
+    emptyLabel: t("profile.tags.empty"),
+    searchPlaceholder: t("profile.tags.search"),
+    createLabel: (value) => t("profile.tags.create").replace("{tag}", value),
+    onChange(selected) {
+      dirty = true;
+      tagsState.splice(0, tagsState.length, ...uniqueTags(selected ?? []));
+    }
+  });
+  profileTagPicker?.rerender(profileTagState.available, profileTagState.selected);
   const renderExtensions = () => {
     if (!extensionsTable) return;
     const rows = [];
@@ -1809,19 +1806,6 @@ async function openProfileModal(root, model, rerender, t, existing) {
   }
   applyBlocklistSearch();
   updateBlocklistSelectAllLabel();
-  tagsInput?.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    const value = tagsInput.value.trim();
-    if (!value) return;
-    if (!tagsState.includes(value)) {
-      tagsState.push(value);
-      dirty = true;
-      renderTags();
-    }
-    tagsInput.value = "";
-  });
-
   for (const field of overlay.querySelectorAll("input,select,textarea")) {
     field.addEventListener("change", () => {
       dirty = true;
@@ -1855,6 +1839,9 @@ async function openProfileModal(root, model, rerender, t, existing) {
     }
     if (identityTemplateToggle && !identityTemplateToggle.contains(event.target) && identityTemplateMenu && !identityTemplateMenu.contains(event.target)) {
       identityTemplateMenu.classList.add("hidden");
+    }
+    if (!event.target.closest("[data-tag-picker='profile-tags']")) {
+      profileTagPicker?.close();
     }
     if (event.target === overlay) closeModal();
   });

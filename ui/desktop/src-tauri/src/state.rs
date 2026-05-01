@@ -14,18 +14,40 @@ use browser_network_policy::{DnsTabPayload, ServiceCatalog, VpnProxyTabPayload};
 use browser_profile::{CreateProfileInput, Engine, ProfileManager};
 use browser_sync_client::{BackupSnapshot, ConflictViewItem, SnapshotManager, SyncControlsModel};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+#[cfg(not(target_os = "windows"))]
+use tauri::Manager;
 use uuid::Uuid;
 
-use crate::launch_sessions::{
-    load_launch_session_store, LaunchSessionStore,
-};
 use crate::device_posture::{load_device_posture_store, DevicePostureStore};
-use crate::sensitive_store::derive_app_secret_material;
+use crate::launch_sessions::{load_launch_session_store, LaunchSessionStore};
 use crate::route_runtime::RouteRuntimeState;
+use crate::sensitive_store::derive_app_secret_material;
 use crate::service_catalog_seed::build_service_catalog;
 use crate::traffic_gateway::{load_rules_store, load_traffic_log, TrafficGatewayState};
-use crate::update_commands::AppUpdateStore;
+use crate::update_commands::{AppUpdateStore, UpdaterLaunchMode, UpdaterRuntimeState};
+
+pub(crate) fn app_local_data_root(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let local_app_data = std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
+        let folder_name = if cfg!(debug_assertions) {
+            "dev.browser.launcher"
+        } else {
+            "Cerbena Browser"
+        };
+        let _ = app;
+        return Ok(PathBuf::from(local_app_data).join(folder_name));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        app.path()
+            .app_local_data_dir()
+            .map_err(|e| format!("app_local_data_dir: {e}"))
+    }
+}
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityStore {
@@ -67,6 +89,8 @@ pub struct LinkRoutingStore {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionLibraryStore {
+    #[serde(default)]
+    pub auto_update_enabled: bool,
     pub items: BTreeMap<String, ExtensionLibraryItem>,
 }
 
@@ -120,7 +144,15 @@ pub struct ExtensionLibraryItem {
     pub source_value: String,
     pub logo_url: Option<String>,
     pub store_url: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub assigned_profile_ids: Vec<String>,
+    #[serde(default)]
+    pub auto_update_enabled: bool,
+    #[serde(default)]
+    pub preserve_on_panic_wipe: bool,
+    #[serde(default)]
+    pub protect_data_from_panic_wipe: bool,
     #[serde(default)]
     pub package_path: Option<String>,
     #[serde(default)]
@@ -150,6 +182,7 @@ pub struct AppState {
     pub security_guardrails: Mutex<SecurityGuardrails>,
     pub device_posture_store: Mutex<DevicePostureStore>,
     pub app_update_store: Mutex<AppUpdateStore>,
+    pub updater_runtime: Arc<Mutex<UpdaterRuntimeState>>,
     pub runtime_logs: Mutex<Vec<String>>,
     pub pending_external_link: Mutex<Option<String>>,
     pub launched_processes: Mutex<BTreeMap<Uuid, u32>>,
@@ -163,10 +196,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn bootstrap(app: &AppHandle) -> Result<Self, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         let profile_root = app_data.join("profiles");
         let engine_runtime_root = app_data.join("engine-runtime");
         let network_runtime_root = app_data.join("network-runtime");
@@ -178,7 +208,8 @@ impl AppState {
         let current_exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
         let identifier = app.config().identifier.clone();
         let sensitive_store_secret =
-            derive_app_secret_material(&app_data, &current_exe, &identifier);
+            derive_app_secret_material(&app_data, &current_exe, &identifier)
+                .map_err(|e| format!("derive sensitive store secret: {e}"))?;
 
         let manager =
             ProfileManager::new(&profile_root).map_err(|e| format!("manager init: {e}"))?;
@@ -200,6 +231,7 @@ impl AppState {
         let device_posture_store =
             load_device_posture_store(&app_data.join("device_posture_store.json"))?;
         let app_update_store = load_app_update_store(&app_data.join("app_update_store.json"))?;
+        let updater_launch_mode = UpdaterLaunchMode::from_args(std::env::args().skip(1));
         let traffic_rules = load_rules_store(&app_data.join("traffic_gateway_rules.json"))?;
         let traffic_log = load_traffic_log(&app_data.join("traffic_gateway_log.json"))?;
 
@@ -226,6 +258,7 @@ impl AppState {
             security_guardrails: Mutex::new(SecurityGuardrails::default()),
             device_posture_store: Mutex::new(device_posture_store),
             app_update_store: Mutex::new(app_update_store),
+            updater_runtime: Arc::new(Mutex::new(UpdaterRuntimeState::new(updater_launch_mode))),
             runtime_logs: Mutex::new(Vec::new()),
             pending_external_link: Mutex::new(None),
             launched_processes: Mutex::new(BTreeMap::new()),
@@ -244,105 +277,66 @@ impl AppState {
     }
 
     pub fn identity_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("identity_store.json"))
     }
     pub fn traffic_gateway_rules_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("traffic_gateway_rules.json"))
     }
 
     pub fn traffic_gateway_log_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("traffic_gateway_log.json"))
     }
 
     pub fn network_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("network_store.json"))
     }
 
     pub fn extension_library_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("extension_library.json"))
     }
 
     pub fn extension_packages_root(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("extension-packages"))
     }
 
     pub fn sync_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("sync_store.json"))
     }
 
     pub fn link_routing_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("link_routing_store.json"))
     }
 
     pub fn launch_session_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("launch_session_store.json"))
     }
 
     pub fn device_posture_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("device_posture_store.json"))
     }
 
     pub fn app_update_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("app_update_store.json"))
     }
 
     pub fn app_update_root_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("updates"))
     }
 
     pub fn global_security_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("app_local_data_dir: {e}"))?;
+        let app_data = app_local_data_root(app)?;
         Ok(app_data.join("global_security_store.json"))
     }
 
@@ -522,8 +516,8 @@ pub fn persist_app_update_store(path: &PathBuf, store: &AppUpdateStore) -> Resul
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create app update dir: {e}"))?;
     }
-    let bytes = serde_json::to_vec_pretty(store)
-        .map_err(|e| format!("serialize app update store: {e}"))?;
+    let bytes =
+        serde_json::to_vec_pretty(store).map_err(|e| format!("serialize app update store: {e}"))?;
     fs::write(path, bytes).map_err(|e| format!("write app update store: {e}"))
 }
 

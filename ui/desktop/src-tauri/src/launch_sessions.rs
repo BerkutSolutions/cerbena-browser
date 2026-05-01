@@ -105,7 +105,12 @@ pub fn issue_launch_session(
         engine: engine.to_string(),
         profile_root: profile_root.to_string_lossy().to_string(),
         workspace_dir: workspace_dir.to_string_lossy().to_string(),
-        workspace_fingerprint: workspace_fingerprint(profile_id, engine, profile_root, workspace_dir),
+        workspace_fingerprint: workspace_fingerprint(
+            profile_id,
+            engine,
+            profile_root,
+            workspace_dir,
+        ),
         started_at_epoch_ms: now_epoch_ms(),
         last_verified_at_epoch_ms: now_epoch_ms(),
     };
@@ -149,7 +154,10 @@ pub fn trusted_session_pid(state: &AppState, profile_id: Uuid) -> Result<Option<
         .launch_session_store
         .lock()
         .map_err(|_| "launch session store lock poisoned".to_string())?;
-    Ok(store.sessions.get(&profile_id.to_string()).map(|record| record.pid))
+    Ok(store
+        .sessions
+        .get(&profile_id.to_string())
+        .map(|record| record.pid))
 }
 
 pub fn prune_inactive_sessions(state: &AppState) -> Result<(), String> {
@@ -239,8 +247,12 @@ fn write_workspace_marker(profile_root: &Path, record: &LaunchSessionRecord) -> 
     };
     let bytes = serde_json::to_vec_pretty(&marker)
         .map_err(|e| format!("serialize workspace session marker: {e}"))?;
-    fs::write(&marker_path, bytes)
-        .map_err(|e| format!("write workspace session marker {}: {e}", marker_path.display()))
+    fs::write(&marker_path, bytes).map_err(|e| {
+        format!(
+            "write workspace session marker {}: {e}",
+            marker_path.display()
+        )
+    })
 }
 
 fn read_workspace_marker(profile_root: &Path) -> Result<Option<WorkspaceSessionMarker>, String> {
@@ -248,10 +260,18 @@ fn read_workspace_marker(profile_root: &Path) -> Result<Option<WorkspaceSessionM
     if !marker_path.exists() {
         return Ok(None);
     }
-    let raw = fs::read(&marker_path)
-        .map_err(|e| format!("read workspace session marker {}: {e}", marker_path.display()))?;
-    let marker = serde_json::from_slice::<WorkspaceSessionMarker>(&raw)
-        .map_err(|e| format!("parse workspace session marker {}: {e}", marker_path.display()))?;
+    let raw = fs::read(&marker_path).map_err(|e| {
+        format!(
+            "read workspace session marker {}: {e}",
+            marker_path.display()
+        )
+    })?;
+    let marker = serde_json::from_slice::<WorkspaceSessionMarker>(&raw).map_err(|e| {
+        format!(
+            "parse workspace session marker {}: {e}",
+            marker_path.display()
+        )
+    })?;
     Ok(Some(marker))
 }
 
@@ -300,8 +320,15 @@ fn now_epoch_ms() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{sha256_hex, validate_record, workspace_fingerprint, LaunchSessionRecord, WorkspaceSessionMarker};
-    use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+    use super::{
+        sha256_hex, validate_record, workspace_fingerprint, LaunchSessionRecord,
+        WorkspaceSessionMarker,
+    };
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use uuid::Uuid;
 
     fn temp_profile_root() -> PathBuf {

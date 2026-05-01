@@ -7,6 +7,7 @@
 [Russian version](README.md)
 
 [GitHub](https://github.com/BerkutSolutions/cerbena-browser)
+[Wiki](https://berkutsolutions.github.io/cerbena-browser/)
 
 `Cerbena Browser` is a secure desktop browsing platform built around zero-trust enforcement, full profile isolation, deterministic routing and DNS policy control, and a managed launcher/runtime boundary for `Wayfern` and `Camoufox`.
 
@@ -22,6 +23,14 @@ Cerbena Browser is not a thin profile manager layered on top of a regular browse
 - panic cleanup, custom certificates, local API, MCP, and audit flows;
 - encrypted sync/backup workflows and local release/preflight validation.
 
+The project provides:
+
+- profile isolation across data, keys, extensions, cache, and network policy;
+- encrypted storage for sensitive launcher and desktop-shell state, including migration of legacy plaintext material into protected formats;
+- end-to-end protection for sync payloads while preserving backward compatibility for previously created data;
+- a trusted update path with a separate `cerbena-updater.exe`, `checksums.sig` signature validation, `SHA-256` verification, and safe installation handoff;
+- fail-closed handling for curated DNS blocklists and safe extraction checks for managed runtime archives.
+
 ## Core Capabilities
 
 - Full profile isolation across data, cache, keys, extensions, and network policy.
@@ -33,12 +42,17 @@ Cerbena Browser is not a thin profile manager layered on top of a regular browse
 - Extension library with profile assignment and engine-specific auto-install.
 - Local release/preflight scripts plus security and vulnerability gates.
 - Windows installer wizard with shortcuts, uninstall registration, and uninstaller flow.
+- A standalone updater with a dry-run preview mode and a localized step-by-step verification screen.
 
 ## Screenshots
 
 ### Home
 
 ![Home](static/img/screen-1.png)
+
+### Extensions
+
+![Extensions](static/img/screen-6.png)
 
 ### Profile and identity editing
 
@@ -123,7 +137,8 @@ GitHub Releases should typically include:
 
 - `cerbena-browser-setup-<version>.exe` as the primary Windows installer;
 - `cerbena-windows-x64.zip` as the portable release bundle when needed;
-- `checksums.txt` and `release-manifest.json` as release metadata artifacts.
+- `cerbena-updater.exe` as the standalone updater executable;
+- `checksums.txt`, `checksums.sig`, and `release-manifest.json` as trusted release metadata artifacts.
 
 The installer `.exe` is produced locally by `scripts/build-installer.ps1` and is intended to be the main installation asset attached to releases.
 

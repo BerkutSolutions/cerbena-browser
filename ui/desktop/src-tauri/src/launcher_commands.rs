@@ -14,7 +14,9 @@ use crate::{
     device_posture::{get_or_refresh_device_posture, refresh_device_posture, DevicePostureReport},
     envelope::{ok, UiEnvelope},
     launch_sessions::revoke_launch_session,
-    process_tracking::{clear_profile_process, terminate_process_tree, terminate_profile_processes},
+    process_tracking::{
+        clear_profile_process, terminate_process_tree, terminate_profile_processes,
+    },
     route_runtime::stop_profile_route_runtime,
     state::{persist_link_routing_store_with_secret, AppState},
 };
@@ -395,7 +397,12 @@ pub fn panic_wipe_profile(
         .lock()
         .map_err(|_| "manager lock poisoned".to_string())?;
     let profile = manager.get_profile(profile_id).map_err(|e| e.to_string())?;
-    let retain_paths = merge_panic_retain_paths(&profile, &request.retain_paths);
+    let mut retain_paths = merge_panic_retain_paths(&profile, &request.retain_paths);
+    for path in extension_panic_retain_paths(&state, profile.id)? {
+        if !retain_paths.iter().any(|item| item == &path) {
+            retain_paths.push(path);
+        }
+    }
     drop(manager);
 
     let tracked_pid = {
@@ -462,6 +469,41 @@ fn merge_panic_retain_paths(
         }
     }
     merged
+}
+
+fn extension_panic_retain_paths(state: &AppState, profile_id: Uuid) -> Result<Vec<String>, String> {
+    let library = state
+        .extension_library
+        .lock()
+        .map_err(|_| "extension library lock poisoned".to_string())?;
+    let profile_key = profile_id.to_string();
+    let has_preserve_extension = library.items.values().any(|item| {
+        item.preserve_on_panic_wipe
+            && item
+                .assigned_profile_ids
+                .iter()
+                .any(|id| id == &profile_key)
+    });
+    let has_protected_extension_data = library.items.values().any(|item| {
+        item.protect_data_from_panic_wipe
+            && item
+                .assigned_profile_ids
+                .iter()
+                .any(|id| id == &profile_key)
+    });
+    let mut retain = Vec::new();
+    if has_preserve_extension || has_protected_extension_data {
+        retain.push("extensions".to_string());
+    }
+    if has_protected_extension_data {
+        retain.extend([
+            "engine-profile/Default/Local Extension Settings".to_string(),
+            "engine-profile/Default/Extension State".to_string(),
+            "engine-profile/storage/default".to_string(),
+            "engine-profile/browser-extension-data".to_string(),
+        ]);
+    }
+    Ok(retain)
 }
 
 fn supported_link_type_label_key(link_type: &str) -> Option<&'static str> {
@@ -1101,7 +1143,11 @@ fn normalize_blocklists(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let active_total = defaults_applied.iter().filter(|item| item.active).count().max(1);
+    let active_total = defaults_applied
+        .iter()
+        .filter(|item| item.active)
+        .count()
+        .max(1);
     let mut processed_active = 0usize;
     let started_at = std::time::Instant::now();
     for item in defaults_applied {
@@ -1185,9 +1231,7 @@ fn normalize_blocklists(
             .map(|record| record.domains.clone())
             .filter(|values| !values.is_empty())
             .unwrap_or_else(|| normalize_inline_domains(item.domains));
-        let updated_at_epoch = previous
-            .map(|record| record.updated_at_epoch)
-            .unwrap_or(0);
+        let updated_at_epoch = previous.map(|record| record.updated_at_epoch).unwrap_or(0);
         out.push(ManagedBlocklistRecord {
             id,
             name: fallback_name,
@@ -1240,7 +1284,12 @@ fn merge_default_dns_blocklists(
 ) -> Vec<ManagedBlocklistRecord> {
     let mut by_source = existing
         .into_iter()
-        .map(|item| (blocklist_source_key(&item.source_kind, &item.source_value), item))
+        .map(|item| {
+            (
+                blocklist_source_key(&item.source_kind, &item.source_value),
+                item,
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     let mut merged = Vec::new();
     for (name, url) in DEFAULT_DNS_BLOCKLISTS {
@@ -1301,6 +1350,8 @@ fn blocklist_source_from_fields(
             }
             Ok(BlocklistSource::RemoteUrl {
                 url: source_value.to_string(),
+                require_https: true,
+                expected_sha256: None,
             })
         }
         "file" => {
@@ -1437,7 +1488,11 @@ fn now_unix_ms() -> u128 {
 mod tests {
     use super::*;
     use crate::sensitive_store::derive_app_secret_material;
-    use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn temp_path(label: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -1466,8 +1521,8 @@ mod tests {
             id: "custom-id".to_string(),
             name: "Custom name".to_string(),
             source_kind: "url".to_string(),
-            source_value:
-                "https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt".to_string(),
+            source_value: "https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt"
+                .to_string(),
             active: true,
             domains: vec!["example.com".to_string()],
             updated_at_epoch: 123,
@@ -1492,7 +1547,8 @@ mod tests {
             Path::new("C:/tmp/app-data"),
             Path::new("C:/tmp/cerbena.exe"),
             "dev.cerbena.app",
-        );
+        )
+        .expect("derive secret");
         let payload = GlobalSecuritySettingsRecord {
             startup_page: Some("https://duckduckgo.com".to_string()),
             certificates: vec![ManagedCertificateRecord {
@@ -1506,15 +1562,18 @@ mod tests {
             blocklists: Vec::new(),
         };
 
-        persist_global_security_record_to_paths(&path, &legacy, &secret, &payload).expect("persist");
+        persist_global_security_record_to_paths(&path, &legacy, &secret, &payload)
+            .expect("persist");
         let on_disk = fs::read_to_string(&path).expect("read");
         assert!(!on_disk.contains("duckduckgo"));
         assert!(!on_disk.contains("C:/secret/cert.pem"));
 
-        let loaded =
-            load_global_security_record_from_paths(&path, &legacy, &secret).expect("load");
+        let loaded = load_global_security_record_from_paths(&path, &legacy, &secret).expect("load");
         assert_eq!(loaded.startup_page, payload.startup_page);
-        assert_eq!(loaded.certificates[0].path, "C:/secret/cert.pem".to_string());
+        assert_eq!(
+            loaded.certificates[0].path,
+            "C:/secret/cert.pem".to_string()
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1527,7 +1586,8 @@ mod tests {
             Path::new("C:/tmp/app-data"),
             Path::new("C:/tmp/cerbena.exe"),
             "dev.cerbena.app",
-        );
+        )
+        .expect("derive secret");
         fs::write(
             &legacy,
             r#"{"startup_page":"https://legacy.test","certificates":["C:/legacy/cert.pem"],"blocked_domain_suffixes":["legacy"]}"#,
@@ -1537,7 +1597,10 @@ mod tests {
         let loaded =
             load_global_security_record_from_paths(&path, &legacy, &secret).expect("load legacy");
         assert_eq!(loaded.startup_page, Some("https://legacy.test".to_string()));
-        assert_eq!(loaded.certificates[0].path, "C:/legacy/cert.pem".to_string());
+        assert_eq!(
+            loaded.certificates[0].path,
+            "C:/legacy/cert.pem".to_string()
+        );
 
         let _ = fs::remove_file(legacy);
     }

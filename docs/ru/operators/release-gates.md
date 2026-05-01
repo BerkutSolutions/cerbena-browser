@@ -8,13 +8,13 @@ sidebar_position: 3
 ## Минимальные проверки
 
 - `cargo test --workspace`
-- docs quality tests
+- тесты качества документации
 - `npm run docs:build`
 - `cd ui/desktop && npm test`
 - `powershell -ExecutionPolicy Bypass -File scripts/security-gates-preflight.ps1`
 - `powershell -ExecutionPolicy Bypass -File scripts/vulnerability-gates-preflight.ps1`
 - проверка `README.md`, `README.en.md`, `docs/ru`, `docs/eng`
-- просмотр [Проверок безопасности](./security-validation.md), если заметки о выпуске ссылаются на покрытие hardening-задач `TASKS4` / `U14-2`
+- просмотр [Проверок безопасности](./security-validation.md), если заметки о выпуске ссылаются на покрытие задач по усилению защиты `TASKS4` / `U14-2`
 
 ## Что дает такой подход
 

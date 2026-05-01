@@ -100,7 +100,8 @@ pub fn route_runtime_required_for_profile(app_handle: &AppHandle, profile_id: Uu
         Err(_) => return false,
     };
     let profile_key = profile_id.to_string();
-    let (route_mode, selected_template_id) = resolve_effective_route_selection(&store, &profile_key);
+    let (route_mode, selected_template_id) =
+        resolve_effective_route_selection(&store, &profile_key);
     if route_mode == "direct" {
         return false;
     }
@@ -215,9 +216,8 @@ pub fn ensure_profile_route_runtime(
         return Ok(());
     }
 
-    let uses_amnezia_native = nodes.len() == 1
-        && nodes[0].connection_type == "vpn"
-        && nodes[0].protocol == "amnezia";
+    let uses_amnezia_native =
+        nodes.len() == 1 && nodes[0].connection_type == "vpn" && nodes[0].protocol == "amnezia";
     let uses_openvpn = nodes
         .iter()
         .any(|node| node.connection_type == "vpn" && node.protocol == "openvpn");
@@ -265,7 +265,10 @@ pub fn ensure_profile_route_runtime(
     ensure_network_runtime_tools(app_handle, &required_tools)?;
     stop_profile_route_runtime(app_handle, profile_id);
 
-    let runtime_dir = state.profile_root.join(profile_id.to_string()).join("runtime");
+    let runtime_dir = state
+        .profile_root
+        .join(profile_id.to_string())
+        .join("runtime");
     fs::create_dir_all(&runtime_dir).map_err(|e| format!("create runtime dir: {e}"))?;
     let sing_box_log_path = runtime_dir.join("sing-box-route.log");
 
@@ -463,8 +466,9 @@ fn launch_amneziawg_runtime(
     if amnezia_tunnel_service_exists(&tunnel_name) {
         let _ = stop_amnezia_tunnel_service(&tunnel_name);
         let _ = wait_amnezia_tunnel_state(&tunnel_name, false, 8_000);
-        uninstall_amnezia_tunnel(&binary_path, &tunnel_name)
-            .map_err(|error| format!("failed to reset existing amneziawg tunnel service: {error}"))?;
+        uninstall_amnezia_tunnel(&binary_path, &tunnel_name).map_err(|error| {
+            format!("failed to reset existing amneziawg tunnel service: {error}")
+        })?;
     }
 
     install_amnezia_tunnel(&binary_path, &config_path, &tunnel_name)?;
@@ -809,7 +813,10 @@ fn stop_amnezia_tunnel_service(tunnel_name: &str) -> Result<(), String> {
     }
 }
 
-fn set_amnezia_tunnel_service_start_mode(tunnel_name: &str, start_mode: &str) -> Result<(), String> {
+fn set_amnezia_tunnel_service_start_mode(
+    tunnel_name: &str,
+    start_mode: &str,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let service_name = amnezia_service_name(tunnel_name);
@@ -887,7 +894,11 @@ fn run_sc_command_elevated(args: &[String], action: &str) -> Result<Output, Stri
         .map_err(|e| format!("spawn elevated sc.exe {action} failed: {e}"))
 }
 
-fn run_amneziawg_command(binary: &PathBuf, args: &[String], action: &str) -> Result<Output, String> {
+fn run_amneziawg_command(
+    binary: &PathBuf,
+    args: &[String],
+    action: &str,
+) -> Result<Output, String> {
     let mut command = Command::new(binary);
     for arg in args {
         command.arg(arg);
@@ -1019,7 +1030,10 @@ fn query_amnezia_tunnel_service(tunnel_name: &str) -> AmneziaServiceSnapshot {
     #[cfg(target_os = "windows")]
     {
         let service_name = amnezia_service_name(tunnel_name);
-        let output = Command::new("sc.exe").arg("query").arg(&service_name).output();
+        let output = Command::new("sc.exe")
+            .arg("query")
+            .arg(&service_name)
+            .output();
         let Ok(output) = output else {
             return AmneziaServiceSnapshot {
                 exists: false,
@@ -1382,7 +1396,11 @@ fn tail_lines(text: &str, max_lines: usize) -> String {
         .join(" | ")
 }
 
-fn run_sing_box_check(binary: &str, config_path: &PathBuf, log_path: &PathBuf) -> Result<(), String> {
+fn run_sing_box_check(
+    binary: &str,
+    config_path: &PathBuf,
+    log_path: &PathBuf,
+) -> Result<(), String> {
     let output = Command::new(binary)
         .arg("check")
         .arg("-c")
@@ -1685,7 +1703,10 @@ fn v2ray_outbound(node: &NormalizedNode, tag: &str) -> Result<Value, String> {
     }
 }
 
-fn apply_v2ray_transport_and_tls(outbound: &mut Value, node: &NormalizedNode) -> Result<(), String> {
+fn apply_v2ray_transport_and_tls(
+    outbound: &mut Value,
+    node: &NormalizedNode,
+) -> Result<(), String> {
     let network = node
         .settings
         .get("network")
@@ -1737,7 +1758,9 @@ fn apply_v2ray_transport_and_tls(outbound: &mut Value, node: &NormalizedNode) ->
                 if node
                     .settings
                     .get("tls")
-                    .map(|value| value.eq_ignore_ascii_case("on") || value.eq_ignore_ascii_case("true"))
+                    .map(|value| {
+                        value.eq_ignore_ascii_case("on") || value.eq_ignore_ascii_case("true")
+                    })
                     .unwrap_or(false)
                 {
                     "tls".to_string()
@@ -2303,10 +2326,10 @@ fn parse_ini_sections(value: &str) -> BTreeMap<String, BTreeMap<String, String>>
         let Some((key, raw_value)) = line.split_once('=') else {
             continue;
         };
-        sections
-            .entry(current_section.clone())
-            .or_default()
-            .insert(key.trim().to_ascii_lowercase(), raw_value.trim().to_string());
+        sections.entry(current_section.clone()).or_default().insert(
+            key.trim().to_ascii_lowercase(),
+            raw_value.trim().to_string(),
+        );
     }
     sections
 }
@@ -2653,10 +2676,9 @@ PersistentKeepalive = 25
                 kill_switch_enabled: false,
             },
         );
-        store.profile_template_selection.insert(
-            profile_key.clone(),
-            "profile-template".to_string(),
-        );
+        store
+            .profile_template_selection
+            .insert(profile_key.clone(), "profile-template".to_string());
         store.global_route_settings = NetworkGlobalRouteSettings {
             global_vpn_enabled: true,
             block_without_vpn: true,
@@ -2681,10 +2703,9 @@ PersistentKeepalive = 25
                 kill_switch_enabled: true,
             },
         );
-        store.profile_template_selection.insert(
-            profile_key.clone(),
-            "profile-template".to_string(),
-        );
+        store
+            .profile_template_selection
+            .insert(profile_key.clone(), "profile-template".to_string());
         store.global_route_settings = NetworkGlobalRouteSettings {
             global_vpn_enabled: true,
             block_without_vpn: true,

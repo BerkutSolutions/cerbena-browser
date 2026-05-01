@@ -1,18 +1,18 @@
 ---
-title: Managed runtime
+title: Управляемый runtime
 sidebar_position: 1
 ---
 
-Cerbena Browser умеет подготавливать и использовать managed runtime-бинарники для сетевого контура.
+Cerbena Browser умеет подготавливать и использовать управляемые runtime-бинарники для сетевого контура.
 
 ## Что сюда входит
 
-- browser runtimes для `Wayfern` и `Camoufox`;
-- route backends `sing-box`, `openvpn`, `amneziawg`, `tor`;
+- браузерные runtime для `Wayfern` и `Camoufox`;
+- маршрутные backend-компоненты `sing-box`, `openvpn`, `amneziawg`, `tor`;
 - локальное кеширование, проверка целостности и повторное использование артефактов.
 
 ## Операторские задачи
 
-- проверять, что binary provisioning завершился успешно;
-- отслеживать ошибки route runtime через operator/runtime diagnostics и профильные runtime-логи;
-- понимать, какой backend поднимается для конкретного profile template.
+- проверять, что подготовка бинарных файлов завершилась успешно;
+- отслеживать ошибки маршрутного runtime через операторскую диагностику runtime и профильные runtime-журналы;
+- понимать, какой backend поднимается для конкретного шаблона профиля.

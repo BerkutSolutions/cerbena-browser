@@ -78,7 +78,7 @@ export function renderSecurity(t, model) {
     </div>
     ${notice}
 
-    <div class="security-frame">
+    <div class="panel security-table-frame">
       <table class="extensions-table">
         <thead><tr><th>${t("extensions.name")}</th><th>${t("security.path")}</th><th>${t("security.profiles")}</th><th>${t("extensions.actions")}</th></tr></thead>
         <tbody>

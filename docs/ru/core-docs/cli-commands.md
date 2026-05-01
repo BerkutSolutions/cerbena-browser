@@ -3,7 +3,7 @@ title: CLI-команды
 sidebar_position: 10
 ---
 
-CLI launcher предназначен для базовых локальных операций и release-проверок.
+CLI launcher предназначен для базовых локальных операций и релизных проверок.
 
 ## Поддерживаемые команды
 
@@ -41,8 +41,16 @@ cargo run -p cerbena-launcher -- build-launch-plan --root <dir> --profile-id <uu
 
 ### `update-apply`
 
-Запускает ручной update flow с проверкой подписи:
+Запускает ручной поток обновления с проверкой подписи:
 
 ```bash
 cargo run -p cerbena-launcher -- update-apply --version <semver> --signature <sig>
+```
+
+### `desktop updater preview`
+
+Открывает самостоятельный экран защищённого апдейтера в режиме сухого прогона без установки файлов:
+
+```bash
+cargo run --manifest-path ui/desktop/src-tauri/Cargo.toml -- --updater-preview
 ```

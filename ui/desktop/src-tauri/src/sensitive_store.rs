@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -35,6 +36,27 @@ pub fn derive_app_secret_material(
     app_data_dir: &Path,
     current_exe: &Path,
     identifier: &str,
+) -> Result<String, String> {
+    let _ = current_exe;
+    #[cfg(target_os = "windows")]
+    {
+        return load_or_create_windows_app_secret(app_data_dir, identifier);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(derive_portable_secret_material(
+            app_data_dir,
+            current_exe,
+            identifier,
+        ))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn derive_portable_secret_material(
+    app_data_dir: &Path,
+    current_exe: &Path,
+    identifier: &str,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(identifier.trim().as_bytes());
@@ -43,9 +65,19 @@ pub fn derive_app_secret_material(
     hasher.update(b"|");
     hasher.update(current_exe.to_string_lossy().as_bytes());
     hasher.update(b"|");
-    hasher.update(std::env::var("USERNAME").unwrap_or_default().trim().as_bytes());
+    hasher.update(
+        std::env::var("USERNAME")
+            .unwrap_or_default()
+            .trim()
+            .as_bytes(),
+    );
     hasher.update(b"|");
-    hasher.update(std::env::var("USERDOMAIN").unwrap_or_default().trim().as_bytes());
+    hasher.update(
+        std::env::var("USERDOMAIN")
+            .unwrap_or_default()
+            .trim()
+            .as_bytes(),
+    );
     hasher.update(b"|");
     hasher.update(
         std::env::var("COMPUTERNAME")
@@ -70,12 +102,13 @@ pub fn load_sensitive_json_or_default<T>(
     secret_material: &str,
 ) -> Result<T, String>
 where
-    T: DeserializeOwned + Default,
+    T: DeserializeOwned + Default + Serialize,
 {
     if !path.exists() {
         return Ok(T::default());
     }
-    let raw = fs::read(path).map_err(|e| format!("read sensitive store {}: {e}", path.display()))?;
+    let raw =
+        fs::read(path).map_err(|e| format!("read sensitive store {}: {e}", path.display()))?;
     if let Ok(envelope) = serde_json::from_slice::<SensitiveStoreEnvelope>(&raw) {
         return match decrypt_envelope_json(&envelope, scope, secret_material) {
             Ok(value) => Ok(value),
@@ -86,8 +119,10 @@ where
             Err(error) => Err(error),
         };
     }
-    serde_json::from_slice::<T>(&raw)
-        .map_err(|e| format!("parse legacy plaintext store {}: {e}", path.display()))
+    let value = serde_json::from_slice::<T>(&raw)
+        .map_err(|e| format!("parse legacy plaintext store {}: {e}", path.display()))?;
+    persist_sensitive_json(path, scope, secret_material, &value)?;
+    Ok(value)
 }
 
 pub fn persist_sensitive_json<T>(
@@ -228,7 +263,11 @@ fn backup_incompatible_sensitive_store(path: &Path) -> Result<(), String> {
     })
 }
 
-fn derive_store_key(scope: &str, secret_material: &str, salt: &[u8]) -> [u8; SENSITIVE_STORE_KEY_LEN] {
+fn derive_store_key(
+    scope: &str,
+    secret_material: &str,
+    salt: &[u8],
+) -> [u8; SENSITIVE_STORE_KEY_LEN] {
     let mut key = [0u8; SENSITIVE_STORE_KEY_LEN];
     let mut material = Vec::with_capacity(scope.len() + secret_material.len() + 1);
     material.extend_from_slice(scope.as_bytes());
@@ -246,6 +285,208 @@ fn secret_fingerprint(secret_material: &str) -> String {
 
 fn hex_string(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn load_or_create_windows_app_secret(
+    app_data_dir: &Path,
+    identifier: &str,
+) -> Result<String, String> {
+    let path = app_data_dir.join(".app-secret.dpapi");
+    let entropy = build_dpapi_entropy(app_data_dir, identifier);
+    if path.exists() {
+        let protected = fs::read(&path)
+            .map_err(|e| format!("read protected app secret {}: {e}", path.display()))?;
+        let secret = dpapi_unprotect(&protected, &entropy)?;
+        return Ok(B64.encode(secret));
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create protected app secret dir {}: {e}", parent.display()))?;
+    }
+
+    let mut secret = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut secret);
+    let protected = dpapi_protect(&secret, &entropy)?;
+    fs::write(&path, &protected)
+        .map_err(|e| format!("write protected app secret {}: {e}", path.display()))?;
+    let encoded = B64.encode(secret);
+    secret.fill(0);
+    Ok(encoded)
+}
+
+#[cfg(target_os = "windows")]
+fn build_dpapi_entropy(app_data_dir: &Path, identifier: &str) -> Vec<u8> {
+    format!("{}|{}", identifier.trim(), app_data_dir.to_string_lossy()).into_bytes()
+}
+
+#[cfg(target_os = "windows")]
+fn dpapi_protect(plaintext: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String> {
+    run_powershell_crypto("Protect", plaintext, entropy)
+}
+
+#[cfg(target_os = "windows")]
+fn dpapi_unprotect(ciphertext: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String> {
+    run_powershell_crypto("Unprotect", ciphertext, entropy)
+}
+
+#[cfg(target_os = "windows")]
+fn run_powershell_crypto(action: &str, input: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String> {
+    let script = r#"
+Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class CerbenaDpapi {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  private struct DATA_BLOB {
+    public int cbData;
+    public IntPtr pbData;
+  }
+
+  [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  private static extern bool CryptProtectData(
+    ref DATA_BLOB pDataIn,
+    string szDataDescr,
+    ref DATA_BLOB pOptionalEntropy,
+    IntPtr pvReserved,
+    IntPtr pPromptStruct,
+    int dwFlags,
+    out DATA_BLOB pDataOut);
+
+  [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  private static extern bool CryptUnprotectData(
+    ref DATA_BLOB pDataIn,
+    IntPtr ppszDataDescr,
+    ref DATA_BLOB pOptionalEntropy,
+    IntPtr pvReserved,
+    IntPtr pPromptStruct,
+    int dwFlags,
+    out DATA_BLOB pDataOut);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern IntPtr LocalFree(IntPtr hMem);
+
+  private static DATA_BLOB ToBlob(byte[] data) {
+    var blob = new DATA_BLOB();
+    if (data == null || data.Length == 0) {
+      blob.cbData = 0;
+      blob.pbData = IntPtr.Zero;
+      return blob;
+    }
+    blob.cbData = data.Length;
+    blob.pbData = Marshal.AllocHGlobal(data.Length);
+    Marshal.Copy(data, 0, blob.pbData, data.Length);
+    return blob;
+  }
+
+  private static byte[] CopyAndFree(DATA_BLOB blob) {
+    if (blob.pbData == IntPtr.Zero || blob.cbData <= 0) {
+      return Array.Empty<byte>();
+    }
+    try {
+      var bytes = new byte[blob.cbData];
+      Marshal.Copy(blob.pbData, bytes, 0, blob.cbData);
+      return bytes;
+    } finally {
+      LocalFree(blob.pbData);
+    }
+  }
+
+  private static void FreeInput(DATA_BLOB blob) {
+    if (blob.pbData != IntPtr.Zero) {
+      Marshal.FreeHGlobal(blob.pbData);
+    }
+  }
+
+  public static byte[] Protect(byte[] data, byte[] entropy) {
+    var input = ToBlob(data);
+    var optionalEntropy = ToBlob(entropy);
+    try {
+      DATA_BLOB output;
+      if (!CryptProtectData(ref input, null, ref optionalEntropy, IntPtr.Zero, IntPtr.Zero, 0, out output)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      }
+      return CopyAndFree(output);
+    } finally {
+      FreeInput(input);
+      FreeInput(optionalEntropy);
+    }
+  }
+
+  public static byte[] Unprotect(byte[] data, byte[] entropy) {
+    var input = ToBlob(data);
+    var optionalEntropy = ToBlob(entropy);
+    try {
+      DATA_BLOB output;
+      if (!CryptUnprotectData(ref input, IntPtr.Zero, ref optionalEntropy, IntPtr.Zero, IntPtr.Zero, 0, out output)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      }
+      return CopyAndFree(output);
+    } finally {
+      FreeInput(input);
+      FreeInput(optionalEntropy);
+    }
+  }
+}
+"@
+$mode = '__MODE__'
+$inputBytes = [Convert]::FromBase64String('__INPUT_B64__')
+$entropyBytes = [Convert]::FromBase64String('__ENTROPY_B64__')
+if ($mode -eq 'Protect') {
+  $result = [CerbenaDpapi]::Protect($inputBytes, $entropyBytes)
+} elseif ($mode -eq 'Unprotect') {
+  $result = [CerbenaDpapi]::Unprotect($inputBytes, $entropyBytes)
+} else {
+  throw 'unsupported mode'
+}
+[Console]::Out.Write([Convert]::ToBase64String($result))
+"#
+    .replace("__MODE__", action)
+    .replace("__INPUT_B64__", &B64.encode(input))
+    .replace("__ENTROPY_B64__", &B64.encode(entropy));
+
+    let mut command = Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script.as_str(),
+    ]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command
+        .output()
+        .map_err(|e| format!("run powershell DPAPI {action}: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Err(format!(
+            "powershell DPAPI {action} failed (code {:?}){}{}",
+            output.status.code(),
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(" stderr: {stderr}")
+            },
+            if stdout.is_empty() {
+                String::new()
+            } else {
+                format!(" stdout: {stdout}")
+            }
+        ));
+    }
+    let text = String::from_utf8(output.stdout)
+        .map_err(|e| format!("decode powershell DPAPI {action} output: {e}"))?;
+    B64.decode(text.trim())
+        .map_err(|e| format!("decode powershell DPAPI {action} base64: {e}"))
 }
 
 #[cfg(test)]
@@ -280,7 +521,8 @@ mod tests {
             Path::new("C:/tmp/app-data"),
             Path::new("C:/tmp/cerbena.exe"),
             "dev.cerbena.app",
-        );
+        )
+        .expect("derive secret");
         let value = ExampleStore {
             value: "secret-value".to_string(),
             enabled: true,
@@ -290,24 +532,25 @@ mod tests {
         let on_disk = fs::read_to_string(&path).expect("read");
         assert!(!on_disk.contains("secret-value"));
 
-        let loaded =
-            load_sensitive_json_or_default::<ExampleStore>(&path, "scope-a", &secret).expect("load");
+        let loaded = load_sensitive_json_or_default::<ExampleStore>(&path, "scope-a", &secret)
+            .expect("load");
         assert_eq!(loaded, value);
 
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn sensitive_store_accepts_plaintext_legacy_json() {
+    fn sensitive_store_migrates_plaintext_legacy_json_into_encrypted_store() {
         let path = temp_path("sensitive-legacy");
         fs::write(&path, r#"{"value":"legacy","enabled":true}"#).expect("write");
         let secret = derive_app_secret_material(
             Path::new("C:/tmp/app-data"),
             Path::new("C:/tmp/cerbena.exe"),
             "dev.cerbena.app",
-        );
-        let loaded =
-            load_sensitive_json_or_default::<ExampleStore>(&path, "scope-b", &secret).expect("load");
+        )
+        .expect("derive secret");
+        let loaded = load_sensitive_json_or_default::<ExampleStore>(&path, "scope-b", &secret)
+            .expect("load");
         assert_eq!(
             loaded,
             ExampleStore {
@@ -315,6 +558,8 @@ mod tests {
                 enabled: true,
             }
         );
+        let on_disk = fs::read_to_string(&path).expect("read migrated store");
+        assert!(!on_disk.contains("\"value\":\"legacy\""));
         let _ = fs::remove_file(path);
     }
 
@@ -325,12 +570,15 @@ mod tests {
             Path::new("C:/tmp/app-data"),
             Path::new("C:/tmp/cerbena-old.exe"),
             "dev.cerbena.app",
-        );
+        )
+        .expect("derive original secret");
         let next_secret = derive_app_secret_material(
             Path::new("C:/tmp/app-data"),
             Path::new("C:/tmp/cerbena-new.exe"),
             "dev.cerbena.app",
-        );
+        )
+        .expect("derive next secret");
+        let mismatched_secret = format!("{next_secret}:mismatch");
         let value = ExampleStore {
             value: "secret-value".to_string(),
             enabled: true,
@@ -338,10 +586,13 @@ mod tests {
 
         persist_sensitive_json(&path, "scope-c", &original_secret, &value).expect("persist");
         let loaded =
-            load_sensitive_json_or_default::<ExampleStore>(&path, "scope-c", &next_secret)
+            load_sensitive_json_or_default::<ExampleStore>(&path, "scope-c", &mismatched_secret)
                 .expect("load default after mismatch");
         assert_eq!(loaded, ExampleStore::default());
-        assert!(!path.exists(), "original incompatible store must be moved aside");
+        assert!(
+            !path.exists(),
+            "original incompatible store must be moved aside"
+        );
 
         let backup_exists = path
             .parent()
@@ -355,7 +606,10 @@ mod tests {
                 })
             })
             .unwrap_or(false);
-        assert!(backup_exists, "backup file should be created for incompatible store");
+        assert!(
+            backup_exists,
+            "backup file should be created for incompatible store"
+        );
 
         if let Some(parent) = path.parent() {
             if let Ok(entries) = fs::read_dir(parent) {

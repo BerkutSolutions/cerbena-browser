@@ -29,15 +29,14 @@ use crate::{
     },
     launcher_commands::load_global_security_record,
     panic_frame::maybe_start_panic_frame,
-    profile_security::{
-        assess_profile, cookies_copy_allowed, first_launch_blocker,
-        ERR_COOKIES_COPY_BLOCKED, ERR_LOCKED_REQUIRES_UNLOCK,
-        ERR_MAXIMUM_POLICY_EXTENSIONS_FORBIDDEN,
-    },
     process_tracking::{
-        clear_profile_process, find_profile_main_window_pid_for_dir, find_profile_process_pid_for_dir,
-        terminate_profile_processes,
-        is_process_running as is_pid_running, terminate_process_tree, track_profile_process,
+        clear_profile_process, find_profile_main_window_pid_for_dir,
+        find_profile_process_pid_for_dir, is_process_running as is_pid_running,
+        terminate_process_tree, terminate_profile_processes, track_profile_process,
+    },
+    profile_security::{
+        assess_profile, cookies_copy_allowed, first_launch_blocker, ERR_COOKIES_COPY_BLOCKED,
+        ERR_LOCKED_REQUIRES_UNLOCK, ERR_MAXIMUM_POLICY_EXTENSIONS_FORBIDDEN,
     },
     route_runtime::{ensure_profile_route_runtime, stop_profile_route_runtime},
     service_domains::service_domain_seeds,
@@ -317,6 +316,11 @@ pub async fn launch_profile(
             .map_err(|_| ERR_LOCKED_REQUIRES_UNLOCK.to_string())?;
         manager.get_profile(profile_id).map_err(|e| e.to_string())?
     };
+    let profile_key = profile.id.to_string();
+    let _ = crate::extensions_commands::refresh_extension_library_updates_impl(
+        state.inner(),
+        Some(profile_key.as_str()),
+    );
     if let Some(code) = first_launch_blocker(&profile) {
         return Err(code.to_string());
     }
@@ -446,13 +450,13 @@ pub async fn launch_profile(
                     user_data_dir.display()
                 );
             } else {
-            eprintln!(
+                eprintln!(
                 "[profile-launch] camoufox existing profile process detected pid={} profile_dir={}",
                 existing_pid,
                 user_data_dir.display()
             );
-            terminate_process_tree(existing_pid);
-            thread::sleep(Duration::from_millis(200));
+                terminate_process_tree(existing_pid);
+                thread::sleep(Duration::from_millis(200));
             }
         }
     }
@@ -637,12 +641,10 @@ fn prepare_camoufox_profile_runtime(
         user_js_lines.push("user_pref(\"signon.rememberSignons\", false);".to_string());
         user_js_lines.push("user_pref(\"signon.autofillForms\", false);".to_string());
         user_js_lines.push("user_pref(\"browser.formfill.enable\", false);".to_string());
-        user_js_lines.push(
-            "user_pref(\"extensions.formautofill.addresses.enabled\", false);".to_string(),
-        );
-        user_js_lines.push(
-            "user_pref(\"extensions.formautofill.creditCards.enabled\", false);".to_string(),
-        );
+        user_js_lines
+            .push("user_pref(\"extensions.formautofill.addresses.enabled\", false);".to_string());
+        user_js_lines
+            .push("user_pref(\"extensions.formautofill.creditCards.enabled\", false);".to_string());
         user_js_lines.push("user_pref(\"browser.sessionstore.privacy_level\", 2);".to_string());
     }
     if let Some(port) = gateway_proxy_port {
@@ -753,7 +755,11 @@ fn collect_active_profile_extensions(
         .values()
         .filter(|item| extension_scope_matches_engine(&item.engine_scope, engine.clone()))
         .filter(|item| {
-            enabled.contains(&item.id) || item.assigned_profile_ids.iter().any(|value| value == &profile_key)
+            enabled.contains(&item.id)
+                || item
+                    .assigned_profile_ids
+                    .iter()
+                    .any(|value| value == &profile_key)
         })
         .filter(|item| !disabled.contains(&item.id))
         .cloned()
@@ -771,7 +777,13 @@ fn extension_scope_matches_engine(engine_scope: &str, engine: Engine) -> bool {
 fn sanitize_extension_dir_name(value: &str) -> String {
     let sanitized = value
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '-' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     let trimmed = sanitized.trim_matches('-').trim();
     if trimmed.is_empty() {
@@ -794,7 +806,8 @@ fn unpack_extension_archive(package_path: &Path, destination: &Path) -> Result<(
         bytes
     };
     let cursor = Cursor::new(archive_bytes);
-    let mut archive = ZipArchive::new(cursor).map_err(|e| format!("open extension archive: {e}"))?;
+    let mut archive =
+        ZipArchive::new(cursor).map_err(|e| format!("open extension archive: {e}"))?;
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
@@ -1065,7 +1078,10 @@ fn resolve_profile_certificate_paths(
     let mut paths = std::collections::BTreeSet::new();
     if let Ok(record) = load_global_security_record(state) {
         for item in record.certificates {
-            let assigned = item.profile_ids.iter().any(|value| value == &profile_id.to_string());
+            let assigned = item
+                .profile_ids
+                .iter()
+                .any(|value| value == &profile_id.to_string());
             if !item.path.trim().is_empty()
                 && (item.apply_globally || assigned || selected_ids.contains(&item.id))
             {
@@ -1165,10 +1181,7 @@ pub fn stop_profile(
     let profile_root = state.profile_root.join(profile.id.to_string());
     let user_data_dir = profile_root.join("engine-profile");
     let tracked_pid = trusted_session_pid(&state, profile_id)?.or_else(|| {
-        let launched = state
-            .launched_processes
-            .lock()
-            .ok()?;
+        let launched = state.launched_processes.lock().ok()?;
         launched.get(&profile_id).copied()
     });
     let pid = tracked_pid.or_else(|| find_profile_process_pid_for_dir(&user_data_dir));

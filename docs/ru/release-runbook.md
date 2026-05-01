@@ -37,7 +37,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 
 - `cerbena-browser-setup-<version>.exe` как основной установщик Windows;
 - `cerbena-windows-x64.zip` как переносимый архив релизной сборки;
+- `cerbena-updater.exe` как отдельный standalone-апдейтер;
 - `checksums.txt`;
+- `checksums.sig`;
 - `release-manifest.json`.
 
 Установщик `.exe` собирается локально и должен попадать в релиз как основной пользовательский артефакт установки.
@@ -46,6 +48,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 
 - подтвердить, что `Wayfern`-поток не требует пропущенного подтверждения `ToS`;
 - проверить ручной сценарий обновления и подписи артефактов;
+- убедиться, что standalone-апдейтер корректно показывает состояние `version is current` для актуальной сборки и проходит `preview`-сценарий без установки;
 - убедиться, что `sync`, `route runtime`, traffic gateway и поток установщика не содержат известных регрессий;
 - убедиться, что документация отражает актуальный UI, release-скрипты и способы установки.
 

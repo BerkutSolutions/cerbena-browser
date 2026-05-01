@@ -20,8 +20,8 @@ sidebar_position: 2
 - наличие и синхронность `ru` / `eng` веток wiki;
 - отсутствие лишних английских фрагментов в русской wiki;
 - стабильность базовых CLI-сценариев профиля;
-- smoke-проверку desktop UI registry и i18n-контрактов.
+- smoke-проверку реестра desktop UI и i18n-контрактов.
 
-## Локальный preflight
+## Локальная предварительная проверка
 
-Полная локальная проверка описана в `scripts/local-ci-preflight.ps1`. Скрипт объединяет Rust-тесты, docs build, UI smoke-проверки и отдельные шаги `security-gates` / `vulnerability-gates` в один поток.
+Полная локальная проверка описана в `scripts/local-ci-preflight.ps1`. Скрипт объединяет Rust-тесты, сборку документации, UI smoke-проверки и отдельные шаги `security-gates` / `vulnerability-gates` в один поток.

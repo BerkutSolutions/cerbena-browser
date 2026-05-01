@@ -46,3 +46,11 @@ Run the manual update path with signature verification:
 ```bash
 cargo run -p cerbena-launcher -- update-apply --version <semver> --signature <sig>
 ```
+
+### `desktop updater preview`
+
+Open the standalone secure updater screen in dry-run mode without installing anything:
+
+```bash
+cargo run --manifest-path ui/desktop/src-tauri/Cargo.toml -- --updater-preview
+```

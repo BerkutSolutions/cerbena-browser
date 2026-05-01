@@ -4,8 +4,8 @@ mod device_posture;
 mod envelope;
 mod extensions_commands;
 mod identity_commands;
-mod launcher_commands;
 mod launch_sessions;
+mod launcher_commands;
 mod network_commands;
 mod network_runtime;
 mod panic_frame;
@@ -13,10 +13,10 @@ mod process_tracking;
 mod profile_commands;
 mod profile_security;
 mod route_runtime;
+mod sensitive_store;
 mod service_catalog_seed;
 mod service_domains;
 mod service_domains_data;
-mod sensitive_store;
 mod state;
 mod sync_commands;
 mod sync_snapshots;
@@ -29,6 +29,7 @@ use state::AppState;
 use tauri::{Manager, WindowEvent};
 
 fn main() {
+    let updater_launch_mode = update_commands::active_updater_launch_mode();
     tauri::Builder::default()
         .on_window_event(|window, event| {
             if window.label().starts_with("panic-frame-menu-") {
@@ -38,6 +39,9 @@ fn main() {
                 return;
             }
             if window.label() != "main" {
+                return;
+            }
+            if update_commands::active_updater_launch_mode().is_active() {
                 return;
             }
             if let WindowEvent::CloseRequested { .. } = event {
@@ -58,11 +62,19 @@ fn main() {
                 let _ = (&window, &payload);
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             let main_window = app
                 .get_webview_window("main")
                 .expect("main window should exist");
-            main_window.set_title("Cerbena")?;
+            if updater_launch_mode.is_active() {
+                update_commands::configure_window_for_launch_mode(
+                    &main_window,
+                    updater_launch_mode,
+                )
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            } else {
+                main_window.set_title("Cerbena")?;
+            }
             #[cfg(debug_assertions)]
             {
                 let _ = main_window.eval("window.__BROWSER_DEV__ = true;");
@@ -85,7 +97,12 @@ fn main() {
                 }
             }
             app.manage(state);
-            update_commands::start_update_scheduler(app.handle().clone());
+            if updater_launch_mode.is_active() {
+                let state = app.state::<AppState>();
+                let _ = update_commands::ensure_updater_flow_started(&state);
+            } else {
+                update_commands::start_update_scheduler(app.handle().clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -132,6 +149,10 @@ fn main() {
             extensions_commands::list_extension_library,
             extensions_commands::import_extension_library_item,
             extensions_commands::update_extension_library_item,
+            extensions_commands::update_extension_library_preferences,
+            extensions_commands::refresh_extension_library_updates,
+            extensions_commands::export_extension_library,
+            extensions_commands::import_extension_library,
             extensions_commands::set_extension_profiles,
             extensions_commands::remove_extension_library_item,
             extensions_commands::install_extension,
@@ -169,6 +190,9 @@ fn main() {
             update_commands::get_launcher_update_state,
             update_commands::set_launcher_auto_update,
             update_commands::check_launcher_updates,
+            update_commands::get_updater_overview,
+            update_commands::start_updater_flow,
+            update_commands::launch_updater_preview,
             panic_frame::panic_frame_show_menu,
             panic_frame::panic_frame_hide_menu,
             window_commands::window_minimize,

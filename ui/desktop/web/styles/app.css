@@ -138,6 +138,66 @@
   margin-top: 0;
 }
 
+body.healthcheck-page {
+  align-items: flex-start;
+}
+
+.updater-shell {
+  display: grid;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.updater-hero,
+.updater-pipeline-panel {
+  padding: 18px;
+}
+
+.updater-version-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 8px 0 6px;
+}
+
+.updater-version-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(125, 155, 255, 0.18);
+  background: rgba(6, 10, 18, 0.72);
+}
+
+.updater-version-card strong {
+  font-size: 22px;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+
+.updater-pipeline-panel .healthcheck-section-title {
+  margin-bottom: 12px;
+}
+
+.updater-pipeline-panel .healthcheck-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: visible;
+}
+
+.updater-pipeline-panel .healthcheck-step {
+  height: auto;
+  min-height: 70px;
+  padding: 12px 14px;
+}
+
+.updater-pipeline-panel .healthcheck-step-desc {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .row-between {
   display: flex;
   align-items: center;
@@ -605,6 +665,244 @@ button.danger:hover {
   font-size: 12px;
 }
 
+.extension-library-toolbar {
+  padding: 10px 14px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+}
+
+.extension-library-dropzone {
+  min-height: 96px;
+  justify-content: center;
+  cursor: pointer;
+  border: 1px dashed rgba(125, 155, 255, 0.28);
+  background: rgba(9, 14, 24, 0.48);
+}
+
+.extension-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.extension-library-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-height: 128px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(125, 155, 255, 0.22);
+  background: linear-gradient(180deg, rgba(10, 15, 26, 0.94), rgba(7, 11, 20, 0.98));
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.extension-library-card:hover,
+.extension-library-card:focus-visible {
+  transform: translateY(-3px);
+  border-color: rgba(157, 184, 255, 0.52);
+  box-shadow: 0 18px 34px rgba(12, 21, 41, 0.36), 0 0 0 1px rgba(166, 191, 255, 0.12);
+  background: linear-gradient(180deg, rgba(14, 20, 33, 0.98), rgba(9, 14, 23, 1));
+  outline: none;
+}
+
+.extension-library-delete {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+}
+
+.extension-library-logo {
+  width: 72px;
+  height: 72px;
+  border-radius: 18px;
+  border: 1px solid rgba(125, 155, 255, 0.18);
+  background: radial-gradient(circle at 30% 20%, rgba(137, 164, 255, 0.14), rgba(10, 16, 28, 0.96));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.extension-library-logo-lg {
+  width: 92px;
+  height: 92px;
+}
+
+.extension-library-logo-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.extension-library-logo-fallback {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(222, 233, 255, 0.74);
+}
+
+.extension-library-logo-fallback svg {
+  width: 100%;
+  height: 100%;
+}
+
+.extension-library-body {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding-right: 44px;
+}
+
+.extension-library-body h3 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.25;
+  color: #f6f8ff;
+}
+
+.extension-library-version {
+  color: rgba(225, 235, 255, 0.82);
+  font-weight: 600;
+}
+
+.extension-library-tag {
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 155, 255, 0.26);
+  background: rgba(20, 30, 52, 0.72);
+  color: rgba(232, 239, 255, 0.92);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.extension-library-assignment {
+  color: rgba(196, 210, 242, 0.7);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.extension-library-engine-badge {
+  position: absolute;
+  right: 12px;
+  bottom: 16px;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(125, 155, 255, 0.22);
+  background: rgba(16, 24, 40, 0.86);
+  color: rgba(244, 247, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.extension-library-engine-badge svg {
+  width: 18px;
+  height: 18px;
+}
+
+.extension-library-modal {
+  display: grid;
+  gap: 14px;
+  overflow: visible;
+}
+
+.extension-library-modal-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.extension-library-modal-meta {
+  display: grid;
+  gap: 10px;
+}
+
+.extension-library-store-link {
+  color: rgba(164, 191, 255, 0.96);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.extension-library-store-link:hover {
+  text-decoration: underline;
+}
+
+.extension-library-modal-settings {
+  display: grid;
+  gap: 6px;
+}
+
+.extension-library-modal-frame {
+  margin-top: 0;
+}
+
+.extension-library-profile-picker {
+  width: 100%;
+}
+
+.extension-library-profile-toggle {
+  width: 100%;
+  justify-content: space-between;
+  text-align: left;
+}
+
+.extension-library-profile-menu {
+  width: 100%;
+  z-index: 90;
+}
+
+.extension-library-profile-menu .dns-dropdown-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.extension-library-profile-menu .dns-dropdown-option input[type="checkbox"] {
+  margin: 0;
+}
+
+.extension-actions-dropdown {
+  min-width: 132px;
+}
+
+.extension-actions-toggle {
+  justify-content: center;
+}
+
+.extension-actions-menu .dns-dropdown-option {
+  justify-content: flex-start;
+}
+
+.extension-library-close-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 18px;
+  line-height: 1;
+  transform: translateY(-1px);
+}
+
 .network-stack {
   display: grid;
   gap: 10px;
@@ -636,6 +934,20 @@ button.danger:hover {
   border-radius: 12px;
   border: 1px solid rgba(125, 155, 255, 0.16);
   background: rgba(8, 12, 21, 0.56);
+}
+
+.network-list-frame,
+.network-template-frame,
+.security-table-frame,
+.traffic-filters-frame,
+.settings-card {
+  margin-top: 0;
+}
+
+.network-table-shell {
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 12px;
 }
 
 .network-table-actions-cell {
@@ -1282,6 +1594,10 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   gap: 12px;
 }
 
+.dns-accordion-body > .top-actions {
+  justify-content: flex-end;
+}
+
 .dns-config-grid {
   display: grid;
   gap: 12px;
@@ -1334,6 +1650,47 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   border: 1px solid rgba(125, 155, 255, 0.24);
   background: rgba(10, 14, 24, 0.98);
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
+}
+
+.tag-picker-menu {
+  max-height: 340px;
+  overflow: hidden;
+}
+
+.tag-picker-search {
+  width: 100%;
+}
+
+.tag-picker-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-picker-options {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.tag-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(125, 155, 255, 0.12);
+  background: rgba(8, 12, 21, 0.72);
+}
+
+.tag-picker-option input[type="checkbox"] {
+  margin: 0;
+}
+
+.tag-picker-create {
+  justify-content: flex-start;
 }
 
 .profile-blocklists-menu {
@@ -1471,6 +1828,10 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   max-width: 100%;
 }
 
+.dns-suffix-section .dns-dropdown {
+  margin-top: 10px;
+}
+
 .dns-suffix-chip-grid {
   display: flex;
   flex-wrap: wrap;
@@ -1517,6 +1878,11 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
 }
 
 .settings-tab-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-page-body > [data-settings-pane] {
   display: grid;
   gap: 14px;
 }

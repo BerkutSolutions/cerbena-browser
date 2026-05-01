@@ -316,7 +316,9 @@ pub fn save_vpn_proxy_policy(
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false);
         if !has_template {
-            return Err("selected connection template is required for non-direct route mode".to_string());
+            return Err(
+                "selected connection template is required for non-direct route mode".to_string(),
+            );
         }
     }
     if let Some(template_id) = request
@@ -556,7 +558,13 @@ fn collect_running_profile_ids(state: &AppState) -> Result<Vec<Uuid>, String> {
         .map_err(|_| "launch map lock poisoned".to_string())?;
     let running = launched
         .iter()
-        .filter_map(|(profile_id, pid)| if is_pid_running(*pid) { Some(*profile_id) } else { None })
+        .filter_map(|(profile_id, pid)| {
+            if is_pid_running(*pid) {
+                Some(*profile_id)
+            } else {
+                None
+            }
+        })
         .collect::<Vec<_>>();
     Ok(running)
 }
@@ -636,6 +644,8 @@ fn global_blocklist_source(record: &GlobalBlocklistRecord) -> Result<BlocklistSo
             }
             Ok(BlocklistSource::RemoteUrl {
                 url: record.source_value.clone(),
+                require_https: true,
+                expected_sha256: None,
             })
         }
         "file" => {
@@ -1325,10 +1335,10 @@ fn parse_ini_sections(value: &str) -> BTreeMap<String, BTreeMap<String, String>>
         let Some((key, raw_value)) = line.split_once('=') else {
             continue;
         };
-        sections
-            .entry(current_section.clone())
-            .or_default()
-            .insert(key.trim().to_ascii_lowercase(), raw_value.trim().to_string());
+        sections.entry(current_section.clone()).or_default().insert(
+            key.trim().to_ascii_lowercase(),
+            raw_value.trim().to_string(),
+        );
     }
     sections
 }

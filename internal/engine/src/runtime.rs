@@ -1012,7 +1012,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
     let manifest = serde_json::json!({
         "manifest_version": 3,
         "name": "Cerbena Policy Firewall",
-        "version": "1.0.1",
+        "version": "1.0.2",
         "description": "Profile-scoped outbound policy enforcement for blocked domains.",
         "declarative_net_request": {
             "rule_resources": [

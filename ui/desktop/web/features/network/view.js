@@ -437,7 +437,7 @@ function templateFrame(model, t) {
   const draft = model.networkTemplateDraft ?? defaultTemplateDraft();
   const canAddNode = draft.nodes.length < 3;
   return `
-    <div class="security-frame">
+    <div class="panel network-template-frame">
       <h3>${t("network.templateFrame")}</h3>
       <label>${t("network.templateName")}
         <input id="network-template-name" value="${escapeHtml(draft.name)}" />
@@ -463,7 +463,7 @@ function listFrame(model, t) {
   const defaultTemplate = templates.find((item) => item.id === defaultTemplateId);
   const defaultTemplateName = defaultTemplate ? defaultTemplate.name : t("network.defaultTemplateNone");
   return `
-    <div class="security-frame">
+    <div class="panel network-list-frame">
       <h3>${t("network.chainTitle")}</h3>
       <p class="meta">${t("network.chainHint")}</p>
       <div class="network-global-controls">
@@ -477,7 +477,7 @@ function listFrame(model, t) {
         </label>
         <p class="meta">${t("network.defaultTemplateLabel")}: ${escapeHtml(defaultTemplateName)}</p>
       </div>
-      <div class="panel" style="margin-top:12px;">
+      <div class="network-table-shell">
         <table class="extensions-table">
           <thead>
             <tr>

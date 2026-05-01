@@ -9,7 +9,10 @@ Cerbena Browser stores extensions in a shared library, but applies them to profi
 
 - import from a local archive through the system file picker;
 - import from supported store links;
+- export the library to a chosen folder either as a link manifest file or as a package archive folder;
+- import a previously exported link manifest or archive folder from a chosen directory;
 - extract real display name, version, engine scope, and icon from the package;
+- assign manual tags to extensions and filter the library by tags without case-sensitive matching;
 - assign extensions to selected profiles;
 - enable, disable, and remove them.
 
@@ -23,9 +26,10 @@ Cerbena Browser stores extensions in a shared library, but applies them to profi
 
 1. Add the extension to the library through a link or archive.
 2. Validate metadata, icon, and engine compatibility.
-3. Assign it to a profile.
-4. Launch the profile and let the first-launch install flow complete.
-5. Disable, reinstall, or remove the extension when needed.
+3. Optionally add tags and use the tag filter to narrow the library view.
+4. Assign it to a profile.
+5. Launch the profile and let the first-launch install flow complete.
+6. Export or re-import the library through the folder-based `File` / `Archive` actions when needed.
 
 ## Important reminders
 

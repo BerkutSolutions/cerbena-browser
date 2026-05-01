@@ -15,6 +15,7 @@ The Cerbena Browser desktop UI is a local shell on top of `Tauri` backend comman
 - `Network`: connection templates, route mode, global VPN policy, and node health checks.
 - `Traffic`: gateway decisions and manual domain blocks.
 - `Settings`: global shell settings with `General`, `Links`, `Sync`, and update controls.
+- `Updater`: a separate `cerbena-updater.exe` window for trusted update flow, preview checks, and safe installation handoff.
 
 ## Key UX principles
 
@@ -22,6 +23,7 @@ The Cerbena Browser desktop UI is a local shell on top of `Tauri` backend comman
 - Profile data is edited through a modal with a left-side vertical section rail for `General`, `Identity`, `VPN`, `DNS`, `Extensions`, `Security`, `Sync`, and `Advanced`.
 - `Home` replaces the old standalone profiles tab and now hosts the main profile lifecycle UI.
 - `Settings` centralizes default search/start page, external-link routing, sync operations, and update policy controls.
+- When an update is detected, the launcher hands control to the standalone updater instead of performing UI-critical installation inside the main browser shell.
 - `Identity` in `Automatic` mode hides manual fields and regenerates a realistic platform-scoped identity on each session.
 - `Identity` in `Manual` mode exposes generation and template tools that populate real editable values.
 - Network and runtime statuses are not considered valid without backend verification.
@@ -39,4 +41,5 @@ The Cerbena Browser desktop UI is a local shell on top of `Tauri` backend comman
 - `Traffic` for explicit block reasons.
 - `DNS` when the issue is related to policy levels, blocklists, denylist, or service restrictions.
 - `Settings > Sync` for synchronization, endpoint health, and snapshot issues.
+- `Updater` when the issue is related to release validation, trusted download, checksum comparison, or "already up to date" behavior.
 - operator/runtime diagnostics for provisioning, installer, engine download, or route-runtime failures.

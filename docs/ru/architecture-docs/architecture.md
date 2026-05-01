@@ -3,22 +3,22 @@ title: Архитектура
 sidebar_position: 2
 ---
 
-Cerbena Browser разделяет launcher, policy engine, browser adapters, local integrations и docs-stack на явные модули.
+Cerbena Browser разделяет launcher, policy engine, браузерные адаптеры, локальные интеграции и стек документации на явные модули.
 
 ## Основные контуры
 
-- `cmd/launcher`: CLI entrypoint и release-удобства.
-- `internal/profile`: lifecycle, storage, encryption, wipe, import/export.
-- `internal/network_policy`: route, DNS, service filtering, validators.
-- `internal/fingerprint`: identity presets и consistency checks.
-- `internal/extensions`: библиотека расширений и policy hooks.
-- `internal/api_local` и `internal/api_mcp`: локальная automation-поверхность.
-- `internal/sync_client`: snapshots, restore и sync-модель.
-- `ui/desktop/src-tauri`: desktop backend, runtime orchestration, traffic gateway.
+- `cmd/launcher`: CLI-точка входа и релизные утилиты.
+- `internal/profile`: жизненный цикл, хранилище, шифрование, очистка, импорт и экспорт.
+- `internal/network_policy`: маршрутизация, DNS, фильтрация сервисов и валидаторы.
+- `internal/fingerprint`: шаблоны личности и проверки согласованности.
+- `internal/extensions`: библиотека расширений и точки встраивания политик.
+- `internal/api_local` и `internal/api_mcp`: локальная поверхность автоматизации.
+- `internal/sync_client`: снимки, восстановление и модель синхронизации.
+- `ui/desktop/src-tauri`: backend desktop-приложения, оркестрация runtime и traffic gateway.
 - `ui/desktop/web`: локальная UI-оболочка.
 
 ## Почему это важно
 
 - можно усиливать один контур без скрытого влияния на другой;
-- security-проверки остаются backend-centric;
+- security-проверки остаются сосредоточенными на backend;
 - документация и тесты легче привязывать к конкретным контрактам.

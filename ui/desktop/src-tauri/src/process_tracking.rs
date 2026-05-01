@@ -145,7 +145,10 @@ pub fn is_process_running(pid: u32) -> bool {
     let system = System::new_with_specifics(
         RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
     );
-    system.processes().values().any(|process| process.pid().as_u32() == pid)
+    system
+        .processes()
+        .values()
+        .any(|process| process.pid().as_u32() == pid)
 }
 
 fn find_profile_process_pid(profile_data_dir: &Path) -> Option<u32> {
@@ -207,10 +210,11 @@ fn matching_profile_processes(system: &System, target: &str) -> Vec<ProfileProce
                 || name.contains("private_browsing"))
                 && cmdline.contains("-profile")
                 && cmdline.contains(target);
-            let chromium_profile_match =
-                (name.contains("wayfern") || name.contains("chrome") || name.contains("chromium"))
-                    && (cmdline.contains("--user-data-dir=") || cmdline.contains("--user-data-dir "))
-                    && cmdline.contains(target);
+            let chromium_profile_match = (name.contains("wayfern")
+                || name.contains("chrome")
+                || name.contains("chromium"))
+                && (cmdline.contains("--user-data-dir=") || cmdline.contains("--user-data-dir "))
+                && cmdline.contains(target);
 
             if firefox_profile_match || chromium_profile_match {
                 Some(ProfileProcessCandidate {

@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "browser-api-local"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "browser-network-policy",
  "browser-profile",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "browser-desktop-ui"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -255,6 +255,7 @@ dependencies = [
  "tar",
  "tauri",
  "tauri-build",
+ "tempfile",
  "thiserror 1.0.69",
  "uuid",
  "zip",
@@ -262,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "browser-engine"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -277,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "browser-extensions"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "browser-network-policy",
  "serde",
@@ -287,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "browser-fingerprint"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -296,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "browser-import-export"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "base64 0.22.1",
  "browser-profile",
@@ -309,16 +310,17 @@ dependencies = [
 
 [[package]]
 name = "browser-network-policy"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
+ "sha2",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "browser-profile"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -334,10 +336,12 @@ dependencies = [
 
 [[package]]
 name = "browser-sync-client"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
+ "aes-gcm",
  "base64 0.22.1",
  "browser-profile",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2",
@@ -4185,6 +4189,19 @@ dependencies = [
  "dunce",
  "embed-resource",
  "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.2",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

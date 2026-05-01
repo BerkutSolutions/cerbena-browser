@@ -24,7 +24,10 @@ The Cerbena Browser `Sync` module covers self-hosted synchronization, snapshots,
 - save and load profile sync controls;
 - create snapshots from the desktop UI;
 - run restore with integrity validation;
-- update connection health state through the backend.
+- update connection health state through the backend;
+- E2E payload protection with a random data key and AEAD-wrapped key material;
+- fallback decryption for legacy envelopes so previously created sync data remains readable after hardening updates;
+- a transport guard that validates TLS structurally and keeps a recent-nonce window against replay/downgrade scenarios.
 
 ## Recommendations
 

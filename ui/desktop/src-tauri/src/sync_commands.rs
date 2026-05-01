@@ -213,11 +213,7 @@ pub fn create_backup_snapshot(
             .snapshot_manager
             .lock()
             .map_err(|_| "snapshot manager lock poisoned".to_string())?;
-        manager.create_snapshot(
-            profile_uuid,
-            encrypted_blob_b64,
-            sha256_hex.to_lowercase(),
-        )
+        manager.create_snapshot(profile_uuid, encrypted_blob_b64, sha256_hex.to_lowercase())
     };
 
     let mut store = state

@@ -55,3 +55,7 @@ export async function setLauncherAutoUpdate(enabled) {
 export async function checkLauncherUpdates(manual = true) {
   return callCommand("check_launcher_updates", { manual });
 }
+
+export async function launchUpdaterPreview() {
+  return callCommand("launch_updater_preview");
+}

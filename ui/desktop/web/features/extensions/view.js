@@ -1,11 +1,27 @@
 import {
+  exportExtensionLibrary,
+  importExtensionLibrary,
   importExtensionLibraryItem,
   listExtensionLibrary,
   removeExtensionLibraryItem,
+  refreshExtensionLibraryUpdates,
   setExtensionProfiles,
-  updateExtensionLibraryItem
+  updateExtensionLibraryItem,
+  updateExtensionLibraryPreferences
 } from "./api.js";
-import { askInputModal } from "../../core/modal.js";
+import {
+  askConfirmModal,
+  askInputModal,
+  closeModalOverlay,
+  showModalOverlay
+} from "../../core/modal.js";
+import {
+  buildTagPickerMarkup,
+  collectTagOptions,
+  tagSummary,
+  uniqueTags,
+  wireTagPicker
+} from "../../core/tag-picker.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -37,86 +53,187 @@ function profileSummary(item, profiles, t) {
   const assigned = (item.assignedProfileIds ?? [])
     .map((id) => profiles.find((profile) => profile.id === id)?.name ?? id)
     .filter(Boolean);
-  return assigned.length ? assigned.join(", ") : t("extensions.assign.none");
+  if (!assigned.length) return t("extensions.assign.none");
+  if (assigned.length === 1) return assigned[0];
+  return `${assigned[0]} +${assigned.length - 1}`;
 }
 
 function sourceLabel(item) {
   return item.storeUrl || item.packageFileName || item.sourceValue || "";
 }
 
+function libraryFilterOptions(t) {
+  return [
+    { value: "all", label: t("extensions.filter.all") },
+    { value: "chromium", label: t("extensions.filter.chromium") },
+    { value: "firefox", label: t("extensions.filter.firefox") },
+    { value: "chromium/firefox", label: t("extensions.filter.hybrid") }
+  ];
+}
+
+function filterExtensionItems(items, filterValue) {
+  const normalized = normalizeEngineScope(filterValue);
+  if (!filterValue || filterValue === "all") return items;
+  return items.filter((item) => normalizeEngineScope(item.engineScope) === normalized);
+}
+
+function filterExtensionItemsByTags(items, selectedTags) {
+  const normalizedSelected = new Set(uniqueTags(selectedTags).map((tag) => tag.toLocaleLowerCase()));
+  if (!normalizedSelected.size) return items;
+  return items.filter((item) => (item.tags ?? []).some((tag) => normalizedSelected.has(String(tag).trim().toLocaleLowerCase())));
+}
+
+function collectExtensionTags(state) {
+  return collectTagOptions(Object.values(state?.items ?? {}), (item) => item.tags ?? []);
+}
+
+function engineIcon(engineScope) {
+  const scope = normalizeEngineScope(engineScope);
+  if (scope === "firefox") {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 4h10l2 4-1 8-4 4H10l-4-4-1-8 2-4z"/><path d="M9 9h.01M15 9h.01"/><path d="M9 14c1 1 2 1.5 3 1.5S14 15 15 14"/></svg>`;
+  }
+  if (scope === "chromium") {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 4.5 6 4.5 9S15 18 12 21c-3-3-4.5-6-4.5-9S9 6 12 3z"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16v10H4z"/><path d="M9 7v10"/><path d="M15 7v10"/></svg>`;
+}
+
+function trashIcon() {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>`;
+}
+
+function extensionPlaceholderIcon() {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a2 2 0 0 1 2 2v1h2.5A1.5 1.5 0 0 1 18 7.5V10h1a2 2 0 1 1 0 4h-1v2.5a1.5 1.5 0 0 1-1.5 1.5H14v1a2 2 0 1 1-4 0v-1H7.5A1.5 1.5 0 0 1 6 16.5V14H5a2 2 0 1 1 0-4h1V7.5A1.5 1.5 0 0 1 7.5 6H10V5a2 2 0 0 1 2-2z"/></svg>`;
+}
+
+function extensionLogo(item) {
+  if (item.logoUrl) {
+    return `<img src="${escapeHtml(item.logoUrl)}" alt="${escapeHtml(item.displayName ?? "Extension")}" class="extension-library-logo-image" loading="lazy" />`;
+  }
+  return `<span class="extension-library-logo-fallback">${extensionPlaceholderIcon()}</span>`;
+}
+
 function extensionCard(item, profiles, t) {
   const name = item.displayName ?? "Extension";
-  const version = item.version ?? "1.0.1";
-  const engine = item.engineScope ?? "chromium/firefox";
-  const scopedProfiles = compatibleProfiles(item, profiles);
+  const version = item.version ?? "1.0.2";
+  const assigned = profileSummary(item, profiles, t);
+  const primaryTag = (item.tags ?? [])[0] ?? "";
   return `
-    <tr data-extension-id="${item.id}">
-      <td>
-        <div class="profiles-name">${escapeHtml(name)}</div>
-        <div class="meta">${escapeHtml(sourceLabel(item))}</div>
-      </td>
-      <td>${escapeHtml(version)}</td>
-      <td>${escapeHtml(engine)}</td>
-      <td>
-        <div class="dns-dropdown">
-          <button type="button" class="dns-dropdown-toggle" data-profile-menu-toggle="${item.id}">${escapeHtml(profileSummary(item, profiles, t))}</button>
-          <div class="dns-dropdown-menu hidden" data-profile-menu="${item.id}">
-            ${scopedProfiles.length ? scopedProfiles.map((profile) => `
-              <label class="dns-dropdown-option">
-                <input
-                  type="checkbox"
-                  data-profile-assign="${item.id}:${profile.id}"
-                  ${(item.assignedProfileIds ?? []).includes(profile.id) ? "checked" : ""}
-                />
-                <span>${escapeHtml(profile.name)}</span>
-              </label>
-            `).join("") : `<div class="meta">${t("extensions.noCompatibleProfiles")}</div>`}
-          </div>
-        </div>
-      </td>
-      <td class="actions">
-        <button data-action="edit">${t("extensions.edit")}</button>
-        <button data-action="remove">${t("extensions.remove")}</button>
-      </td>
-    </tr>
+    <article class="extension-library-card" data-extension-id="${item.id}" tabindex="0" role="button" aria-label="${escapeHtml(name)}">
+      <button
+        type="button"
+        class="profiles-icon-btn danger extension-library-delete"
+        data-action="remove"
+        aria-label="${t("extensions.remove")}"
+        title="${t("extensions.remove")}"
+      >${trashIcon()}</button>
+      <div class="extension-library-logo">
+        ${extensionLogo(item)}
+      </div>
+      <div class="extension-library-body">
+        <h3>${escapeHtml(name)}</h3>
+        <div class="extension-library-version">${escapeHtml(version)}</div>
+        ${primaryTag ? `<div class="extension-library-tag">${escapeHtml(primaryTag)}</div>` : ""}
+        <div class="extension-library-assignment" title="${escapeHtml(assigned)}">${escapeHtml(assigned)}</div>
+      </div>
+      <div class="extension-library-engine-badge" title="${escapeHtml(item.engineScope ?? "chromium/firefox")}">
+        ${engineIcon(item.engineScope)}
+      </div>
+    </article>
   `;
 }
 
-function addModalHtml(t, profiles, draft = {}) {
-  const scopedProfiles = compatibleProfiles(draft, profiles);
+function profileDropdownMarkup(item, profiles, t, mode = "modal") {
+  const scopedProfiles = compatibleProfiles(item, profiles);
+  if (!scopedProfiles.length) {
+    return `<div class="meta">${t("extensions.noCompatibleProfiles")}</div>`;
+  }
+  const summary = profileSummary(item, profiles, t);
+  const toggleAttr = mode === "modal" ? "data-modal-profile-menu-toggle" : "data-profile-menu-toggle";
+  const menuAttr = mode === "modal" ? "data-modal-profile-menu" : "data-profile-menu";
+  const checkboxAttr = mode === "modal" ? "data-modal-profile-assign" : "data-profile-assign";
+  return `
+    <div class="dns-dropdown extension-library-profile-picker">
+      <button type="button" class="dns-dropdown-toggle extension-library-profile-toggle" ${toggleAttr}="${item.id}">
+        ${escapeHtml(summary)}
+      </button>
+      <div class="dns-dropdown-menu hidden extension-library-profile-menu" ${menuAttr}="${item.id}">
+        ${scopedProfiles.map((profile) => `
+          <label class="dns-dropdown-option">
+            <input
+              type="checkbox"
+              ${checkboxAttr}="${item.id}:${profile.id}"
+              ${(item.assignedProfileIds ?? []).includes(profile.id) ? "checked" : ""}
+            />
+            <span>${escapeHtml(profile.name)}</span>
+          </label>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function extensionModalHtml(t, profiles, item) {
+  const source = sourceLabel(item);
+  const storeUrl = item.storeUrl?.trim() ?? "";
+  const sourceMeta = source && source !== storeUrl ? source : "";
   return `
     <div class="profiles-modal-overlay" id="extension-library-overlay">
-      <div class="profiles-modal-window profiles-modal-window-md">
+      <div class="profiles-modal-window profiles-modal-window-md extension-library-modal">
         <div class="profiles-cookie-head">
-          <h3>${draft.id ? t("extensions.editTitle") : t("extensions.importTitle")}</h3>
-          <button type="button" class="profiles-icon-btn" id="extension-library-close" aria-label="${t("action.cancel")}">x</button>
+          <h3>${escapeHtml(item.displayName ?? t("nav.extensions"))}</h3>
+          <button type="button" class="profiles-icon-btn" id="extension-library-close" aria-label="${t("action.cancel")}"><span class="extension-library-close-glyph">×</span></button>
         </div>
-        <div class="grid-two">
-          <label>${t("extensions.name")}<input id="extension-name" value="${escapeHtml(draft.displayName ?? "")}" /></label>
-          <label>${t("extensions.version")}<input id="extension-version" value="${escapeHtml(draft.version ?? "1.0.1")}" /></label>
-          <label>${t("extensions.engine")}<select id="extension-engine">
-            <option value="chromium" ${normalizeEngineScope(draft.engineScope) === "chromium" ? "selected" : ""}>chromium</option>
-            <option value="firefox" ${normalizeEngineScope(draft.engineScope) === "firefox" ? "selected" : ""}>firefox</option>
-            <option value="chromium/firefox" ${normalizeEngineScope(draft.engineScope) === "chromium/firefox" ? "selected" : ""}>chromium/firefox</option>
-          </select></label>
-          <label>${t("extensions.logoUrl")}<input id="extension-logo" value="${escapeHtml(draft.logoUrl ?? "")}" /></label>
-          <label>${t("extensions.logoUpload")}<input id="extension-logo-file" type="file" accept="image/*" /></label>
-          <label class="grid-span-2">${t("extensions.storeUrl")}<input id="extension-store-url" value="${escapeHtml(draft.storeUrl ?? "")}" /></label>
-        </div>
-        <div class="security-frame" style="margin-top:12px;">
-          <h4>${t("extensions.assignProfiles")}</h4>
-          <div class="dns-dropdown-menu" style="position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));">
-            ${scopedProfiles.length ? scopedProfiles.map((profile) => `
-              <label class="dns-dropdown-option">
-                <input
-                  type="checkbox"
-                  data-library-profile="${profile.id}"
-                  ${(draft.assignedProfileIds ?? []).includes(profile.id) ? "checked" : ""}
-                />
-                <span>${escapeHtml(profile.name)}</span>
-              </label>
-            `).join("") : `<div class="meta">${t("extensions.noCompatibleProfiles")}</div>`}
+        <div class="extension-library-modal-head">
+          <div class="extension-library-logo extension-library-logo-lg">
+            ${extensionLogo(item)}
           </div>
+          <div class="extension-library-modal-meta">
+            <label>${t("extensions.name")}<input id="extension-name" value="${escapeHtml(item.displayName ?? "")}" /></label>
+            <div class="grid-two">
+              <label>${t("extensions.version")}<input id="extension-version" value="${escapeHtml(item.version ?? "1.0.2")}" /></label>
+              <label>${t("extensions.engine")}<select id="extension-engine">
+                <option value="chromium" ${normalizeEngineScope(item.engineScope) === "chromium" ? "selected" : ""}>chromium</option>
+                <option value="firefox" ${normalizeEngineScope(item.engineScope) === "firefox" ? "selected" : ""}>firefox</option>
+                <option value="chromium/firefox" ${normalizeEngineScope(item.engineScope) === "chromium/firefox" ? "selected" : ""}>chromium/firefox</option>
+              </select></label>
+            </div>
+            <label>${t("extensions.storeUrl")}
+              ${storeUrl
+                ? `<a href="${escapeHtml(storeUrl)}" target="_blank" rel="noreferrer" class="extension-library-store-link">${escapeHtml(storeUrl)}</a>`
+                : `<span class="meta">${t("extensions.noStoreUrl")}</span>`}
+            </label>
+            ${sourceMeta ? `<div class="meta">${escapeHtml(sourceMeta)}</div>` : ""}
+          </div>
+        </div>
+        <div class="extension-library-modal-settings">
+          <label class="checkbox-inline">
+            <input type="checkbox" id="extension-auto-update" ${item.autoUpdateEnabled ? "checked" : ""} />
+            <span>${t("extensions.autoUpdate")}</span>
+          </label>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="extension-preserve-on-panic" ${item.preserveOnPanicWipe ? "checked" : ""} />
+            <span>${t("extensions.preserveOnPanicWipe")}</span>
+          </label>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="extension-protect-data-on-panic" ${item.protectDataFromPanicWipe ? "checked" : ""} />
+            <span>${t("extensions.protectDataFromPanicWipe")}</span>
+          </label>
+        </div>
+        <div class="security-frame extension-library-modal-frame">
+          <h4>${t("extensions.tags")}</h4>
+          ${buildTagPickerMarkup({
+            id: "extension-tags",
+            selectedTags: item.tags ?? [],
+            availableTags: [],
+            emptyLabel: t("extensions.tags.empty"),
+            searchPlaceholder: t("extensions.tags.search"),
+            createLabel: (value) => t("extensions.tags.create").replace("{tag}", value)
+          })}
+        </div>
+        <div class="security-frame extension-library-modal-frame">
+          <h4>${t("extensions.assignProfiles")}</h4>
+          ${profileDropdownMarkup(item, profiles, t, "modal")}
         </div>
         <footer class="modal-actions">
           <button type="button" id="extension-library-cancel">${t("action.cancel")}</button>
@@ -127,45 +244,57 @@ function addModalHtml(t, profiles, draft = {}) {
   `;
 }
 
-function readAssignedProfiles(overlay) {
-  return [...overlay.querySelectorAll("[data-library-profile]:checked")].map((checkbox) => checkbox.getAttribute("data-library-profile"));
+function readAssignedProfiles(overlay, itemId) {
+  return [...overlay.querySelectorAll(`[data-modal-profile-assign^='${itemId}:']:checked`)]
+    .map((checkbox) => checkbox.getAttribute("data-modal-profile-assign").split(":")[1]);
 }
 
-async function openLibraryModal(root, t, profiles, draft = null) {
+async function openExtensionModal(t, profiles, item, availableTags) {
   return new Promise((resolve) => {
-    document.body.insertAdjacentHTML("beforeend", addModalHtml(t, profiles, draft ?? {}));
+    document.body.insertAdjacentHTML("beforeend", extensionModalHtml(t, profiles, item));
     const overlay = document.body.querySelector("#extension-library-overlay");
-    const close = (payload = null) => {
-      overlay.remove();
-      resolve(payload);
+    if (!overlay) {
+      resolve(null);
+      return;
+    }
+    const close = (payload = null) => closeModalOverlay(overlay, () => resolve(payload));
+    const tagState = { selected: uniqueTags(item.tags ?? []), available: [] };
+    const bindDropdowns = () => {
+      for (const button of overlay.querySelectorAll("[data-modal-profile-menu-toggle]")) {
+        button.addEventListener("click", () => {
+          const id = button.getAttribute("data-modal-profile-menu-toggle");
+          overlay.querySelector(`[data-modal-profile-menu='${id}']`)?.classList.toggle("hidden");
+        });
+      }
     };
+    bindDropdowns();
+    const tagPicker = wireTagPicker(overlay, {
+      id: "extension-tags",
+      state: tagState,
+      emptyLabel: t("extensions.tags.empty"),
+      searchPlaceholder: t("extensions.tags.search"),
+      createLabel: (value) => t("extensions.tags.create").replace("{tag}", value)
+    });
+    tagPicker?.rerender(uniqueTags([...(availableTags ?? []), ...(item.tags ?? [])]), item.tags ?? []);
+    showModalOverlay(overlay);
     overlay.querySelector("#extension-library-close")?.addEventListener("click", () => close());
     overlay.querySelector("#extension-library-cancel")?.addEventListener("click", () => close());
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) close();
     });
-    overlay.querySelector("#extension-library-save")?.addEventListener("click", async () => {
-      const file = overlay.querySelector("#extension-logo-file")?.files?.[0] ?? null;
-      const uploadedLogoUrl = file ? await readFileAsDataUrl(file) : null;
+    overlay.querySelector("#extension-library-save")?.addEventListener("click", () => {
       close({
-        extensionId: draft?.id ?? null,
-        displayName: overlay.querySelector("#extension-name")?.value?.trim() || null,
-        version: overlay.querySelector("#extension-version")?.value?.trim() || null,
-        engineScope: overlay.querySelector("#extension-engine")?.value || null,
-        logoUrl: uploadedLogoUrl || overlay.querySelector("#extension-logo")?.value?.trim() || null,
-        storeUrl: overlay.querySelector("#extension-store-url")?.value?.trim() || null,
-        assignedProfileIds: readAssignedProfiles(overlay)
+        extensionId: item.id,
+        displayName: overlay.querySelector("#extension-name")?.value?.trim() || item.displayName,
+        version: overlay.querySelector("#extension-version")?.value?.trim() || item.version,
+        engineScope: overlay.querySelector("#extension-engine")?.value || item.engineScope,
+        tags: uniqueTags(tagState.selected ?? []),
+        assignedProfileIds: readAssignedProfiles(overlay, item.id),
+        autoUpdateEnabled: Boolean(overlay.querySelector("#extension-auto-update")?.checked),
+        preserveOnPanicWipe: Boolean(overlay.querySelector("#extension-preserve-on-panic")?.checked),
+        protectDataFromPanicWipe: Boolean(overlay.querySelector("#extension-protect-data-on-panic")?.checked)
       });
     });
-  });
-}
-
-function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
   });
 }
 
@@ -202,8 +331,13 @@ async function importLocalPackage(file, sourceKind) {
 }
 
 export function renderExtensions(t, model) {
-  const state = model.extensionLibraryState ?? { items: {} };
+  const state = model.extensionLibraryState ?? { autoUpdateEnabled: false, items: {} };
   const items = Object.values(state.items ?? {});
+  const filterValue = model.extensionLibraryFilter ?? "all";
+  const selectedTags = uniqueTags(model.extensionLibraryTagFilter ?? []);
+  const visibleItems = filterExtensionItemsByTags(filterExtensionItems(items, filterValue), selectedTags);
+  const filterOptions = libraryFilterOptions(t);
+  const availableTags = collectExtensionTags(state);
   const notice = model.extensionNotice ? `<p class="notice ${model.extensionNotice.type}">${model.extensionNotice.text}</p>` : "";
   return `
     <div class="feature-page">
@@ -213,40 +347,70 @@ export function renderExtensions(t, model) {
         </div>
         <div class="top-actions">
           <button id="extension-add-url">${t("extensions.addStoreUrl")}</button>
-          <button id="extension-add-local">${t("extensions.addLocal")}</button>
+          <div class="dns-dropdown extension-actions-dropdown">
+            <button type="button" class="dns-dropdown-toggle extension-actions-toggle" id="extension-import-toggle">${t("extensions.import")}</button>
+            <div class="dns-dropdown-menu hidden extension-actions-menu" id="extension-import-menu">
+              <button type="button" class="dns-dropdown-option" data-extension-import-mode="file">${t("extensions.transfer.file")}</button>
+              <button type="button" class="dns-dropdown-option" data-extension-import-mode="archive">${t("extensions.transfer.archive")}</button>
+            </div>
+          </div>
+          <div class="dns-dropdown extension-actions-dropdown">
+            <button type="button" class="dns-dropdown-toggle extension-actions-toggle" id="extension-export-toggle">${t("extensions.export")}</button>
+            <div class="dns-dropdown-menu hidden extension-actions-menu" id="extension-export-menu">
+              <button type="button" class="dns-dropdown-option" data-extension-export-mode="file">${t("extensions.transfer.file")}</button>
+              <button type="button" class="dns-dropdown-option" data-extension-export-mode="archive">${t("extensions.transfer.archive")}</button>
+            </div>
+          </div>
         </div>
       </div>
       ${notice}
-      <input id="extension-local-picker" type="file" accept=".zip,.xpi,.crx,application/zip,application/x-xpinstall" style="display:none;" />
-      <div class="security-frame">
-        <h4>${t("extensions.dropTitle")}</h4>
-        <div id="extension-dropzone" class="profiles-target-box" style="min-height:96px;justify-content:center;cursor:pointer;">
-          <div class="meta">${t("extensions.dropHint")}</div>
-        </div>
+      <div class="panel extension-library-toolbar">
+        <label>
+          <span>${t("extensions.filter.label")}</span>
+          <select id="extension-library-filter">
+            ${filterOptions.map((option) => `
+              <option value="${option.value}" ${option.value === filterValue ? "selected" : ""}>${escapeHtml(option.label)}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label class="checkbox-inline">
+          <input type="checkbox" id="extension-auto-update-all" ${state.autoUpdateEnabled ? "checked" : ""} />
+          <span>${t("extensions.autoUpdateAll")}</span>
+        </label>
+        ${buildTagPickerMarkup({
+          id: "extension-filter-tags",
+          selectedTags,
+          availableTags,
+          emptyLabel: t("extensions.tags.filterAll"),
+          searchPlaceholder: t("extensions.tags.search"),
+          createLabel: null,
+          allowCreate: false,
+          toggleLabel: tagSummary(selectedTags, t("extensions.tags.filterAll"))
+        })}
       </div>
-      <div class="panel" style="margin-top:12px;">
-        <table class="extensions-table">
-          <thead>
-            <tr>
-              <th>${t("extensions.name")}</th>
-              <th>${t("extensions.version")}</th>
-              <th>${t("extensions.engine")}</th>
-              <th>${t("extensions.assignProfiles")}</th>
-              <th>${t("extensions.actions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${items.length ? items.map((item) => extensionCard(item, model.profiles ?? [], t)).join("") : `<tr><td colspan="5" class="meta">${t("extensions.empty")}</td></tr>`}
-          </tbody>
-        </table>
+      <input id="extension-local-picker" type="file" accept=".zip,.xpi,.crx,application/zip,application/x-xpinstall" style="display:none;" />
+      <div id="extension-dropzone" class="profiles-target-box extension-library-dropzone">
+        <div class="meta">${t("extensions.dropHint")}</div>
+      </div>
+      <div class="extension-library-grid">
+        ${visibleItems.length
+          ? visibleItems.map((item) => extensionCard(item, model.profiles ?? [], t)).join("")
+          : `<div class="panel"><div class="meta">${t("extensions.empty")}</div></div>`}
       </div>
     </div>
   `;
 }
 
 export async function hydrateExtensionsModel(model) {
+  try {
+    await refreshExtensionLibraryUpdates();
+  } catch {
+    // Keep the library usable even if background update refresh fails.
+  }
   const result = await listExtensionLibrary();
-  model.extensionLibraryState = result.ok ? JSON.parse(result.data || "{}") : { items: {} };
+  model.extensionLibraryState = result.ok ? JSON.parse(result.data || "{}") : { autoUpdateEnabled: false, items: {} };
+  model.extensionLibraryFilter = model.extensionLibraryFilter ?? "all";
+  model.extensionLibraryTagFilter = uniqueTags(model.extensionLibraryTagFilter ?? []);
 }
 
 async function createFromUrl(model, rerender, t) {
@@ -275,13 +439,107 @@ async function createFromLocalFile(model, rerender, t, file, sourceKind) {
   await rerender();
 }
 
+async function saveExtensionItem(model, rerender, t, item, payload) {
+  const updateResult = await updateExtensionLibraryItem({
+    extensionId: item.id,
+    displayName: payload.displayName || item.displayName,
+    version: payload.version || item.version,
+    engineScope: payload.engineScope || item.engineScope,
+    storeUrl: item.storeUrl || null,
+    logoUrl: item.logoUrl || null,
+    tags: payload.tags ?? [],
+    autoUpdateEnabled: payload.autoUpdateEnabled,
+    preserveOnPanicWipe: payload.preserveOnPanicWipe,
+    protectDataFromPanicWipe: payload.protectDataFromPanicWipe
+  });
+  let result = updateResult;
+  if (updateResult.ok) {
+    result = await setExtensionProfiles(item.id, payload.assignedProfileIds);
+  }
+  model.extensionNotice = {
+    type: result.ok ? "success" : "error",
+    text: result.ok ? t("extensions.edited") : String(result.data.error)
+  };
+  await hydrateExtensionsModel(model);
+  await rerender();
+}
+
 export function wireExtensions(root, model, rerender, t) {
   const localPicker = root.querySelector("#extension-local-picker");
+  const importMenu = root.querySelector("#extension-import-menu");
+  const exportMenu = root.querySelector("#extension-export-menu");
+  const filterTagState = {
+    selected: uniqueTags(model.extensionLibraryTagFilter ?? []),
+    available: collectExtensionTags(model.extensionLibraryState ?? { items: {} })
+  };
+  const filterTagPicker = wireTagPicker(root, {
+    id: "extension-filter-tags",
+    state: filterTagState,
+    emptyLabel: t("extensions.tags.filterAll"),
+    searchPlaceholder: t("extensions.tags.search"),
+    allowCreate: false,
+    onChange(selected) {
+      model.extensionLibraryTagFilter = uniqueTags(selected ?? []);
+      rerender();
+    }
+  });
+  filterTagPicker?.rerender(filterTagState.available, filterTagState.selected);
   root.querySelector("#extension-add-url")?.addEventListener("click", async () => {
     await createFromUrl(model, rerender, t);
   });
-  root.querySelector("#extension-add-local")?.addEventListener("click", async () => {
-    localPicker?.click();
+  root.querySelector("#extension-import-toggle")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    importMenu?.classList.toggle("hidden");
+    exportMenu?.classList.add("hidden");
+  });
+  root.querySelector("#extension-export-toggle")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    exportMenu?.classList.toggle("hidden");
+    importMenu?.classList.add("hidden");
+  });
+  for (const button of root.querySelectorAll("[data-extension-import-mode]")) {
+    button.addEventListener("click", async () => {
+      importMenu?.classList.add("hidden");
+      const result = await importExtensionLibrary(button.getAttribute("data-extension-import-mode"));
+      model.extensionNotice = {
+        type: result.ok ? "success" : "error",
+        text: result.ok
+          ? t("extensions.transfer.imported").replace("{count}", String(result.data.imported))
+          : String(result.data.error)
+      };
+      await hydrateExtensionsModel(model);
+      await rerender();
+    });
+  }
+  for (const button of root.querySelectorAll("[data-extension-export-mode]")) {
+    button.addEventListener("click", async () => {
+      exportMenu?.classList.add("hidden");
+      const result = await exportExtensionLibrary(button.getAttribute("data-extension-export-mode"));
+      model.extensionNotice = {
+        type: result.ok ? "success" : "error",
+        text: result.ok
+          ? t("extensions.transfer.exported").replace("{count}", String(result.data.exported))
+          : String(result.data.error)
+      };
+      await rerender();
+    });
+  }
+  root.querySelector("#extension-auto-update-all")?.addEventListener("change", async (event) => {
+    const result = await updateExtensionLibraryPreferences({
+      autoUpdateEnabled: Boolean(event.target.checked)
+    });
+    model.extensionNotice = {
+      type: result.ok ? "success" : "error",
+      text: result.ok ? t("action.save") : String(result.data.error)
+    };
+    await hydrateExtensionsModel(model);
+    await rerender();
+  });
+  root.querySelector("#extension-library-filter")?.addEventListener("change", async (event) => {
+    model.extensionLibraryFilter = event.target.value || "all";
+    await rerender();
   });
   localPicker?.addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
@@ -305,52 +563,54 @@ export function wireExtensions(root, model, rerender, t) {
     localPicker?.click();
   });
 
-  for (const button of root.querySelectorAll("[data-profile-menu-toggle]")) {
-    button.addEventListener("click", () => {
-      const id = button.getAttribute("data-profile-menu-toggle");
-      root.querySelector(`[data-profile-menu='${id}']`)?.classList.toggle("hidden");
-    });
-  }
-  for (const checkbox of root.querySelectorAll("[data-profile-assign]")) {
-    checkbox.addEventListener("change", async () => {
-      const [extensionId] = checkbox.getAttribute("data-profile-assign").split(":");
-      const assignedProfileIds = [...root.querySelectorAll(`[data-profile-assign^='${extensionId}:']:checked`)].map((item) => item.getAttribute("data-profile-assign").split(":")[1]);
-      const result = await setExtensionProfiles(extensionId, assignedProfileIds);
-      model.extensionNotice = { type: result.ok ? "success" : "error", text: result.ok ? t("action.save") : String(result.data.error) };
-      await hydrateExtensionsModel(model);
-      await rerender();
-    });
-  }
+  root.addEventListener("click", (event) => {
+    if (!event.target.closest("#extension-import-toggle") && !event.target.closest("#extension-import-menu")) {
+      importMenu?.classList.add("hidden");
+    }
+    if (!event.target.closest("#extension-export-toggle") && !event.target.closest("#extension-export-menu")) {
+      exportMenu?.classList.add("hidden");
+    }
+    if (!event.target.closest("[data-tag-picker='extension-filter-tags']")) {
+      filterTagPicker?.close();
+    }
+  });
 
-  for (const rowEl of root.querySelectorAll(".extensions-table tbody tr[data-extension-id]")) {
-    rowEl.addEventListener("click", async (event) => {
-      const action = event.target?.closest?.("[data-action]")?.getAttribute?.("data-action");
-      if (!action) return;
-      const extensionId = rowEl.getAttribute("data-extension-id");
+  for (const card of root.querySelectorAll(".extension-library-card")) {
+    const openModal = async () => {
+      const extensionId = card.getAttribute("data-extension-id");
       const item = model.extensionLibraryState?.items?.[extensionId];
       if (!item) return;
-      if (action === "remove") {
+      const payload = await openExtensionModal(t, model.profiles ?? [], item, collectExtensionTags(model.extensionLibraryState ?? { items: {} }));
+      if (!payload) return;
+      await saveExtensionItem(model, rerender, t, item, payload);
+    };
+
+    card.addEventListener("click", async (event) => {
+      const removeButton = event.target?.closest?.("[data-action='remove']");
+      if (removeButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        const extensionId = card.getAttribute("data-extension-id");
+        const item = model.extensionLibraryState?.items?.[extensionId];
+        if (!item) return;
+        const confirmed = await askConfirmModal(t, {
+          title: t("extensions.remove"),
+          description: item.displayName ?? t("extensions.remove")
+        });
+        if (!confirmed) return;
         const result = await removeExtensionLibraryItem(extensionId);
         model.extensionNotice = { type: result.ok ? "success" : "error", text: result.ok ? t("extensions.removed") : String(result.data.error) };
+        await hydrateExtensionsModel(model);
+        await rerender();
+        return;
       }
-      if (action === "edit") {
-        const payload = await openLibraryModal(root, t, model.profiles ?? [], item);
-        if (!payload) return;
-        const result = await updateExtensionLibraryItem({
-          extensionId,
-          displayName: payload.displayName || item.displayName,
-          version: payload.version || item.version,
-          engineScope: payload.engineScope || item.engineScope,
-          storeUrl: payload.storeUrl || item.storeUrl || null,
-          logoUrl: payload.logoUrl || item.logoUrl || null
-        });
-        if (result.ok) {
-          await setExtensionProfiles(extensionId, payload.assignedProfileIds);
-        }
-        model.extensionNotice = { type: result.ok ? "success" : "error", text: result.ok ? t("extensions.edited") : String(result.data.error) };
-      }
-      await hydrateExtensionsModel(model);
-      await rerender();
+      await openModal();
+    });
+
+    card.addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      await openModal();
     });
   }
 }

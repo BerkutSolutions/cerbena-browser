@@ -54,6 +54,7 @@ This directory contains the release-synced bilingual Cerbena Browser documentati
 - Managed route runtime and traffic gateway behavior.
 - Service filtering, blocklists, domain restrictions, and external-link routing.
 - Launcher CLI, local API, MCP, sync controls, installer packaging, and release gates.
+- Trusted release delivery with signed checksums, a standalone updater, backward-compatible sync encryption, and desktop-shell secret protection.
 - The `TASKS4` hardening validation matrix, residual risks, and release expectations for `U14-2`.
 
 ## Quality expectations

@@ -32,7 +32,7 @@ const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.0.2";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";
@@ -40,17 +40,21 @@ function renderBrandLogo(kind = "full") {
   return `<img class='brand-logo-image brand-logo-image--${kind}' src='${src}' alt='${alt}' draggable='false' />`;
 }
 
+function menuAssetIcon(path, alt = "") {
+  return `<img src="${path}" alt="${alt}" draggable="false" />`;
+}
+
 const ICONS = {
-  home: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M4 10.5 12 4l8 6.5'/><path d='M6.5 9.5V20h11V9.5'/></svg>",
-  extensions: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M10 4.5a2.5 2.5 0 1 1 4.7 1.2h2.3A1.5 1.5 0 0 1 18.5 7v2.3a2.4 2.4 0 1 1 0 5.4V17a1.5 1.5 0 0 1-1.5 1.5h-2.3a2.4 2.4 0 1 1-5.4 0H7A1.5 1.5 0 0 1 5.5 17v-2.3a2.4 2.4 0 1 1 0-5.4V7A1.5 1.5 0 0 1 7 5.5h3.2A2.5 2.5 0 0 1 10 4.5Z'/></svg>",
-  network: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M6 8h12'/><path d='M8 12h8'/><path d='M10 16h4'/><path d='M4 8h0M20 8h0M6 12h0M18 12h0M8 16h0M16 16h0'/></svg>",
-  traffic: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M4 7h9'/><path d='M4 12h16'/><path d='M4 17h11'/><path d='m16 7 4 0'/><path d='m17 4 3 3-3 3'/><path d='m15 14-3 3 3 3'/><path d='m12 17 4 0'/></svg>",
-  dns: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><ellipse cx='12' cy='6' rx='7' ry='3'/><path d='M5 6v5c0 1.7 3.1 3 7 3s7-1.3 7-3V6'/><path d='M5 11v5c0 1.7 3.1 3 7 3s7-1.3 7-3v-5'/></svg>",
+  home: menuAssetIcon("./assets/menu/home.svg"),
+  extensions: menuAssetIcon("./assets/menu/extensions.svg"),
+  network: menuAssetIcon("./assets/menu/network.svg"),
+  traffic: menuAssetIcon("./assets/menu/traffic.svg"),
+  dns: menuAssetIcon("./assets/menu/dns.svg"),
   sync: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M3 12a9 9 0 0 1 15-6'/><path d='M21 12a9 9 0 0 1-15 6'/><path d='M18 3v4h-4'/><path d='M6 21v-4h4'/></svg>",
-  security: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3.5 19 7v5.2c0 4.5-2.8 7.4-7 9.3-4.2-1.9-7-4.8-7-9.3V7l7-3.5Z'/></svg>",
+  security: menuAssetIcon("./assets/menu/security.svg"),
   logs: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><rect x='4' y='3' width='16' height='18' rx='2'/><path d='M8 8h8M8 12h8M8 16h5'/></svg>",
-  settings: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='3.2'/><path d='M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a2 2 0 0 1-4 0v-.2a1 1 0 0 0-.7-.9 1 1 0 0 0-1.1.2l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a2 2 0 0 1 0-4h.2a1 1 0 0 0 .9-.7 1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2h.1a1 1 0 0 0 .6-.9V4a2 2 0 0 1 4 0v.2a1 1 0 0 0 .7.9 1 1 0 0 0 1.1-.2l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1v.1a1 1 0 0 0 .9.6H20a2 2 0 0 1 0 4h-.2a1 1 0 0 0-.9.7Z'/></svg>",
-  identity: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='8' r='3.25'/><path d='M6 18.5c1.1-2.7 3.3-4 6-4s4.9 1.3 6 4'/></svg>",
+  settings: menuAssetIcon("./assets/menu/settings.svg"),
+  identity: menuAssetIcon("./assets/menu/identity.svg"),
   diagnostics: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M3 3v18h18'/><path d='M7 14l3-3 3 2 4-5'/></svg>"
 };
 

@@ -14,6 +14,7 @@ This page belongs to the current Cerbena Browser documentation branch and serves
 - product overview and reading routes;
 - documentation for the real desktop UI sections;
 - documents for profiles, networking, DNS, filters, extensions, `Links`, `Sync`, and updates;
+- material for trusted update delivery, signed checksums, the standalone updater, and protected desktop-shell state;
 - architecture contracts for profile isolation and zero-trust;
 - operator material for managed runtime, quality gates, and stability;
 - release runbook, installer packaging, and troubleshooting.

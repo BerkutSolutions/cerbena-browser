@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    fs,
-    path::Path,
-};
+use std::{collections::BTreeSet, fs, path::Path};
 
 use browser_profile::ProfileMetadata;
 use serde::{Deserialize, Serialize};
@@ -125,7 +121,10 @@ pub fn enforce_launch_posture(
             if acknowledgement_report_id == Some(report.report_id.as_str()) {
                 Ok(())
             } else {
-                Err(format!("{ERR_CONFIRM_REQUIRED_PREFIX}:{}", report.report_id))
+                Err(format!(
+                    "{ERR_CONFIRM_REQUIRED_PREFIX}:{}",
+                    report.report_id
+                ))
             }
         }
         _ => Ok(()),
@@ -226,7 +225,10 @@ fn suspicious_processes(process_names: &[String]) -> Vec<String> {
     let mut out = BTreeSet::new();
     for name in process_names {
         let lower = name.to_ascii_lowercase();
-        if SEVERE_PROCESS_MARKERS.iter().any(|marker| lower.contains(marker)) {
+        if SEVERE_PROCESS_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+        {
             out.insert(name.clone());
         }
     }
@@ -298,7 +300,10 @@ mod tests {
 
     #[test]
     fn severe_findings_mark_report_as_severe() {
-        let report = build_report(Path::new("C:/Temp/cerbena.exe"), &["procmon.exe".to_string()]);
+        let report = build_report(
+            Path::new("C:/Temp/cerbena.exe"),
+            &["procmon.exe".to_string()],
+        );
         assert_eq!(report.status, "severe");
         assert!(!report.findings.is_empty());
     }

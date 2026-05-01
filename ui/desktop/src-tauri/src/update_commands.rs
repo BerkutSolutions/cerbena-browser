@@ -6,22 +6,36 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, State};
 
 use crate::{
     envelope::{ok, UiEnvelope},
-    state::{persist_app_update_store, AppState},
+    state::{app_local_data_root, persist_app_update_store, AppState},
 };
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPOSITORY_URL: &str = "https://github.com/BerkutSolutions/cerbena-browser";
 const GITHUB_LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/BerkutSolutions/cerbena-browser/releases/latest";
+const RELEASE_CHECKSUMS_ASSET: &str = "checksums.txt";
+const RELEASE_CHECKSUMS_SIGNATURE_ASSET: &str = "checksums.sig";
 const UPDATE_CHECK_INTERVAL_MS: u128 = 6 * 60 * 60 * 1000;
 const SCHEDULER_TICK: Duration = Duration::from_secs(15 * 60);
 const USER_AGENT: &str = concat!("Cerbena-Updater/", env!("CARGO_PKG_VERSION"));
+const UPDATER_EVENT_NAME: &str = "updater-progress";
+const RELEASE_SIGNING_PUBLIC_KEY_XML: &str = r#"<RSAKeyValue><Modulus>sQ/dGNzpHEHiSUvpp8+h4axIghjUrkY9hHX3GNPwS9kGK6FCoc6+DuKSK/u5JwEKk/sjTks2m8ANgCm1ajaEPFE/BQjP1VsqQE3/MGbpRwWXIYUP6qKX2EhMQa5Fg0fywHV5uk7v3x6Q/Yfc4cWVLKNClqpq2hk8CX0NfUjqN1s5CNnNH1zgZPZ45ExXZQBlM5UUhdY/N4LKTFiYjpDMvoW4KSM4j9maUBmoNGVTnnRgfyWm6wM7LCoqSPpYhSb4yE+/HtaBGpePVy21B5Xi1nzPSYfShEdVkmeCJTcTj8gr1o8OcqKEs5V3yQa6MmUhNgYM/uC/lGeqiR+lwiLG4Q==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>"#;
+
+const UPDATER_STEP_DISCOVER: &str = "discover";
+const UPDATER_STEP_COMPARE: &str = "compare";
+const UPDATER_STEP_SECURITY: &str = "security";
+const UPDATER_STEP_DOWNLOAD: &str = "download";
+const UPDATER_STEP_CHECKSUM: &str = "checksum";
+const UPDATER_STEP_INSTALL: &str = "install";
+const UPDATER_STEP_RELAUNCH: &str = "relaunch";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +64,104 @@ pub struct AppUpdateStore {
     pub staged_asset_path: Option<String>,
     #[serde(default)]
     pub pending_apply_on_exit: bool,
+    #[serde(default)]
+    pub updater_handoff_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdaterLaunchMode {
+    Disabled,
+    Preview,
+    Auto,
+}
+
+impl UpdaterLaunchMode {
+    pub fn from_args<I>(args: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut preview = false;
+        let mut updater = false;
+        for value in args {
+            match value.as_ref().trim() {
+                "--updater" => updater = true,
+                "--updater-preview" => {
+                    updater = true;
+                    preview = true;
+                }
+                _ => {}
+            }
+        }
+        let launched_from_updater_binary = std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .and_then(|value| value.to_str().map(|value| value.to_ascii_lowercase()))
+            })
+            .map(|value| value.contains("updater"))
+            .unwrap_or(false);
+        if !updater && !launched_from_updater_binary {
+            return Self::Disabled;
+        }
+        if preview {
+            return Self::Preview;
+        }
+        Self::Auto
+    }
+
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub fn is_preview(self) -> bool {
+        matches!(self, Self::Preview)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdaterStepView {
+    pub id: String,
+    pub title_key: String,
+    pub detail: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdaterOverview {
+    pub mode: String,
+    pub dry_run: bool,
+    pub status: String,
+    pub current_version: String,
+    pub target_version: Option<String>,
+    pub release_url: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub summary_key: String,
+    pub summary_detail: String,
+    pub can_close: bool,
+    pub steps: Vec<UpdaterStepView>,
+}
+
+#[derive(Debug)]
+pub struct UpdaterRuntimeState {
+    pub launch_mode: UpdaterLaunchMode,
+    pub flow_started: bool,
+    pub running: bool,
+    pub overview: UpdaterOverview,
+}
+
+impl UpdaterRuntimeState {
+    pub fn new(launch_mode: UpdaterLaunchMode) -> Self {
+        Self {
+            launch_mode,
+            flow_started: false,
+            running: false,
+            overview: updater_overview_template(launch_mode),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +179,44 @@ pub struct AppUpdateView {
     pub staged_version: Option<String>,
     pub staged_asset_name: Option<String>,
     pub can_auto_apply: bool,
+}
+
+#[tauri::command]
+pub fn get_updater_overview(
+    state: State<AppState>,
+    correlation_id: String,
+) -> Result<UiEnvelope<UpdaterOverview>, String> {
+    let overview = state
+        .updater_runtime
+        .lock()
+        .map_err(|e| format!("lock updater runtime: {e}"))?
+        .overview
+        .clone();
+    Ok(ok(correlation_id, overview))
+}
+
+#[tauri::command]
+pub fn start_updater_flow(
+    state: State<AppState>,
+    correlation_id: String,
+) -> Result<UiEnvelope<UpdaterOverview>, String> {
+    ensure_updater_flow_started(&state)?;
+    let overview = state
+        .updater_runtime
+        .lock()
+        .map_err(|e| format!("lock updater runtime: {e}"))?
+        .overview
+        .clone();
+    Ok(ok(correlation_id, overview))
+}
+
+#[tauri::command]
+pub fn launch_updater_preview(
+    state: State<AppState>,
+    correlation_id: String,
+) -> Result<UiEnvelope<bool>, String> {
+    spawn_updater_process(&state.app_handle, UpdaterLaunchMode::Preview)?;
+    Ok(ok(correlation_id, true))
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +238,51 @@ struct ReleaseCandidate {
     release_url: String,
     asset_name: Option<String>,
     asset_url: Option<String>,
+    checksums_url: Option<String>,
+    checksums_signature_url: Option<String>,
+}
+
+fn updater_overview_template(mode: UpdaterLaunchMode) -> UpdaterOverview {
+    let dry_run = mode.is_preview();
+    UpdaterOverview {
+        mode: if dry_run {
+            "preview".to_string()
+        } else {
+            "auto".to_string()
+        },
+        dry_run,
+        status: "idle".to_string(),
+        current_version: CURRENT_VERSION.to_string(),
+        target_version: None,
+        release_url: None,
+        started_at: None,
+        finished_at: None,
+        summary_key: if dry_run {
+            "updater.summary.preview_ready".to_string()
+        } else {
+            "updater.summary.ready".to_string()
+        },
+        summary_detail: String::new(),
+        can_close: false,
+        steps: vec![
+            updater_step(UPDATER_STEP_DISCOVER, "updater.steps.discover", "idle"),
+            updater_step(UPDATER_STEP_COMPARE, "updater.steps.compare", "idle"),
+            updater_step(UPDATER_STEP_SECURITY, "updater.steps.security", "idle"),
+            updater_step(UPDATER_STEP_DOWNLOAD, "updater.steps.download", "idle"),
+            updater_step(UPDATER_STEP_CHECKSUM, "updater.steps.checksum", "idle"),
+            updater_step(UPDATER_STEP_INSTALL, "updater.steps.install", "idle"),
+            updater_step(UPDATER_STEP_RELAUNCH, "updater.steps.relaunch", "idle"),
+        ],
+    }
+}
+
+fn updater_step(id: &str, title_key: &str, status: &str) -> UpdaterStepView {
+    UpdaterStepView {
+        id: id.to_string(),
+        title_key: title_key.to_string(),
+        detail: String::new(),
+        status: status.to_string(),
+    }
 }
 
 #[tauri::command]
@@ -134,12 +329,23 @@ pub fn check_launcher_updates(
 pub fn start_update_scheduler(app: AppHandle) {
     thread::spawn(move || loop {
         let state = app.state::<AppState>();
+        let updater_active = state
+            .updater_runtime
+            .lock()
+            .map(|runtime| runtime.launch_mode.is_active())
+            .unwrap_or(false);
+        if updater_active {
+            thread::sleep(SCHEDULER_TICK);
+            continue;
+        }
         let should_run = match state.app_update_store.lock() {
             Ok(store) => {
                 store.auto_update_enabled
                     && store
                         .last_checked_epoch_ms
-                        .map(|value| now_epoch_ms().saturating_sub(value) >= UPDATE_CHECK_INTERVAL_MS)
+                        .map(|value| {
+                            now_epoch_ms().saturating_sub(value) >= UPDATE_CHECK_INTERVAL_MS
+                        })
                         .unwrap_or(true)
             }
             Err(_) => false,
@@ -149,6 +355,118 @@ pub fn start_update_scheduler(app: AppHandle) {
         }
         thread::sleep(SCHEDULER_TICK);
     });
+}
+
+pub fn active_updater_launch_mode() -> UpdaterLaunchMode {
+    UpdaterLaunchMode::from_args(std::env::args().skip(1))
+}
+
+pub fn configure_window_for_launch_mode(
+    window: &tauri::WebviewWindow,
+    mode: UpdaterLaunchMode,
+) -> Result<(), String> {
+    if !mode.is_active() {
+        return Ok(());
+    }
+    window
+        .set_title(if mode.is_preview() {
+            "Cerbena Updater Preview"
+        } else {
+            "Cerbena Updater"
+        })
+        .map_err(|e| format!("set updater window title: {e}"))?;
+    window
+        .set_size(LogicalSize::new(760.0, 720.0))
+        .map_err(|e| format!("set updater window size: {e}"))?;
+    window
+        .set_min_size(Some(LogicalSize::new(680.0, 640.0)))
+        .map_err(|e| format!("set updater window min size: {e}"))?;
+    let _ = window.center();
+    window
+        .eval(&format!(
+            "window.location.replace('./updater.html?mode={}');",
+            if mode.is_preview() { "preview" } else { "auto" }
+        ))
+        .map_err(|e| format!("redirect updater window: {e}"))?;
+    Ok(())
+}
+
+pub fn ensure_updater_flow_started(state: &AppState) -> Result<(), String> {
+    let runtime = state.updater_runtime.clone();
+    let launch_mode = {
+        let mut guard = runtime
+            .lock()
+            .map_err(|e| format!("lock updater runtime: {e}"))?;
+        if guard.flow_started {
+            return Ok(());
+        }
+        guard.flow_started = true;
+        guard.running = true;
+        guard.overview.status = "running".to_string();
+        guard.overview.started_at = Some(now_iso());
+        guard.overview.finished_at = None;
+        guard.overview.can_close = false;
+        guard.launch_mode
+    };
+
+    let app_handle = state.app_handle.clone();
+    thread::spawn(move || {
+        let app_state = app_handle.state::<AppState>();
+        let result = run_updater_flow(&app_state, launch_mode);
+        if let Err(error) = result {
+            let _ = finalize_updater_failure(&app_state, &error);
+        }
+    });
+    Ok(())
+}
+
+fn run_updater_flow(state: &AppState, launch_mode: UpdaterLaunchMode) -> Result<(), String> {
+    if launch_mode.is_preview() {
+        return run_preview_updater_flow(state);
+    }
+    run_live_updater_flow(state)
+}
+
+fn should_launch_external_updater(store: &AppUpdateStore, candidate: &ReleaseCandidate) -> bool {
+    store.updater_handoff_version.as_deref() != Some(candidate.version.as_str())
+}
+
+fn spawn_updater_process(app: &AppHandle, mode: UpdaterLaunchMode) -> Result<(), String> {
+    let exe = resolve_updater_executable_path(app)?;
+    let mut command = Command::new(exe);
+    if mode.is_preview() {
+        command.arg("--updater-preview");
+    } else {
+        command.arg("--updater");
+    }
+    if let Some(dir) = app_local_data_root(app)
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+    {
+        command.current_dir(dir);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x00000010);
+    }
+    command
+        .spawn()
+        .map_err(|e| format!("spawn standalone updater: {e}"))?;
+    Ok(())
+}
+
+fn resolve_updater_executable_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let current_exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
+    let adjacent = current_exe
+        .parent()
+        .map(|parent| parent.join("cerbena-updater.exe"))
+        .ok_or_else(|| "resolve current exe parent for updater".to_string())?;
+    if adjacent.is_file() {
+        return Ok(adjacent);
+    }
+    let _ = app;
+    Ok(current_exe)
 }
 
 pub fn launch_pending_update_on_exit(app: &AppHandle) {
@@ -203,6 +521,229 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
     };
 }
 
+fn run_preview_updater_flow(state: &AppState) -> Result<(), String> {
+    update_updater_overview(state, |overview| {
+        overview.target_version = Some("1.0.3-preview".to_string());
+        overview.release_url = Some(REPOSITORY_URL.to_string());
+        overview.summary_key = "updater.summary.preview_running".to_string();
+        overview.summary_detail = "i18n:updater.detail.preview_running".to_string();
+    })?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_DISCOVER,
+        "running",
+        "i18n:updater.detail.preview_discover_running",
+    )?;
+    thread::sleep(Duration::from_millis(260));
+    progress_updater_step(
+        state,
+        UPDATER_STEP_DISCOVER,
+        "done",
+        "i18n:updater.detail.preview_discover_done",
+    )?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_COMPARE,
+        "running",
+        "i18n:updater.detail.preview_compare_running",
+    )?;
+    thread::sleep(Duration::from_millis(260));
+    progress_updater_step(
+        state,
+        UPDATER_STEP_COMPARE,
+        "done",
+        "i18n:updater.detail.preview_compare_done",
+    )?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_SECURITY,
+        "running",
+        "i18n:updater.detail.preview_security_running",
+    )?;
+    thread::sleep(Duration::from_millis(260));
+    progress_updater_step(
+        state,
+        UPDATER_STEP_SECURITY,
+        "done",
+        "i18n:updater.detail.preview_security_done",
+    )?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_DOWNLOAD,
+        "running",
+        "i18n:updater.detail.preview_download_running",
+    )?;
+    thread::sleep(Duration::from_millis(260));
+    progress_updater_step(
+        state,
+        UPDATER_STEP_DOWNLOAD,
+        "done",
+        "i18n:updater.detail.preview_download_done",
+    )?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_CHECKSUM,
+        "running",
+        "i18n:updater.detail.preview_checksum_running",
+    )?;
+    thread::sleep(Duration::from_millis(260));
+    progress_updater_step(
+        state,
+        UPDATER_STEP_CHECKSUM,
+        "done",
+        "i18n:updater.detail.preview_checksum_done",
+    )?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_INSTALL,
+        "done",
+        "i18n:updater.detail.preview_install_done",
+    )?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_RELAUNCH,
+        "done",
+        "i18n:updater.detail.preview_relaunch_done",
+    )?;
+    finalize_updater_success(
+        state,
+        "completed",
+        "updater.summary.preview_complete",
+        "i18n:updater.detail.preview_complete",
+    )
+}
+
+fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
+    progress_updater_step(
+        state,
+        UPDATER_STEP_DISCOVER,
+        "running",
+        "i18n:updater.detail.live_discover_running",
+    )?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("build updater client: {e}"))?;
+    let candidate = fetch_latest_release(&client)?;
+    update_updater_overview(state, |overview| {
+        overview.target_version = Some(candidate.version.clone());
+        overview.release_url = Some(candidate.release_url.clone());
+        overview.summary_key = "updater.summary.running".to_string();
+        overview.summary_detail = "i18n:updater.detail.live_running".to_string();
+    })?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_DISCOVER,
+        "done",
+        "i18n:updater.detail.live_discover_done",
+    )?;
+
+    progress_updater_step(
+        state,
+        UPDATER_STEP_COMPARE,
+        "running",
+        "i18n:updater.detail.live_compare_running",
+    )?;
+    if !is_version_newer(&candidate.version, CURRENT_VERSION) {
+        progress_updater_step(
+            state,
+            UPDATER_STEP_COMPARE,
+            "done",
+            "i18n:updater.detail.live_compare_uptodate",
+        )?;
+        mark_remaining_updater_steps_skipped(state, UPDATER_STEP_SECURITY)?;
+        return finalize_updater_success(
+            state,
+            "up_to_date",
+            "updater.summary.up_to_date",
+            "i18n:updater.detail.live_up_to_date",
+        );
+    }
+    progress_updater_step(
+        state,
+        UPDATER_STEP_COMPARE,
+        "done",
+        "i18n:updater.detail.live_compare_done",
+    )?;
+
+    progress_updater_step(
+        state,
+        UPDATER_STEP_SECURITY,
+        "running",
+        "i18n:updater.detail.live_security_running",
+    )?;
+    let security_bundle = verify_release_security_bundle(&candidate)?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_SECURITY,
+        "done",
+        "i18n:updater.detail.live_security_done",
+    )?;
+
+    let asset_name = candidate
+        .asset_name
+        .clone()
+        .ok_or_else(|| "release asset name is missing".to_string())?;
+    let asset_url = candidate
+        .asset_url
+        .clone()
+        .ok_or_else(|| "release asset url is missing".to_string())?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_DOWNLOAD,
+        "running",
+        "i18n:updater.detail.live_download_running",
+    )?;
+    let asset_bytes = download_release_bytes(&client, &asset_url, "release asset")?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_DOWNLOAD,
+        "done",
+        "i18n:updater.detail.live_download_done",
+    )?;
+
+    progress_updater_step(
+        state,
+        UPDATER_STEP_CHECKSUM,
+        "running",
+        "i18n:updater.detail.live_checksum_running",
+    )?;
+    ensure_asset_matches_verified_checksum(&security_bundle, &asset_name, &asset_bytes)?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_CHECKSUM,
+        "done",
+        "i18n:updater.detail.live_checksum_done",
+    )?;
+
+    progress_updater_step(
+        state,
+        UPDATER_STEP_INSTALL,
+        "running",
+        "i18n:updater.detail.live_install_running",
+    )?;
+    let _staged_path = stage_verified_release_asset(state, &candidate, &asset_bytes)?;
+    progress_updater_step(
+        state,
+        UPDATER_STEP_INSTALL,
+        "done",
+        "i18n:updater.detail.live_install_done",
+    )?;
+
+    progress_updater_step(
+        state,
+        UPDATER_STEP_RELAUNCH,
+        "done",
+        "i18n:updater.detail.live_relaunch_done",
+    )?;
+    finalize_updater_success(
+        state,
+        "completed",
+        "updater.summary.complete",
+        "i18n:updater.detail.live_complete",
+    )
+}
+
 fn run_update_cycle(state: &AppState, _manual: bool) -> Result<AppUpdateView, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
@@ -228,10 +769,17 @@ fn run_update_cycle(state: &AppState, _manual: bool) -> Result<AppUpdateView, St
             if store.has_update {
                 store.status = "available".to_string();
                 if store.auto_update_enabled {
-                    stage_release_if_needed(state, &mut store, &candidate)?;
+                    if should_launch_external_updater(&store, &candidate) {
+                        spawn_updater_process(&state.app_handle, UpdaterLaunchMode::Auto)?;
+                        store.updater_handoff_version = Some(candidate.version.clone());
+                        store.status = "handoff".to_string();
+                    } else {
+                        stage_release_if_needed(state, &mut store, &candidate)?;
+                    }
                 }
             } else {
                 clear_staged_update(&mut store);
+                store.updater_handoff_version = None;
                 store.status = "up_to_date".to_string();
             }
         }
@@ -260,7 +808,11 @@ fn stage_release_if_needed(
     };
 
     if store.staged_version.as_deref() == Some(candidate.version.as_str())
-        && store.staged_asset_path.as_deref().map(Path::new).is_some_and(Path::is_file)
+        && store
+            .staged_asset_path
+            .as_deref()
+            .map(Path::new)
+            .is_some_and(Path::is_file)
     {
         store.status = if can_auto_apply_asset(asset_name) {
             "downloaded".to_string()
@@ -296,6 +848,7 @@ fn stage_release_if_needed(
     let bytes = response
         .bytes()
         .map_err(|e| format!("read update asset body: {e}"))?;
+    verify_release_candidate(candidate, &bytes)?;
     fs::write(&asset_path, &bytes).map_err(|e| format!("write update asset: {e}"))?;
 
     store.staged_version = Some(candidate.version.clone());
@@ -317,6 +870,129 @@ fn clear_staged_update(store: &mut AppUpdateStore) {
     store.pending_apply_on_exit = false;
 }
 
+fn stage_verified_release_asset(
+    state: &AppState,
+    candidate: &ReleaseCandidate,
+    asset_bytes: &[u8],
+) -> Result<PathBuf, String> {
+    let asset_name = candidate
+        .asset_name
+        .as_deref()
+        .ok_or_else(|| "release asset name is missing".to_string())?;
+    let root = state
+        .app_update_root_path(&state.app_handle)
+        .map_err(|e| format!("resolve update root path: {e}"))?;
+    let target_dir = root.join(&candidate.version);
+    fs::create_dir_all(&target_dir).map_err(|e| format!("create update dir: {e}"))?;
+    let asset_path = target_dir.join(asset_name);
+    fs::write(&asset_path, asset_bytes).map_err(|e| format!("write update asset: {e}"))?;
+
+    let mut store = state
+        .app_update_store
+        .lock()
+        .map_err(|e| format!("lock app update store: {e}"))?;
+    store.latest_version = Some(candidate.version.clone());
+    store.release_url = Some(candidate.release_url.clone());
+    store.has_update = true;
+    store.staged_version = Some(candidate.version.clone());
+    store.staged_asset_name = Some(asset_name.to_string());
+    store.staged_asset_path = Some(asset_path.to_string_lossy().to_string());
+    store.pending_apply_on_exit = can_auto_apply_asset(asset_name);
+    store.status = if store.pending_apply_on_exit {
+        "downloaded".to_string()
+    } else {
+        "available".to_string()
+    };
+    store.last_error = None;
+    persist_update_store_from_state(state, &store)?;
+    Ok(asset_path)
+}
+
+fn update_updater_overview<F>(state: &AppState, mut change: F) -> Result<(), String>
+where
+    F: FnMut(&mut UpdaterOverview),
+{
+    let overview = {
+        let mut runtime = state
+            .updater_runtime
+            .lock()
+            .map_err(|e| format!("lock updater runtime: {e}"))?;
+        change(&mut runtime.overview);
+        runtime.overview.clone()
+    };
+    let _ = state.app_handle.emit(UPDATER_EVENT_NAME, &overview);
+    Ok(())
+}
+
+fn progress_updater_step(
+    state: &AppState,
+    step_id: &str,
+    status: &str,
+    detail: &str,
+) -> Result<(), String> {
+    update_updater_overview(state, |overview| {
+        if let Some(step) = overview.steps.iter_mut().find(|item| item.id == step_id) {
+            step.status = status.to_string();
+            step.detail = detail.to_string();
+        }
+    })
+}
+
+fn mark_remaining_updater_steps_skipped(
+    state: &AppState,
+    from_step_id: &str,
+) -> Result<(), String> {
+    let mut should_mark = false;
+    update_updater_overview(state, |overview| {
+        for step in &mut overview.steps {
+            if step.id == from_step_id {
+                should_mark = true;
+            }
+            if should_mark && step.status == "idle" {
+                step.status = "skipped".to_string();
+                step.detail = "i18n:updater.detail.skipped".to_string();
+            }
+        }
+    })
+}
+
+fn finalize_updater_success(
+    state: &AppState,
+    status: &str,
+    summary_key: &str,
+    summary_detail: &str,
+) -> Result<(), String> {
+    update_updater_overview(state, |overview| {
+        overview.status = status.to_string();
+        overview.summary_key = summary_key.to_string();
+        overview.summary_detail = summary_detail.to_string();
+        overview.finished_at = Some(now_iso());
+        overview.can_close = true;
+    })?;
+    let mut runtime = state
+        .updater_runtime
+        .lock()
+        .map_err(|e| format!("lock updater runtime: {e}"))?;
+    runtime.running = false;
+    Ok(())
+}
+
+fn finalize_updater_failure(state: &AppState, error: &str) -> Result<(), String> {
+    update_updater_overview(state, |overview| {
+        overview.status = "error".to_string();
+        overview.summary_key = "updater.summary.failed".to_string();
+        overview.summary_detail = error.to_string();
+        overview.finished_at = Some(now_iso());
+        overview.can_close = true;
+    })?;
+    let mut runtime = state
+        .updater_runtime
+        .lock()
+        .map_err(|e| format!("lock updater runtime: {e}"))?;
+    runtime.running = false;
+    Ok(())
+}
+
 fn fetch_latest_release(client: &Client) -> Result<ReleaseCandidate, String> {
     let response = client
         .get(GITHUB_LATEST_RELEASE_API)
@@ -334,11 +1010,21 @@ fn fetch_latest_release(client: &Client) -> Result<ReleaseCandidate, String> {
         .map_err(|e| format!("parse latest release payload: {e}"))?;
     let version = normalize_version(&release.tag_name);
     let asset = pick_release_asset(&release.assets);
+    let checksums = release
+        .assets
+        .iter()
+        .find(|item| item.name.eq_ignore_ascii_case(RELEASE_CHECKSUMS_ASSET));
+    let checksums_signature = release.assets.iter().find(|item| {
+        item.name
+            .eq_ignore_ascii_case(RELEASE_CHECKSUMS_SIGNATURE_ASSET)
+    });
     Ok(ReleaseCandidate {
         version,
         release_url: release.html_url,
         asset_name: asset.map(|item| item.name.clone()),
         asset_url: asset.map(|item| item.browser_download_url.clone()),
+        checksums_url: checksums.map(|item| item.browser_download_url.clone()),
+        checksums_signature_url: checksums_signature.map(|item| item.browser_download_url.clone()),
     })
 }
 
@@ -356,6 +1042,162 @@ fn pick_release_asset(assets: &[GithubReleaseAsset]) -> Option<&GithubReleaseAss
 
     candidates.sort_by_key(|asset| asset_rank(&asset.name));
     candidates.into_iter().next()
+}
+
+fn verify_release_candidate(
+    candidate: &ReleaseCandidate,
+    asset_bytes: &[u8],
+) -> Result<(), String> {
+    let asset_name = candidate
+        .asset_name
+        .as_deref()
+        .ok_or_else(|| "release asset name is missing".to_string())?;
+    let security_bundle = verify_release_security_bundle(candidate)?;
+    ensure_asset_matches_verified_checksum(&security_bundle, asset_name, asset_bytes)
+}
+
+struct VerifiedReleaseSecurityBundle {
+    checksums_text: String,
+}
+
+fn verify_release_security_bundle(
+    candidate: &ReleaseCandidate,
+) -> Result<VerifiedReleaseSecurityBundle, String> {
+    let checksums_url = candidate
+        .checksums_url
+        .as_deref()
+        .ok_or_else(|| "release checksums asset is missing".to_string())?;
+    let signature_url = candidate
+        .checksums_signature_url
+        .as_deref()
+        .ok_or_else(|| "release checksums signature asset is missing".to_string())?;
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("build checksum verification client: {e}"))?;
+    let checksums_bytes = download_release_bytes(&client, checksums_url, "release checksums")?;
+    let signature_bytes =
+        download_release_bytes(&client, signature_url, "release checksums signature")?;
+    verify_release_checksums_signature(&checksums_bytes, &signature_bytes)?;
+    let checksums_text = String::from_utf8(checksums_bytes)
+        .map_err(|e| format!("decode release checksums as utf8: {e}"))?;
+    Ok(VerifiedReleaseSecurityBundle { checksums_text })
+}
+
+fn ensure_asset_matches_verified_checksum(
+    security_bundle: &VerifiedReleaseSecurityBundle,
+    asset_name: &str,
+    asset_bytes: &[u8],
+) -> Result<(), String> {
+    let expected_sha256 = extract_checksum_for_asset(&security_bundle.checksums_text, asset_name)
+        .ok_or_else(|| format!("signed checksums do not include {asset_name}"))?;
+    let actual_sha256 = sha256_hex(asset_bytes);
+    if !actual_sha256.eq_ignore_ascii_case(expected_sha256.trim()) {
+        return Err(format!(
+            "update asset checksum mismatch for {asset_name}: expected {}, got {}",
+            expected_sha256.trim(),
+            actual_sha256
+        ));
+    }
+    Ok(())
+}
+
+fn download_release_bytes(client: &Client, url: &str, label: &str) -> Result<Vec<u8>, String> {
+    let response = client
+        .get(url)
+        .header("User-Agent", USER_AGENT)
+        .send()
+        .map_err(|e| format!("download {label}: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "download {label} failed with HTTP {}",
+            response.status()
+        ));
+    }
+    response
+        .bytes()
+        .map(|value| value.to_vec())
+        .map_err(|e| format!("read {label} body: {e}"))
+}
+
+fn verify_release_checksums_signature(
+    checksums_bytes: &[u8],
+    signature_bytes: &[u8],
+) -> Result<(), String> {
+    let signature_b64 = String::from_utf8(signature_bytes.to_vec())
+        .map_err(|e| format!("decode release signature as utf8: {e}"))?;
+    let script = r#"
+$publicXml = @'
+__PUBLIC_KEY_XML__
+'@
+$checksums = [Convert]::FromBase64String($args[0])
+$signature = [Convert]::FromBase64String($args[1])
+$rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
+$rsa.PersistKeyInCsp = $false
+$rsa.FromXmlString($publicXml)
+$sha = [System.Security.Cryptography.SHA256]::Create()
+if (-not $rsa.VerifyData($checksums, $sha, $signature)) {
+  exit 1
+}
+"#
+    .replace("__PUBLIC_KEY_XML__", RELEASE_SIGNING_PUBLIC_KEY_XML);
+
+    let mut command = Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+        &B64.encode(checksums_bytes),
+        signature_b64.trim(),
+    ]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command
+        .output()
+        .map_err(|e| format!("run checksum signature verification: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Err(format!(
+        "release checksum signature verification failed (code {:?}){}{}",
+        output.status.code(),
+        if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(" stderr: {stderr}")
+        },
+        if stdout.is_empty() {
+            String::new()
+        } else {
+            format!(" stdout: {stdout}")
+        }
+    ))
+}
+
+fn extract_checksum_for_asset<'a>(checksums_text: &'a str, asset_name: &str) -> Option<&'a str> {
+    for line in checksums_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let hash = parts.next()?;
+        let entry = parts.next()?;
+        let normalized = entry.replace('\\', "/");
+        if normalized == asset_name || normalized.ends_with(&format!("/{asset_name}")) {
+            return Some(hash);
+        }
+    }
+    None
 }
 
 fn asset_rank(name: &str) -> u8 {
@@ -494,6 +1336,12 @@ fn parse_version_parts(value: &str) -> Vec<u64> {
         .collect()
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
 fn powershell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "''"))
 }
@@ -501,8 +1349,8 @@ fn powershell_quote(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        asset_rank, can_auto_apply_asset, is_version_newer, normalize_version, pick_release_asset,
-        GithubReleaseAsset,
+        asset_rank, can_auto_apply_asset, extract_checksum_for_asset, is_version_newer,
+        normalize_version, pick_release_asset, sha256_hex, GithubReleaseAsset, UpdaterLaunchMode,
     };
 
     #[test]
@@ -548,5 +1396,44 @@ mod tests {
         if cfg!(target_os = "windows") {
             assert_eq!(selected.name, "cerbena-windows.zip");
         }
+    }
+
+    #[test]
+    fn checksum_extraction_matches_plain_and_nested_asset_paths() {
+        let checksums = "\
+abc123  cerbena-windows-x64.zip\n\
+def456  cerbena-windows-x64/cerbena.exe\n";
+        assert_eq!(
+            extract_checksum_for_asset(checksums, "cerbena-windows-x64.zip"),
+            Some("abc123")
+        );
+        assert_eq!(
+            extract_checksum_for_asset(checksums, "cerbena.exe"),
+            Some("def456")
+        );
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_digest() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn updater_launch_mode_detects_preview_flag() {
+        assert!(matches!(
+            UpdaterLaunchMode::from_args(["--updater-preview"]),
+            UpdaterLaunchMode::Preview
+        ));
+    }
+
+    #[test]
+    fn updater_launch_mode_detects_auto_flag() {
+        assert!(matches!(
+            UpdaterLaunchMode::from_args(["--updater"]),
+            UpdaterLaunchMode::Auto
+        ));
     }
 }

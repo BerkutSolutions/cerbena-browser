@@ -15,6 +15,7 @@ import {
   getLauncherUpdateState,
   getLinkRoutingOverview,
   importSearchProviders,
+  launchUpdaterPreview,
   removeLinkTypeProfileBinding,
   refreshDevicePostureReport,
   saveLinkTypeProfileBinding,
@@ -104,7 +105,10 @@ function renderUpdateCard(t, model) {
           <h4>${t("settings.updates.title")}</h4>
           <p class="meta">${t("settings.updates.hint")}</p>
         </div>
-        <button id="settings-update-check">${t("settings.updates.checkNow")}</button>
+        <div class="top-actions">
+          <button id="settings-update-preview">${t("settings.updates.preview")}</button>
+          <button id="settings-update-check">${t("settings.updates.checkNow")}</button>
+        </div>
       </div>
       <div class="grid-two">
         <label>${t("settings.updates.currentVersion")}
@@ -133,9 +137,9 @@ function renderGeneralTab(t, model) {
   const selectedProvider = model.settingsProvider ?? "duckduckgo";
   const posture = model.devicePostureReport;
   return `
-    <section class="panel settings-tab-panel">
+    <section class="settings-tab-panel">
       <div class="settings-panel-grid">
-        <div class="security-frame">
+        <div class="panel settings-card">
           <h4>${t("settings.searchProvider")}</h4>
           <p class="meta">${t("settings.searchProviderHint")}</p>
           <label>${t("settings.searchProvider")}
@@ -144,14 +148,14 @@ function renderGeneralTab(t, model) {
             </select>
           </label>
         </div>
-        <div class="security-frame">
+        <div class="panel settings-card">
           <h4>${t("security.startPage")}</h4>
           <p class="meta">${t("settings.startPageHint")}</p>
           <label>${t("security.startPage")}
             <input id="settings-start-page" value="${escapeHtml(securityState.startupPage ?? "")}" placeholder="https://duckduckgo.com" />
           </label>
         </div>
-        <div class="security-frame">
+        <div class="panel settings-card">
           <div class="row-between">
             <div>
               <h4>${t("devicePosture.title")}</h4>
@@ -182,8 +186,8 @@ function renderLinksTab(t, model) {
   const overview = model.linkRoutingOverview ?? { globalProfileId: null, supportedTypes: [] };
   const globalDraft = state.globalLinkProfileDraft || overview.globalProfileId || "";
   return `
-    <section class="panel settings-tab-panel">
-      <div class="security-frame">
+    <section class="settings-tab-panel">
+      <div class="panel settings-card">
         <div class="row-between">
           <div>
             <h4>${t("links.global.title")}</h4>
@@ -206,7 +210,7 @@ function renderLinksTab(t, model) {
         </div>
       </div>
 
-      <div class="security-frame">
+      <div class="panel settings-card">
         <div class="row-between">
           <div>
             <h4>${t("links.test.title")}</h4>
@@ -219,7 +223,7 @@ function renderLinksTab(t, model) {
         </label>
       </div>
 
-      <div class="security-frame">
+      <div class="panel settings-card">
         <div class="row-between">
           <div>
             <h4>${t("links.table.title")}</h4>
@@ -258,8 +262,8 @@ function renderSyncTab(t, model) {
   const state = ensureSettingsModel(model);
   const info = model.syncOverview;
   return `
-    <section class="panel settings-tab-panel">
-      <div class="security-frame">
+    <section class="settings-tab-panel">
+      <div class="panel settings-card">
         <div class="row-between">
           <div>
             <h4>${t("sync.title")}</h4>
@@ -282,12 +286,12 @@ function renderSyncTab(t, model) {
       </div>
 
       <div class="settings-sync-stats">
-        <div class="security-frame">
+        <div class="panel settings-card">
           <h4>${t("sync.conflicts")}</h4>
           <strong>${(info?.conflicts ?? []).length}</strong>
           <p class="meta">${t("sync.conflictsHint")}</p>
         </div>
-        <div class="security-frame">
+        <div class="panel settings-card">
           <h4>${t("sync.snapshots")}</h4>
           <strong>${(info?.snapshots ?? []).length}</strong>
           <p class="meta">${t("sync.snapshotsHint")}</p>
@@ -469,6 +473,15 @@ export function wireSettings(root, model, rerender, t) {
     model.settingsNotice = {
       type: result.ok ? "success" : "error",
       text: result.ok ? t("settings.updates.checked") : String(result.data.error)
+    };
+    await rerender();
+  });
+
+  root.querySelector("#settings-update-preview")?.addEventListener("click", async () => {
+    const result = await launchUpdaterPreview();
+    model.settingsNotice = {
+      type: result.ok ? "success" : "error",
+      text: result.ok ? t("settings.updates.previewOpened") : String(result.data.error)
     };
     await rerender();
   });

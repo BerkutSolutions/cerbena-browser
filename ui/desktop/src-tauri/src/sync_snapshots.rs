@@ -112,7 +112,13 @@ pub fn restore_snapshot_for_profile(
 
     let payload_paths = snapshot_payload_paths(&material);
     let selected_paths = filter_restore_paths(&payload_paths, request);
-    apply_snapshot_material(state, request.profile_id, &material, &selected_paths, request.scope)?;
+    apply_snapshot_material(
+        state,
+        request.profile_id,
+        &material,
+        &selected_paths,
+        request.scope,
+    )?;
 
     let restored_items = selected_paths.len();
     let skipped_items = payload_paths.len().saturating_sub(restored_items);
@@ -151,7 +157,8 @@ fn build_snapshot_material(
     metadata: &ProfileMetadata,
 ) -> Result<SnapshotMaterial, String> {
     let profile_key = metadata.id.to_string();
-    let files = collect_profile_data_files(&state.profile_root.join(profile_key.clone()).join("data"))?;
+    let files =
+        collect_profile_data_files(&state.profile_root.join(profile_key.clone()).join("data"))?;
 
     let identity_preset = {
         let store = state
@@ -177,7 +184,11 @@ fn build_snapshot_material(
             .map_err(|_| "sync store lock poisoned".to_string())?;
         (
             store.controls.get(&profile_key).cloned(),
-            store.conflicts.get(&profile_key).cloned().unwrap_or_default(),
+            store
+                .conflicts
+                .get(&profile_key)
+                .cloned()
+                .unwrap_or_default(),
         )
     };
 
@@ -212,7 +223,8 @@ fn decode_snapshot_material(
     let bytes = B64
         .decode(snapshot.encrypted_blob_b64.trim())
         .map_err(|e| format!("decode snapshot blob: {e}"))?;
-    let envelope = serde_json::from_slice(&bytes).map_err(|e| format!("parse snapshot blob: {e}"))?;
+    let envelope =
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse snapshot blob: {e}"))?;
     let key = snapshot_key(state, snapshot.profile_id);
     let mut plaintext =
         decrypt_sync_payload(&key, &envelope).map_err(|e| format!("decrypt snapshot: {e}"))?;
@@ -281,14 +293,22 @@ fn apply_snapshot_material(
     scope: RestoreScope,
 ) -> Result<(), String> {
     let profile_key = profile_id.to_string();
-    let restore_config = selected_paths.iter().any(|path| path == "profile/config.json");
-    let restore_identity = selected_paths.iter().any(|path| path == "identity/preset.json");
+    let restore_config = selected_paths
+        .iter()
+        .any(|path| path == "profile/config.json");
+    let restore_identity = selected_paths
+        .iter()
+        .any(|path| path == "identity/preset.json");
     let restore_dns = selected_paths.iter().any(|path| path == "network/dns.json");
     let restore_vpn = selected_paths
         .iter()
         .any(|path| path == "network/vpn_proxy.json");
-    let restore_sync_controls = selected_paths.iter().any(|path| path == "sync/controls.json");
-    let restore_sync_conflicts = selected_paths.iter().any(|path| path == "sync/conflicts.json");
+    let restore_sync_controls = selected_paths
+        .iter()
+        .any(|path| path == "sync/controls.json");
+    let restore_sync_conflicts = selected_paths
+        .iter()
+        .any(|path| path == "sync/conflicts.json");
     let restore_files = selected_paths
         .iter()
         .filter_map(|path| path.strip_prefix("files/").map(str::to_string))
@@ -406,7 +426,10 @@ fn apply_snapshot_material(
                 .map_err(|e| format!("recreate profile data for restore: {e}"))?;
         }
         for entry in &material.files {
-            if !restore_files.iter().any(|path| path == &entry.relative_path) {
+            if !restore_files
+                .iter()
+                .any(|path| path == &entry.relative_path)
+            {
                 continue;
             }
             let target = normalize_snapshot_file_target(&data_root, &entry.relative_path)?;
@@ -464,12 +487,17 @@ fn collect_profile_data_files_recursive(
     Ok(())
 }
 
-fn normalize_snapshot_file_target(data_root: &Path, relative_path: &str) -> Result<PathBuf, String> {
+fn normalize_snapshot_file_target(
+    data_root: &Path,
+    relative_path: &str,
+) -> Result<PathBuf, String> {
     let relative = PathBuf::from(relative_path.replace('\\', "/"));
     if relative.components().any(|component| {
         matches!(
             component,
-            std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
         )
     }) {
         return Err(format!("invalid snapshot relative path: {relative_path}"));
@@ -479,7 +507,10 @@ fn normalize_snapshot_file_target(data_root: &Path, relative_path: &str) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_restore_paths, normalize_snapshot_file_target, SnapshotMaterial, SnapshotProfileConfig};
+    use super::{
+        filter_restore_paths, normalize_snapshot_file_target, SnapshotMaterial,
+        SnapshotProfileConfig,
+    };
     use browser_sync_client::{RestoreRequest, RestoreScope};
     use std::path::Path;
     use uuid::Uuid;
@@ -504,7 +535,9 @@ mod tests {
         );
         assert_eq!(filtered.len(), 2);
         assert!(filtered.iter().any(|item| item == "identity/preset.json"));
-        assert!(filtered.iter().any(|item| item == "files/cookies/data.json"));
+        assert!(filtered
+            .iter()
+            .any(|item| item == "files/cookies/data.json"));
     }
 
     #[test]

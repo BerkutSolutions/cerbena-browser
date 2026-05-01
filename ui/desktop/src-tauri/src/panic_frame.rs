@@ -239,13 +239,9 @@ fn update_panic_frame_window(
 
     if !bounds.is_foreground {
         if mode == "border" {
-            window
-                .set_always_on_top(true)
-                .map_err(|e| e.to_string())?;
+            window.set_always_on_top(true).map_err(|e| e.to_string())?;
         } else {
-            window
-                .set_always_on_top(false)
-                .map_err(|e| e.to_string())?;
+            window.set_always_on_top(false).map_err(|e| e.to_string())?;
             if window.is_visible().map_err(|e| e.to_string())? {
                 window.hide().map_err(|e| e.to_string())?;
             }
@@ -270,7 +266,8 @@ fn update_panic_frame_window(
         ),
         "menu" => {
             let max_x = (bounds.work_right - MENU_WIDTH).max(bounds.work_left);
-            let preferred_x = bounds.x + bounds.width - CONTROL_RIGHT_GAP - MENU_WIDTH + CONTROL_SIZE;
+            let preferred_x =
+                bounds.x + bounds.width - CONTROL_RIGHT_GAP - MENU_WIDTH + CONTROL_SIZE;
             let x = preferred_x.clamp(bounds.work_left, max_x);
             let max_y = (bounds.work_bottom - MENU_HEIGHT).max(bounds.work_top);
             let preferred_y = bounds.y + CONTROL_SIZE + MENU_OFFSET_Y;
@@ -334,7 +331,7 @@ pub fn show_panic_frame_menu(app_handle: &AppHandle, profile_id: Uuid) -> Result
         MENU_WIDTH.round() as u32,
         MENU_HEIGHT.round() as u32,
     )))
-        .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?;
     menu.show().map_err(|e| e.to_string())?;
     menu.set_focus().map_err(|e| e.to_string())?;
     Ok(())
@@ -381,7 +378,8 @@ fn query_main_window_bounds(pid: u32, app_pid: u32) -> Option<WindowBounds> {
             .and_then(|value| window_process_id(value))
             .unwrap_or_default();
         let monitor = monitor_from_window(hwnd, MONITOR_DEFAULTTONEAREST)?;
-        let foreground_monitor = foreground.and_then(|value| monitor_from_window(value, MONITOR_DEFAULTTONEAREST));
+        let foreground_monitor =
+            foreground.and_then(|value| monitor_from_window(value, MONITOR_DEFAULTTONEAREST));
         let info = get_monitor_info(monitor)?;
 
         Some(WindowBounds {
@@ -495,7 +493,10 @@ fn find_main_window_for_pid(pid: u32) -> Option<Hwnd> {
         best_area: 0,
     };
     unsafe {
-        EnumWindows(Some(enum_windows_for_pid), &mut state as *mut EnumWindowState as isize);
+        EnumWindows(
+            Some(enum_windows_for_pid),
+            &mut state as *mut EnumWindowState as isize,
+        );
     }
     (!state.best_hwnd.is_null()).then_some(state.best_hwnd)
 }

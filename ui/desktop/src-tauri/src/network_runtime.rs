@@ -831,9 +831,70 @@ fn untar_gz_archive(archive_path: &Path, target_dir: &Path) -> Result<(), String
         .map_err(|e| format!("open tar.gz archive {}: {e}", archive_path.display()))?;
     let gz = GzDecoder::new(file);
     let mut archive = Archive::new(gz);
-    archive
-        .unpack(target_dir)
-        .map_err(|e| format!("extract tar.gz {}: {e}", archive_path.display()))
+    for (index, entry_result) in archive
+        .entries()
+        .map_err(|e| format!("open tar.gz entries {}: {e}", archive_path.display()))?
+        .enumerate()
+    {
+        let mut entry = entry_result.map_err(|e| {
+            format!(
+                "read tar.gz entry {index} in {}: {e}",
+                archive_path.display()
+            )
+        })?;
+        let relative = entry
+            .path()
+            .map_err(|e| format!("read tar path {index} in {}: {e}", archive_path.display()))?
+            .into_owned();
+        let out_path = safe_archive_join(target_dir, &relative).map_err(|e| {
+            format!(
+                "reject tar entry {} in {}: {e}",
+                relative.display(),
+                archive_path.display()
+            )
+        })?;
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(format!(
+                "reject tar entry {} in {}: links are not allowed",
+                relative.display(),
+                archive_path.display()
+            ));
+        }
+        if entry_type.is_dir() {
+            fs::create_dir_all(&out_path)
+                .map_err(|e| format!("create tar dir {}: {e}", out_path.display()))?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("create tar file parent {}: {e}", parent.display()))?;
+        }
+        entry
+            .unpack(&out_path)
+            .map_err(|e| format!("extract tar file {}: {e}", out_path.display()))?;
+    }
+    Ok(())
+}
+
+fn safe_archive_join(target_dir: &Path, relative: &Path) -> Result<PathBuf, String> {
+    let mut normalized = PathBuf::new();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err("path traversal is not allowed".to_string())
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err("absolute archive paths are not allowed".to_string())
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        return Err("empty archive path".to_string());
+    }
+    Ok(target_dir.join(normalized))
 }
 
 fn extract_msi(msi_path: &Path, target_dir: &Path) -> Result<(), String> {
@@ -957,6 +1018,9 @@ fn now_epoch_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{write::GzEncoder, Compression};
+    use tar::{Builder, Header};
+    use tempfile::tempdir;
 
     #[test]
     fn parse_checksum_from_signed_file_line() {
@@ -972,5 +1036,41 @@ abcdef0123456789  tor-expert-bundle-windows-x86_64-15.0.9.tar.gz\n\
         let sums = "0123 *tor-expert-bundle-windows-x86_64-15.0.9.tar.gz\n";
         let actual = extract_checksum_value(sums, "tor-expert-bundle-windows-x86_64-15.0.9.tar.gz");
         assert_eq!(actual.as_deref(), Some("0123"));
+    }
+
+    #[test]
+    fn safe_archive_join_rejects_parent_traversal_entries() {
+        let target_dir = Path::new("C:/tmp/cerbena-test");
+        let error = safe_archive_join(target_dir, Path::new("../escape.txt"))
+            .expect_err("must reject traversal");
+        assert!(error.contains("path traversal"));
+    }
+
+    #[test]
+    fn tar_extraction_accepts_safe_entries() {
+        let temp = tempdir().expect("tempdir");
+        let archive_path = temp.path().join("safe.tar.gz");
+        let target_dir = temp.path().join("target");
+        fs::create_dir_all(&target_dir).expect("create target");
+
+        let tar_file = fs::File::create(&archive_path).expect("create archive");
+        let encoder = GzEncoder::new(tar_file, Compression::default());
+        let mut builder = Builder::new(encoder);
+        let payload = b"ok";
+        let mut header = Header::new_gnu();
+        header.set_size(payload.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "tor/tor.exe", &payload[..])
+            .expect("append safe entry");
+        let encoder = builder.into_inner().expect("finish tar builder");
+        encoder.finish().expect("finish gzip encoder");
+
+        untar_gz_archive(&archive_path, &target_dir).expect("safe archive extracts");
+        let extracted = target_dir.join("tor").join("tor.exe");
+        assert!(extracted.is_file());
+        let bytes = fs::read(extracted).expect("read extracted file");
+        assert_eq!(bytes, b"ok");
     }
 }
