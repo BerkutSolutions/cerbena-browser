@@ -43,10 +43,11 @@ impl SnapshotManager {
         encrypted_blob_b64: String,
         sha256_hex: String,
     ) -> BackupSnapshot {
+        let created_at_unix_ms = self.next_created_at_unix_ms();
         let snapshot = BackupSnapshot {
-            snapshot_id: format!("snap-{}-{}", profile_id, now_unix_ms()),
+            snapshot_id: format!("snap-{}-{}", profile_id, Uuid::new_v4()),
             profile_id,
-            created_at_unix_ms: now_unix_ms(),
+            created_at_unix_ms,
             encrypted_blob_b64,
             integrity_sha256_hex: sha256_hex,
         };
@@ -56,11 +57,14 @@ impl SnapshotManager {
     }
 
     pub fn verify_or_quarantine(&mut self, snapshot_id: &str, computed_sha256_hex: &str) -> bool {
-        let Some(index) = self
-            .snapshots
-            .iter()
-            .position(|v| v.snapshot_id == snapshot_id)
-        else {
+        let Some(index) = self.snapshots.iter().position(|v| v.snapshot_id == snapshot_id) else {
+            self.quarantined.push(BackupSnapshot {
+                snapshot_id: snapshot_id.to_string(),
+                profile_id: Uuid::nil(),
+                created_at_unix_ms: now_unix_ms(),
+                encrypted_blob_b64: String::new(),
+                integrity_sha256_hex: computed_sha256_hex.to_string(),
+            });
             return false;
         };
         if self.snapshots[index].integrity_sha256_hex == computed_sha256_hex {
@@ -96,6 +100,17 @@ impl SnapshotManager {
         while self.snapshots.len() > self.retention_limit {
             self.snapshots.remove(0);
         }
+    }
+
+    fn next_created_at_unix_ms(&self) -> u128 {
+        let now = now_unix_ms();
+        let last_seen = self
+            .snapshots
+            .iter()
+            .map(|snapshot| snapshot.created_at_unix_ms)
+            .max()
+            .unwrap_or(0);
+        now.max(last_seen.saturating_add(1))
     }
 }
 
