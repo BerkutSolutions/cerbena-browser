@@ -2,8 +2,13 @@
 const desktopPackage = require("./ui/desktop/package.json");
 
 const REPO_URL = "https://github.com/BerkutSolutions/cerbena-browser";
-const DOCS_SITE_URL = process.env.DOCS_SITE_URL || "http://127.0.0.1:3000";
-const DOCS_BASE_URL = process.env.DOCS_BASE_URL || "/";
+const isGitHubPagesBuild =
+  process.env.GITHUB_ACTIONS === "true" || process.env.DOCS_ENV === "github-pages";
+const DOCS_SITE_URL =
+  process.env.DOCS_SITE_URL ||
+  (isGitHubPagesBuild ? "https://berkutsolutions.github.io" : "http://127.0.0.1:3000");
+const DOCS_BASE_URL =
+  process.env.DOCS_BASE_URL || (isGitHubPagesBuild ? "/cerbena-browser/" : "/");
 const APP_VERSION = desktopPackage.version;
 
 const config = {
