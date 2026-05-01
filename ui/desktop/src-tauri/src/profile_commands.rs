@@ -503,34 +503,6 @@ pub async fn launch_profile(
     } else {
         pid
     };
-    if matches!(engine, EngineKind::Camoufox) {
-        let profile_dir = user_data_dir.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(700));
-            #[cfg(target_os = "windows")]
-            {
-                let normalized = profile_dir.to_string_lossy().replace('\\', "\\\\");
-                let script = format!(
-                    "$path='{normalized}'; \
-                     Get-CimInstance Win32_Process | \
-                     Where-Object {{ $_.CommandLine -and $_.CommandLine -like '*-profile*' -and $_.CommandLine -like \"*${{path}}*\" -and ($_.Name -like 'camoufox*' -or $_.Name -like 'firefox*' -or $_.Name -like 'private_browsing*') }} | \
-                     Select-Object -First 1 Name, ProcessId, CommandLine | ConvertTo-Json -Compress"
-                );
-                if let Ok(output) = std::process::Command::new("powershell.exe")
-                    .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-                    .output()
-                {
-                    if output.status.success() {
-                        let json = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        if !json.is_empty() {
-                            eprintln!("[profile-launch] camoufox process snapshot {}", json);
-                        }
-                    }
-                }
-            }
-        });
-    }
-
     let mut launched = state
         .launched_processes
         .lock()

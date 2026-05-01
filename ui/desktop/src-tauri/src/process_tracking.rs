@@ -142,154 +142,21 @@ pub fn terminate_profile_processes(profile_data_dir: &Path) {
 }
 
 pub fn is_process_running(pid: u32) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        let filter = format!("PID eq {pid}");
-        return Command::new("tasklist")
-            .args(["/FI", &filter, "/FO", "CSV", "/NH"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| {
-                let body = String::from_utf8_lossy(&output.stdout);
-                body.lines().any(|line| {
-                    line.contains(&format!(",\"{pid}\",")) || line.contains(&format!("\"{pid}\""))
-                })
-            })
-            .unwrap_or(false);
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
+    let system = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    system.processes().values().any(|process| process.pid().as_u32() == pid)
 }
 
 fn find_profile_process_pid(profile_data_dir: &Path) -> Option<u32> {
     let target = profile_data_dir.to_string_lossy().to_lowercase();
-    #[cfg(target_os = "windows")]
-    if let Some(pid) = find_profile_process_pid_windows(profile_data_dir, &target, false) {
-        return Some(pid);
-    }
     let system = System::new_with_specifics(
         RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
     );
-    for process in system.processes().values() {
-        let name = process.name().to_lowercase();
-        let cmdline = process
-            .cmd()
-            .iter()
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase();
-        let firefox_profile_match = (name.contains("camoufox")
-            || name.contains("firefox")
-            || name.contains("private_browsing"))
-            && cmdline.contains("-profile")
-            && cmdline.contains(&target);
-        let chromium_profile_match =
-            (name.contains("wayfern") || name.contains("chrome") || name.contains("chromium"))
-                && (cmdline.contains("--user-data-dir=") || cmdline.contains("--user-data-dir "))
-                && cmdline.contains(&target);
-        if firefox_profile_match || chromium_profile_match {
-            return Some(process.pid().as_u32());
-        }
-    }
-    find_profile_process_pid_windows(profile_data_dir, &target, false)
-}
-
-#[cfg(target_os = "windows")]
-fn find_profile_process_pid_windows(
-    profile_data_dir: &Path,
-    target: &str,
-    require_main_window: bool,
-) -> Option<u32> {
-    let normalized = profile_data_dir.to_string_lossy().replace('\\', "\\\\");
-    let script = format!(
-        "$path='{normalized}'; \
-         $items = Get-CimInstance Win32_Process | \
-         Where-Object {{ \
-           $_.CommandLine -and ( \
-             ((($_.Name -like 'camoufox*') -or ($_.Name -like 'firefox*') -or ($_.Name -like 'private_browsing*')) -and $_.CommandLine -like '*-profile*' -and $_.CommandLine -like \"*${{path}}*\") -or \
-             ((($_.Name -like 'wayfern*') -or ($_.Name -like 'chrome*') -or ($_.Name -like 'chromium*')) -and (($_.CommandLine -like '*--user-data-dir=*') -or ($_.CommandLine -like '*--user-data-dir *')) -and $_.CommandLine -like \"*${{path}}*\") \
-           ) \
-         }} | ForEach-Object {{ \
-           $proc = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; \
-           [pscustomobject]@{{ ProcessId = $_.ProcessId; MainWindowHandle = if ($proc) {{ $proc.MainWindowHandle }} else {{ 0 }}; CommandLineLength = if ($_.CommandLine) {{ $_.CommandLine.Length }} else {{ 0 }}; }} \
-         }}; \
-         if ({require_main_window}) {{ $items = $items | Where-Object {{ $_.MainWindowHandle -ne 0 }}; }}; \
-         $items | Sort-Object @{{ Expression = {{ if ($_.MainWindowHandle -ne 0) {{ 0 }} else {{ 1 }} }} }}, @{{ Expression = 'CommandLineLength'; Descending = $false }}, @{{ Expression = 'ProcessId'; Descending = $false }} | Select-Object -First 1 ProcessId | ConvertTo-Json -Compress"
-    );
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let json = String::from_utf8_lossy(&output.stdout);
-    let parsed = serde_json::from_str::<serde_json::Value>(&json).ok()?;
-    let pid = parsed.get("ProcessId").and_then(|v| v.as_u64())? as u32;
-    if target.is_empty() {
-        None
-    } else {
-        Some(pid)
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn find_profile_process_pid_windows(_profile_data_dir: &Path, _target: &str) -> Option<u32> {
-    None
-}
-
-#[cfg(target_os = "windows")]
-fn find_profile_process_pids_windows(profile_data_dir: &Path, _target: &str) -> Vec<u32> {
-    let normalized = profile_data_dir.to_string_lossy().replace('\\', "\\\\");
-    let script = format!(
-        "$path='{normalized}'; \
-         Get-CimInstance Win32_Process | \
-         Where-Object {{ \
-           $_.CommandLine -and ( \
-             ((($_.Name -like 'camoufox*') -or ($_.Name -like 'firefox*') -or ($_.Name -like 'private_browsing*')) -and $_.CommandLine -like '*-profile*' -and $_.CommandLine -like \"*${{path}}*\") -or \
-             ((($_.Name -like 'wayfern*') -or ($_.Name -like 'chrome*') -or ($_.Name -like 'chromium*')) -and (($_.CommandLine -like '*--user-data-dir=*') -or ($_.CommandLine -like '*--user-data-dir *')) -and $_.CommandLine -like \"*${{path}}*\") \
-           ) \
-         }} | Select-Object -ExpandProperty ProcessId | ConvertTo-Json -Compress"
-    );
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    let json = String::from_utf8_lossy(&output.stdout);
-    let trimmed = json.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-    match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(serde_json::Value::Array(values)) => values
-            .into_iter()
-            .filter_map(|value| value.as_u64().map(|pid| pid as u32))
-            .collect(),
-        Ok(serde_json::Value::Number(value)) => value
-            .as_u64()
-            .map(|pid| vec![pid as u32])
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn find_profile_process_pids_windows(_profile_data_dir: &Path, _target: &str) -> Vec<u32> {
-    Vec::new()
+    matching_profile_processes(&system, &target)
+        .into_iter()
+        .next()
+        .map(|candidate| candidate.pid)
 }
 
 pub fn find_profile_process_pid_for_dir(profile_data_dir: &Path) -> Option<u32> {
@@ -297,31 +164,35 @@ pub fn find_profile_process_pid_for_dir(profile_data_dir: &Path) -> Option<u32> 
 }
 
 pub fn find_profile_main_window_pid_for_dir(profile_data_dir: &Path) -> Option<u32> {
-    #[cfg(target_os = "windows")]
-    {
-        let target = profile_data_dir.to_string_lossy().to_lowercase();
-        return find_profile_process_pid_windows(profile_data_dir, &target, true);
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        find_profile_process_pid(profile_data_dir)
-    }
+    find_profile_process_pid(profile_data_dir)
 }
 
 pub fn find_profile_process_pids_for_dir(profile_data_dir: &Path) -> Vec<u32> {
-    #[cfg(target_os = "windows")]
-    {
-        let target = profile_data_dir.to_string_lossy().to_lowercase();
-        return find_profile_process_pids_windows(profile_data_dir, &target);
+    let target = profile_data_dir.to_string_lossy().to_lowercase();
+    let system = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    matching_profile_processes(&system, &target)
+        .into_iter()
+        .map(|candidate| candidate.pid)
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+struct ProfileProcessCandidate {
+    pid: u32,
+    command_line_length: usize,
+}
+
+fn matching_profile_processes(system: &System, target: &str) -> Vec<ProfileProcessCandidate> {
+    if target.trim().is_empty() {
+        return Vec::new();
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let target = profile_data_dir.to_string_lossy().to_lowercase();
-        let system = System::new_with_specifics(
-            RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
-        );
-        let mut matches = Vec::new();
-        for process in system.processes().values() {
+
+    let mut matches = system
+        .processes()
+        .values()
+        .filter_map(|process| {
             let name = process.name().to_lowercase();
             let cmdline = process
                 .cmd()
@@ -330,19 +201,32 @@ pub fn find_profile_process_pids_for_dir(profile_data_dir: &Path) -> Vec<u32> {
                 .collect::<Vec<_>>()
                 .join(" ")
                 .to_lowercase();
+
             let firefox_profile_match = (name.contains("camoufox")
                 || name.contains("firefox")
                 || name.contains("private_browsing"))
                 && cmdline.contains("-profile")
-                && cmdline.contains(&target);
+                && cmdline.contains(target);
             let chromium_profile_match =
                 (name.contains("wayfern") || name.contains("chrome") || name.contains("chromium"))
                     && (cmdline.contains("--user-data-dir=") || cmdline.contains("--user-data-dir "))
-                    && cmdline.contains(&target);
+                    && cmdline.contains(target);
+
             if firefox_profile_match || chromium_profile_match {
-                matches.push(process.pid().as_u32());
+                Some(ProfileProcessCandidate {
+                    pid: process.pid().as_u32(),
+                    command_line_length: cmdline.len(),
+                })
+            } else {
+                None
             }
-        }
-        matches
-    }
+        })
+        .collect::<Vec<_>>();
+
+    matches.sort_by(|left, right| {
+        left.command_line_length
+            .cmp(&right.command_line_length)
+            .then_with(|| left.pid.cmp(&right.pid))
+    });
+    matches
 }

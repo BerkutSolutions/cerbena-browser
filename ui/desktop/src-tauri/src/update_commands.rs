@@ -21,7 +21,7 @@ const GITHUB_LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/BerkutSolutions/cerbena-browser/releases/latest";
 const UPDATE_CHECK_INTERVAL_MS: u128 = 6 * 60 * 60 * 1000;
 const SCHEDULER_TICK: Duration = Duration::from_secs(15 * 60);
-const USER_AGENT: &str = "Cerbena-Updater/1.0.0";
+const USER_AGENT: &str = concat!("Cerbena-Updater/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]

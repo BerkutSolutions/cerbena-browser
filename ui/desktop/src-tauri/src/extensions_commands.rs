@@ -177,7 +177,7 @@ pub fn import_extension_library_item(
             .version
             .filter(|value| !value.trim().is_empty())
             .or(package_metadata.version)
-            .unwrap_or_else(|| "1.0.0".to_string()),
+            .unwrap_or_else(|| "1.0.1".to_string()),
         engine_scope: inferred_engine,
         source_kind: request.source_kind,
         source_value: request.source_value,
@@ -823,7 +823,7 @@ fn extension_http_client() -> Result<Client, String> {
         .timeout(Duration::from_secs(45))
         .user_agent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Cerbena/0.1",
+             (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Cerbena/1.0.1",
         )
         .build()
         .map_err(|e| format!("extension http client: {e}"))

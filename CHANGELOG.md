@@ -1,43 +1,26 @@
 # Журнал изменений
 
-## 1.0.0 — Первый релиз
+## 1.0.1 — Стабилизация релиза
 
 ### Core
 
-- Выпущена первая публичная версия `Cerbena Browser` с изолированными профилями, zero-trust backend enforcement и локальной desktop-оболочкой.
-- Реализованы профильно-специфичные маршрутные режимы `direct`, `proxy`, `vpn`, `tor`, `hybrid` с управляемым runtime-контуром.
-- Добавлены sync/backup-сценарии, локальный API, MCP и аудит критичных операций.
-- Автообновление по умолчанию отключено и включается только явно через настройки.
+- Исправлен Windows runtime-flow установленного приложения: убраны лишние shell-вызовы при запуске браузеров, из-за которых вспыхивали `cmd` и `powershell`, а запуск мог подвисать.
+- Стабилизирован трекинг процессов профиля для Wayfern и Camoufox без циклического PowerShell-поллинга.
+- Исправлен flapping-тест `snapshots_retention_and_quarantine_work` в sync-контуре: поведение retention/quarantine стало детерминированным и совпадает с release-contract ожиданиями.
 
 ### UI
 
-- Основной lifecycle UI профилей перенесен на `Home`; отдельная вкладка `Profiles` убрана.
-- Добавлены плавные анимации модалок, обновленные иконки бокового меню, сохранение выбранного языка и отображение версии `v1.0.0`.
-- Переработаны вкладки `DNS`, `Security`, `Extensions`, `Traffic`, `Network` и `Settings` под актуальную структуру продукта.
-- Добавлены платформенные шаблоны личности, редактор имени личности, policy-level UX для DNS и улучшенные уведомления о загрузке движков.
-
-### Network и DNS
-
-- Реализованы DNS blocklists, suffix denylist, сервисные ограничения и редактируемые уровни политики.
-- Добавлена глобальная VPN-политика, kill-switch и live gateway enforcement.
-- Поддержаны route runtime и managed provisioning для `sing-box`, `openvpn`, `amneziawg` и `tor`.
-
-### Extensions и Identity
-
-- Реализована библиотека расширений с назначением профилям и автоустановкой по движку.
-- Добавлены реалистичные identity templates для Windows, macOS, Linux, iOS и Android.
-- Доработаны автоматический и ручной режимы fingerprint-управления, валидация согласованности и привязка шаблонов к реальным данным.
-
-### Release
-
-- Добавлены локальные preflight/release-скрипты и контуры security/vulnerability gates.
-- Сборка Windows installer вынесена в `scripts/build-installer.ps1`; installer публикуется как основной release-артефакт.
-- Fallback-installer переработан в wizard-установщик с нормальной иконкой, ярлыками, uninstall-записью и деинсталлятором.
-- Исправлены installer-flow, раскладка payload, создание ярлыков `Cerbena Browser.lnk`, установка `cerbena.exe` и обработка uninstall при открытом приложении.
-- Release-скрипт `scripts/release.ps1` теперь умеет автоматически инициализировать git-репозиторий, создавать ветку `main`, добавлять `origin` `https://github.com/BerkutSolutions/cerbena-browser.git` и выполнять первый push с bootstrap-коммитом `v1.0.0`, если репозиторий или remote еще не настроены.
-- GitHub Actions release/publishing workflows исправлены под реальный CI: PowerShell-скрипты теперь вызываются через корректные `pwsh`-пути от `$GITHUB_WORKSPACE`, `trivy-action` обновлен до валидного тега `v0.35.0`, а deploy GitHub Pages переведен в условный режим, чтобы не падать в репозитории без включенного Pages.
+- Версия продукта обновлена до `1.0.1` во всех пользовательских точках: desktop shell, docs-home, settings/update surface и mock/update fallback state.
+- Обновлены служебные версии в extension/default metadata и policy-extension manifest, чтобы UI и runtime больше не расходились по release baseline.
 
 ### Docs
 
-- Обновлены `README.md`, `README.en.md`, wiki entrypoints и release runbook под текущее состояние UI, release-потока и installer-публикации.
-- В корневой `README` добавлены актуальные скриншоты интерфейса из `static/img`.
+- Документация и Docusaurus release-site переведены на `1.0.1`.
+- GitHub Pages сборка исправлена для project-site base path `/cerbena-browser/`, чтобы опубликованный сайт визуально совпадал с локальной сборкой.
+- Убран workflow-guard, из-за которого `docs-pages / deploy` пропускал фактический деплой после успешного build.
+
+### Release
+
+- Workspace, desktop package, Tauri config и release metadata обновлены до `1.0.1`.
+- Release/update user-agent строки синхронизированы с текущей версией пакета.
+- Полный release-flow подготовлен к выпуску `v1.0.1`.

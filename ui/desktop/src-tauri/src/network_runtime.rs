@@ -17,8 +17,11 @@ use zip::ZipArchive;
 
 use crate::state::AppState;
 
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Cerbena/1.0.0 NetworkRuntime";
+const USER_AGENT: &str = concat!(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Cerbena/",
+    env!("CARGO_PKG_VERSION"),
+    " NetworkRuntime"
+);
 
 const SING_BOX_VERSION: &str = "1.12.0";
 const SING_BOX_FILE: &str = "sing-box-1.12.0-windows-amd64.zip";

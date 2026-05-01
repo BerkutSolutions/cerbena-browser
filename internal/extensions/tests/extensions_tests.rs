@@ -41,7 +41,7 @@ fn extension_manager_is_profile_scoped() {
             p1,
             "ext-a",
             "Ext A",
-            "1.0.0",
+            "1.0.1",
             ImportSource {
                 kind: ImportSourceKind::LocalArchive,
                 value: "C:\\ext\\a.crx".to_string(),

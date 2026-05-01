@@ -46,7 +46,7 @@ function sourceLabel(item) {
 
 function extensionCard(item, profiles, t) {
   const name = item.displayName ?? "Extension";
-  const version = item.version ?? "1.0.0";
+  const version = item.version ?? "1.0.1";
   const engine = item.engineScope ?? "chromium/firefox";
   const scopedProfiles = compatibleProfiles(item, profiles);
   return `
@@ -93,7 +93,7 @@ function addModalHtml(t, profiles, draft = {}) {
         </div>
         <div class="grid-two">
           <label>${t("extensions.name")}<input id="extension-name" value="${escapeHtml(draft.displayName ?? "")}" /></label>
-          <label>${t("extensions.version")}<input id="extension-version" value="${escapeHtml(draft.version ?? "1.0.0")}" /></label>
+          <label>${t("extensions.version")}<input id="extension-version" value="${escapeHtml(draft.version ?? "1.0.1")}" /></label>
           <label>${t("extensions.engine")}<select id="extension-engine">
             <option value="chromium" ${normalizeEngineScope(draft.engineScope) === "chromium" ? "selected" : ""}>chromium</option>
             <option value="firefox" ${normalizeEngineScope(draft.engineScope) === "firefox" ? "selected" : ""}>firefox</option>
