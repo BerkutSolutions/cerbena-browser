@@ -31,7 +31,6 @@ jobs:
           path: build
 
   deploy:
-    if: vars.ENABLE_GITHUB_PAGES == 'true'
     needs: build
     runs-on: ubuntu-latest
     env:
