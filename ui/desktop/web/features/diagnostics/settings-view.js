@@ -470,9 +470,13 @@ export function wireSettings(root, model, rerender, t) {
   root.querySelector("#settings-update-check")?.addEventListener("click", async () => {
     const result = await checkLauncherUpdates(true);
     model.launcherUpdateState = result.ok ? result.data : model.launcherUpdateState;
+    const status = result.ok ? String(result.data?.status ?? "") : "";
+    const failed = !result.ok || status === "error";
     model.settingsNotice = {
-      type: result.ok ? "success" : "error",
-      text: result.ok ? t("settings.updates.checked") : String(result.data.error)
+      type: failed ? "error" : "success",
+      text: failed
+        ? String(result.ok ? (result.data?.lastError ?? result.data?.status ?? "update check failed") : result.data.error)
+        : t("settings.updates.checked")
     };
     await rerender();
   });

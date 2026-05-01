@@ -290,11 +290,7 @@ pub fn get_launcher_update_state(
     state: State<AppState>,
     correlation_id: String,
 ) -> Result<UiEnvelope<AppUpdateView>, String> {
-    let store = state
-        .app_update_store
-        .lock()
-        .map_err(|e| format!("lock app update store: {e}"))?
-        .clone();
+    let store = refresh_update_store_snapshot(&state)?;
     Ok(ok(correlation_id, to_view(&store)))
 }
 
@@ -304,15 +300,12 @@ pub fn set_launcher_auto_update(
     enabled: bool,
     correlation_id: String,
 ) -> Result<UiEnvelope<AppUpdateView>, String> {
-    let mut store = state
-        .app_update_store
-        .lock()
-        .map_err(|e| format!("lock app update store: {e}"))?;
+    let mut store = refresh_update_store_snapshot(&state)?;
     store.auto_update_enabled = enabled;
     if store.status.trim().is_empty() {
         store.status = "idle".to_string();
     }
-    persist_update_store_from_state(&state, &store)?;
+    write_update_store_snapshot(&state, &store)?;
     Ok(ok(correlation_id, to_view(&store)))
 }
 
@@ -751,11 +744,7 @@ fn run_update_cycle(state: &AppState, _manual: bool) -> Result<AppUpdateView, St
         .map_err(|e| format!("build update http client: {e}"))?;
 
     let result = fetch_latest_release(&client);
-    let mut store = state
-        .app_update_store
-        .lock()
-        .map_err(|e| format!("lock app update store: {e}"))?
-        .clone();
+    let mut store = refresh_update_store_snapshot(state)?;
 
     store.last_checked_at = Some(now_iso());
     store.last_checked_epoch_ms = Some(now_epoch_ms());
@@ -770,11 +759,22 @@ fn run_update_cycle(state: &AppState, _manual: bool) -> Result<AppUpdateView, St
                 store.status = "available".to_string();
                 if store.auto_update_enabled {
                     if should_launch_external_updater(&store, &candidate) {
-                        spawn_updater_process(&state.app_handle, UpdaterLaunchMode::Auto)?;
-                        store.updater_handoff_version = Some(candidate.version.clone());
-                        store.status = "handoff".to_string();
+                        match spawn_updater_process(&state.app_handle, UpdaterLaunchMode::Auto) {
+                            Ok(()) => {
+                                store.updater_handoff_version = Some(candidate.version.clone());
+                                store.status = "handoff".to_string();
+                            }
+                            Err(error) => {
+                                store.status = "error".to_string();
+                                store.last_error = Some(error);
+                            }
+                        }
                     } else {
-                        stage_release_if_needed(state, &mut store, &candidate)?;
+                        if let Err(error) = stage_release_if_needed(state, &mut store, &candidate)
+                        {
+                            store.status = "error".to_string();
+                            store.last_error = Some(error);
+                        }
                     }
                 }
             } else {
@@ -789,7 +789,7 @@ fn run_update_cycle(state: &AppState, _manual: bool) -> Result<AppUpdateView, St
         }
     }
 
-    persist_update_store_from_state(state, &store)?;
+    write_update_store_snapshot(state, &store)?;
     Ok(to_view(&store))
 }
 
@@ -1271,6 +1271,36 @@ fn persist_update_store_from_state(state: &AppState, store: &AppUpdateStore) -> 
         .app_update_store_path(&state.app_handle)
         .map_err(|e| format!("resolve app update store path: {e}"))?;
     persist_app_update_store(&path, store)
+}
+
+fn refresh_update_store_snapshot(state: &AppState) -> Result<AppUpdateStore, String> {
+    let path = state
+        .app_update_store_path(&state.app_handle)
+        .map_err(|e| format!("resolve app update store path: {e}"))?;
+    let disk_store = if path.exists() {
+        let raw = fs::read(&path).map_err(|e| format!("read app update store: {e}"))?;
+        serde_json::from_slice::<AppUpdateStore>(&raw)
+            .map_err(|e| format!("parse app update store: {e}"))?
+    } else {
+        AppUpdateStore::default()
+    };
+    let mut guard = state
+        .app_update_store
+        .lock()
+        .map_err(|e| format!("lock app update store: {e}"))?;
+    *guard = disk_store.clone();
+    Ok(disk_store)
+}
+
+fn write_update_store_snapshot(state: &AppState, store: &AppUpdateStore) -> Result<(), String> {
+    {
+        let mut guard = state
+            .app_update_store
+            .lock()
+            .map_err(|e| format!("lock app update store: {e}"))?;
+        *guard = store.clone();
+    }
+    persist_update_store_from_state(state, store)
 }
 
 fn to_view(store: &AppUpdateStore) -> AppUpdateView {
