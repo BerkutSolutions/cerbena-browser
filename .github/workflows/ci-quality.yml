@@ -49,5 +49,6 @@ jobs:
       - run: npm ci
       - working-directory: ui/desktop
         run: npm ci
-      - shell: powershell
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -Mode package -SkipVulnerabilityGates -CompactOutput
+      - shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\scripts\release.ps1" -Mode package -SkipVulnerabilityGates -CompactOutput

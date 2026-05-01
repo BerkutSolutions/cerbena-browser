@@ -19,5 +19,6 @@ jobs:
       - run: npm ci
       - working-directory: ui/desktop
         run: npm ci
-      - shell: powershell
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\security-gates-preflight.ps1
+      - shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\scripts\security-gates-preflight.ps1"

@@ -22,7 +22,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-audit --locked
       - shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\vulnerability-gates-preflight.ps1 -SkipRootNpmAudit -SkipDesktopNpmAudit -SkipSecretScan -SkipTrivyFsScan
+        run: |
+          & "$env:GITHUB_WORKSPACE/scripts/vulnerability-gates-preflight.ps1" -SkipRootNpmAudit -SkipDesktopNpmAudit -SkipSecretScan -SkipTrivyFsScan
 
   npm-audit:
     runs-on: windows-latest
@@ -51,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: aquasecurity/trivy-action@0.24.0
+      - uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
           ignore-unfixed: true

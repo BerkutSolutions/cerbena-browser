@@ -19,5 +19,6 @@ jobs:
       - run: npm ci
       - working-directory: ui/desktop
         run: npm ci
-      - shell: powershell
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\local-ci-preflight.ps1 -SkipVulnerabilityGates -CompactOutput
+      - shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\scripts\local-ci-preflight.ps1" -SkipVulnerabilityGates -CompactOutput

@@ -35,6 +35,7 @@
 - Fallback-installer переработан в wizard-установщик с нормальной иконкой, ярлыками, uninstall-записью и деинсталлятором.
 - Исправлены installer-flow, раскладка payload, создание ярлыков `Cerbena Browser.lnk`, установка `cerbena.exe` и обработка uninstall при открытом приложении.
 - Release-скрипт `scripts/release.ps1` теперь умеет автоматически инициализировать git-репозиторий, создавать ветку `main`, добавлять `origin` `https://github.com/BerkutSolutions/cerbena-browser.git` и выполнять первый push с bootstrap-коммитом `v1.0.0`, если репозиторий или remote еще не настроены.
+- GitHub Actions release/publishing workflows исправлены под реальный CI: PowerShell-скрипты теперь вызываются через корректные `pwsh`-пути от `$GITHUB_WORKSPACE`, `trivy-action` обновлен до валидного тега `v0.35.0`, а deploy GitHub Pages переведен в условный режим, чтобы не падать в репозитории без включенного Pages.
 
 ### Docs
 
