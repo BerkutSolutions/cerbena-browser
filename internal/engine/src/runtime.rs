@@ -948,7 +948,6 @@ fn launch_args(
                     .map(|path| path.to_string_lossy().to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                args.push(format!("--disable-extensions-except={joined}"));
                 args.push(format!("--load-extension={joined}"));
             }
             args.push(start_page.to_string());
@@ -1012,7 +1011,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
     let manifest = serde_json::json!({
         "manifest_version": 3,
         "name": "Cerbena Policy Firewall",
-        "version": "1.0.2",
+        "version": "1.0.3",
         "description": "Profile-scoped outbound policy enforcement for blocked domains.",
         "declarative_net_request": {
             "rule_resources": [

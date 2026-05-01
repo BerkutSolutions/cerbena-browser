@@ -1368,7 +1368,30 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
 
 .profile-extension-toolbar,
 .profile-certificates-toolbar {
+  grid-template-columns: minmax(0, 1fr) minmax(104px, 136px);
+  align-items: end;
   margin-bottom: 12px;
+}
+
+.profile-extension-toolbar > label,
+.profile-certificates-toolbar > label {
+  min-width: 0;
+}
+
+.profile-toolbar-action {
+  align-self: end;
+}
+
+.profile-toolbar-button {
+  width: 100%;
+  min-width: 104px;
+  max-width: 136px;
+  padding-inline: 10px;
+  white-space: nowrap;
+}
+
+.profile-toolbar-button-wide {
+  max-width: 220px;
 }
 
 .profiles-note,

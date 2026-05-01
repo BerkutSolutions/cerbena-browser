@@ -25,6 +25,7 @@ sidebar_position: 2
 1. [CLI-команды](core-docs/cli-commands.md)
 2. [Локальный API и MCP](core-docs/api.md)
 3. [Интеграции local API и MCP](integration-docs/local-api-and-mcp.md)
+4. [Интеграция KeePassXC](integration-docs/keepassxc.md)
 
 ## Если вы готовите релиз
 

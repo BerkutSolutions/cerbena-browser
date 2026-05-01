@@ -99,20 +99,32 @@ pub fn clear_profile_process(app_handle: &AppHandle, profile_id: Uuid, pid: u32,
 }
 
 pub fn stop_all_profile_processes(app_handle: &AppHandle) {
-    let sessions = {
+    let (sessions, profile_root) = {
         let state = app_handle.state::<AppState>();
         let launched = match state.launched_processes.lock() {
             Ok(value) => value,
             Err(_) => return,
         };
-        launched
-            .iter()
-            .map(|(profile_id, pid)| (*profile_id, *pid))
-            .collect::<Vec<_>>()
+        (
+            launched
+                .iter()
+                .map(|(profile_id, pid)| (*profile_id, *pid))
+                .collect::<Vec<_>>(),
+            state.profile_root.clone(),
+        )
     };
     for (profile_id, pid) in sessions {
         terminate_process_tree(pid);
         clear_profile_process(app_handle, profile_id, pid, false);
+    }
+    if let Ok(entries) = std::fs::read_dir(&profile_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let profile_data_dir = path.join("engine-profile");
+                terminate_profile_processes(&profile_data_dir);
+            }
+        }
     }
 }
 

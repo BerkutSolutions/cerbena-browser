@@ -287,10 +287,11 @@ pub fn import_extension_library(
     request: TransferExtensionLibraryRequest,
     correlation_id: String,
 ) -> Result<UiEnvelope<TransferExtensionLibraryResponse>, String> {
-    let directory = pick_folder()?;
-    let response = match normalize_transfer_mode(&request.mode)? {
-        TransferMode::File => import_extension_links_file(&state, &directory)?,
-        TransferMode::Archive => import_extension_archive_folder(&state, &directory)?,
+    let mode = normalize_transfer_mode(&request.mode)?;
+    let selection = pick_import_source(mode)?;
+    let response = match mode {
+        TransferMode::File => import_extension_links_file(&state, &selection)?,
+        TransferMode::Archive => import_extension_archive_folder(&state, &selection)?,
     };
     Ok(ok(correlation_id, response))
 }
@@ -491,7 +492,7 @@ fn import_extension_library_item_impl(
                 .clone()
                 .filter(|_| is_single_import)
                 .or(package_metadata.version)
-                .unwrap_or_else(|| "1.0.2".to_string()),
+                .unwrap_or_else(|| "1.0.3".to_string()),
             engine_scope: inferred_engine,
             source_kind: request.source_kind.clone(),
             source_value: request.source_value.clone(),
@@ -569,6 +570,60 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     #[cfg(not(target_os = "windows"))]
     {
         Err("folder picker is not supported on this platform".to_string())
+    }
+}
+
+fn pick_import_source(mode: TransferMode) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let (filter, title) = match mode {
+            TransferMode::File => (
+                "Cerbena extension links (cerbena-extensions-links.json)|cerbena-extensions-links.json|JSON files (*.json)|*.json",
+                "Select Cerbena extension links file",
+            ),
+            TransferMode::Archive => (
+                "Cerbena archive manifest (manifest.json)|manifest.json|JSON files (*.json)|*.json",
+                "Select Cerbena archive manifest file",
+            ),
+        };
+        let script = format!(
+            r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Filter = '{filter}'
+$dialog.Title = '{title}'
+$dialog.Multiselect = $false
+$dialog.CheckFileExists = $true
+$dialog.CheckPathExists = $true
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
+  $dialog.FileName | ConvertTo-Json -Compress
+}}
+"#
+        );
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .map_err(|e| format!("import picker failed: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                "import picker failed".to_string()
+            } else {
+                format!("import picker failed: {stderr}")
+            });
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            return Err("import selection was cancelled".to_string());
+        }
+        return serde_json::from_str::<String>(&stdout)
+            .map_err(|e| format!("import picker parse failed: {e}"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = mode;
+        Err("import picker is not supported on this platform".to_string())
     }
 }
 
@@ -697,23 +752,25 @@ fn export_extension_archive_folder(
 
 fn import_extension_links_file(
     state: &AppState,
-    directory: &str,
+    manifest_file: &str,
 ) -> Result<TransferExtensionLibraryResponse, String> {
-    let manifest_path = PathBuf::from(directory).join(EXTENSION_LINKS_FILE_NAME);
+    let manifest_path = PathBuf::from(manifest_file);
     let manifest = read_transfer_manifest(&manifest_path)?;
-    import_transfer_manifest(state, &manifest, Path::new(directory), TransferMode::File)
+    let base_dir = manifest_path
+        .parent()
+        .ok_or_else(|| "import file parent directory could not be resolved".to_string())?;
+    import_transfer_manifest(state, &manifest, base_dir, TransferMode::File)
 }
 
 fn import_extension_archive_folder(
     state: &AppState,
-    directory: &str,
+    manifest_file: &str,
 ) -> Result<TransferExtensionLibraryResponse, String> {
-    let chosen = PathBuf::from(directory);
-    let archive_root = if chosen.join(EXTENSION_ARCHIVE_MANIFEST_FILE_NAME).is_file() {
-        chosen.clone()
-    } else {
-        chosen.join(EXTENSION_ARCHIVE_DIR_NAME)
-    };
+    let chosen = PathBuf::from(manifest_file);
+    let archive_root = chosen
+        .parent()
+        .ok_or_else(|| "archive manifest parent directory could not be resolved".to_string())?
+        .to_path_buf();
     let manifest_path = archive_root.join(EXTENSION_ARCHIVE_MANIFEST_FILE_NAME);
     let manifest = read_transfer_manifest(&manifest_path)?;
     import_transfer_manifest(state, &manifest, &archive_root, TransferMode::Archive)
@@ -1673,7 +1730,7 @@ fn extension_http_client() -> Result<Client, String> {
         .timeout(Duration::from_secs(45))
         .user_agent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Cerbena/1.0.2",
+             (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Cerbena/1.0.3",
         )
         .build()
         .map_err(|e| format!("extension http client: {e}"))

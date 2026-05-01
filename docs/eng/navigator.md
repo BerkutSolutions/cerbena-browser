@@ -25,6 +25,7 @@ This page helps you select the right wiki branch for the task at hand.
 1. [CLI commands](core-docs/cli-commands.md)
 2. [Local API and MCP](core-docs/api.md)
 3. [Local API and MCP integrations](integration-docs/local-api-and-mcp.md)
+4. [KeePassXC integration](integration-docs/keepassxc.md)
 
 ## If you are preparing a release
 

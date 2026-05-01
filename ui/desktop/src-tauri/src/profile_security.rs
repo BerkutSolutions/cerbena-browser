@@ -1,7 +1,8 @@
 use browser_profile::ProfileMetadata;
 
-const TAG_SYSTEM_ACCESS: &str = "ext-system-access";
-const TAG_KEEPASSXC: &str = "ext-keepassxc";
+pub const TAG_SYSTEM_ACCESS: &str = "ext-system-access";
+pub const TAG_KEEPASSXC: &str = "ext-keepassxc";
+pub const TAG_DISABLE_EXTENSIONS_LAUNCH: &str = "ext-launch-disabled";
 const TAG_PRIVATE: &str = "private";
 
 pub const ERR_LOCKED_REQUIRES_UNLOCK: &str = "profile_protection.locked_profile_requires_unlock";
@@ -19,7 +20,24 @@ pub struct ProfileProtectionAssessment {
     pub enabled_extensions: Vec<String>,
     pub allow_system_access: bool,
     pub allow_keepassxc: bool,
+    pub disable_extensions_launch: bool,
     pub deny_reasons: Vec<&'static str>,
+}
+
+fn has_tag(tags: &[String], expected: &str) -> bool {
+    tags.iter().any(|tag| tag.eq_ignore_ascii_case(expected))
+}
+
+pub fn tags_allow_system_access(tags: &[String]) -> bool {
+    has_tag(tags, TAG_SYSTEM_ACCESS)
+}
+
+pub fn tags_allow_keepassxc(tags: &[String]) -> bool {
+    has_tag(tags, TAG_KEEPASSXC)
+}
+
+pub fn tags_disable_extension_launch(tags: &[String]) -> bool {
+    has_tag(tags, TAG_DISABLE_EXTENSIONS_LAUNCH)
 }
 
 pub fn assess_profile(profile: &ProfileMetadata) -> ProfileProtectionAssessment {
@@ -35,14 +53,9 @@ pub fn assess_profile(profile: &ProfileMetadata) -> ProfileProtectionAssessment 
         .iter()
         .filter_map(|tag| tag.strip_prefix("ext:").map(str::to_string))
         .collect::<Vec<_>>();
-    let allow_system_access = profile
-        .tags
-        .iter()
-        .any(|tag| tag.eq_ignore_ascii_case(TAG_SYSTEM_ACCESS));
-    let allow_keepassxc = profile
-        .tags
-        .iter()
-        .any(|tag| tag.eq_ignore_ascii_case(TAG_KEEPASSXC));
+    let allow_system_access = tags_allow_system_access(&profile.tags);
+    let allow_keepassxc = tags_allow_keepassxc(&profile.tags);
+    let disable_extensions_launch = tags_disable_extension_launch(&profile.tags);
     let private_tag = profile
         .tags
         .iter()
@@ -70,6 +83,7 @@ pub fn assess_profile(profile: &ProfileMetadata) -> ProfileProtectionAssessment 
         enabled_extensions,
         allow_system_access,
         allow_keepassxc,
+        disable_extensions_launch,
         deny_reasons,
     }
 }

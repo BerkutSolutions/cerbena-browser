@@ -219,8 +219,8 @@ internal static class CerbenaInstallerProgram
             }
         }
 
-        RemoveShortcut(Path.Combine(GetKnownFolderPath(FolderIdDesktop), ShortcutFileName));
         RemoveShortcut(Path.Combine(GetKnownFolderPath(FolderIdPrograms), ShortcutFileName));
+        RemoveShortcut(Path.Combine(GetKnownFolderPath(FolderIdDesktop), ShortcutFileName));
         RemoveUninstallRegistration();
 
         var commandPath = Path.Combine(Path.GetTempPath(), "cerbena-uninstall-" + Guid.NewGuid().ToString("N") + ".cmd");
@@ -253,6 +253,7 @@ internal static class CerbenaInstallerProgram
         private readonly ProgressBar progressBar;
         private readonly Label progressLabel;
         private readonly CheckBox launchCheckBox;
+        private readonly CheckBox desktopShortcutCheckBox;
         private int pageIndex;
 
         internal InstallerWizardForm()
@@ -293,7 +294,9 @@ internal static class CerbenaInstallerProgram
             var progressState = BuildProgressPage(logo);
             progressBar = progressState.Item1;
             progressLabel = progressState.Item2;
-            launchCheckBox = BuildFinishPage(logo);
+            var finishState = BuildFinishPage(logo);
+            launchCheckBox = finishState.Item1;
+            desktopShortcutCheckBox = finishState.Item2;
             installPathTextBox.Text = DefaultInstallRoot;
 
             ShowPage(0);
@@ -427,7 +430,7 @@ internal static class CerbenaInstallerProgram
             return Tuple.Create(bar, label);
         }
 
-        private CheckBox BuildFinishPage(Image logo)
+        private Tuple<CheckBox, CheckBox> BuildFinishPage(Image logo)
         {
             finishPanel.Controls.Add(CreateHeaderLogo(logo));
             finishPanel.Controls.Add(new Label
@@ -447,16 +450,25 @@ internal static class CerbenaInstallerProgram
                 Height = 32,
                 Font = new Font("Segoe UI", 10f, FontStyle.Regular)
             });
-            var checkBox = new CheckBox
+            var desktopCheckBox = new CheckBox
             {
-                Text = "Launch Cerbena Browser",
+                Text = "Create a desktop shortcut",
                 Left = 240,
                 Top = 164,
                 Width = 240,
                 Checked = true
             };
-            finishPanel.Controls.Add(checkBox);
-            return checkBox;
+            var launchBox = new CheckBox
+            {
+                Text = "Launch Cerbena Browser",
+                Left = 240,
+                Top = 194,
+                Width = 240,
+                Checked = true
+            };
+            finishPanel.Controls.Add(desktopCheckBox);
+            finishPanel.Controls.Add(launchBox);
+            return Tuple.Create(launchBox, desktopCheckBox);
         }
 
         private PictureBox CreateHeaderLogo(Image logo)
@@ -545,6 +557,24 @@ internal static class CerbenaInstallerProgram
 
             if (pageIndex == 3)
             {
+                var desktopShortcutPath = Path.Combine(GetKnownFolderPath(FolderIdDesktop), ShortcutFileName);
+                if (desktopShortcutCheckBox.Checked)
+                {
+                    var executable = Path.Combine(installPathTextBox.Text.Trim(), "cerbena.exe");
+                    var shortcutIconPath = Path.Combine(installPathTextBox.Text.Trim(), ShortcutIconFileName);
+                    if (File.Exists(executable))
+                    {
+                        CreateShortcut(
+                            desktopShortcutPath,
+                            executable,
+                            Path.GetDirectoryName(executable),
+                            shortcutIconPath);
+                    }
+                }
+                else
+                {
+                    RemoveShortcut(desktopShortcutPath);
+                }
                 if (launchCheckBox.Checked)
                 {
                     var executable = Path.Combine(installPathTextBox.Text.Trim(), "cerbena.exe");
@@ -611,8 +641,8 @@ internal static class CerbenaInstallerProgram
                     }
 
                     ReportProgress(76, "Writing shortcuts...");
-                    CreateShortcut(Path.Combine(GetKnownFolderPath(FolderIdDesktop), ShortcutFileName), targetExe, targetRoot, shortcutIconPath);
                     CreateShortcut(Path.Combine(GetKnownFolderPath(FolderIdPrograms), ShortcutFileName), targetExe, targetRoot, shortcutIconPath);
+                    CreateShortcut(Path.Combine(GetKnownFolderPath(FolderIdDesktop), ShortcutFileName), targetExe, targetRoot, shortcutIconPath);
 
                     ReportProgress(86, "Registering uninstaller...");
                     var uninstallerPath = Path.Combine(targetRoot, UninstallerFileName);
@@ -1053,24 +1083,62 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
-[Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
-
 [Files]
 Source: "$payloadRootInno\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 Name: "{autoprograms}\{#MyAppName} Launcher"; Filename: "{app}\{#MyLauncherExeName}"; Check: LauncherExists
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  DesktopShortcutCheckBox: TNewCheckBox;
+
 function LauncherExists: Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\{#MyLauncherExeName}'));
+end;
+
+procedure InitializeWizard;
+begin
+  DesktopShortcutCheckBox := TNewCheckBox.Create(WizardForm);
+  DesktopShortcutCheckBox.Parent := WizardForm.FinishedPage.Surface;
+  DesktopShortcutCheckBox.Caption := 'Create a desktop shortcut';
+  DesktopShortcutCheckBox.Checked := True;
+  DesktopShortcutCheckBox.Left := WizardForm.RunList.Left;
+  DesktopShortcutCheckBox.Top := WizardForm.RunList.Top - ScaleY(24);
+  DesktopShortcutCheckBox.Width := WizardForm.RunList.Width;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  ShortcutPath: string;
+begin
+  Result := True;
+  if CurPageID = wpFinished then
+  begin
+    ShortcutPath := ExpandConstant('{autodesktop}\{#MyAppName}.lnk');
+    if DesktopShortcutCheckBox.Checked then
+    begin
+      CreateShellLink(
+        ShortcutPath,
+        '{#MyAppName}',
+        ExpandConstant('{app}\{#MyAppExeName}'),
+        '',
+        ExpandConstant('{app}'),
+        '',
+        ExpandConstant('{app}\{#MyAppExeName}'),
+        0,
+        SW_SHOWNORMAL);
+    end
+    else if FileExists(ShortcutPath) then
+    begin
+      DeleteFile(ShortcutPath);
+    end;
+  end;
 end;
 "@
 

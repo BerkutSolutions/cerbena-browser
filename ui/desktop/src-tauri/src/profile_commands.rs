@@ -23,6 +23,7 @@ use crate::{
     device_posture::enforce_launch_posture,
     envelope::ok,
     envelope::UiEnvelope,
+    keepassxc_bridge::ensure_keepassxc_bridge_for_profile,
     launch_sessions::{
         issue_launch_session, revoke_launch_session, trusted_session_for_profile,
         trusted_session_pid,
@@ -35,7 +36,8 @@ use crate::{
         terminate_process_tree, terminate_profile_processes, track_profile_process,
     },
     profile_security::{
-        assess_profile, cookies_copy_allowed, first_launch_blocker, ERR_COOKIES_COPY_BLOCKED,
+        assess_profile, cookies_copy_allowed, first_launch_blocker, tags_allow_keepassxc,
+        tags_allow_system_access, tags_disable_extension_launch, ERR_COOKIES_COPY_BLOCKED,
         ERR_LOCKED_REQUIRES_UNLOCK, ERR_MAXIMUM_POLICY_EXTENSIONS_FORBIDDEN,
     },
     route_runtime::{ensure_profile_route_runtime, stop_profile_route_runtime},
@@ -417,6 +419,7 @@ pub async fn launch_profile(
     write_profile_blocked_domains(&state, &profile.id, &profile_root).map_err(|e| e.to_string())?;
     if matches!(engine, EngineKind::Wayfern) {
         prepare_profile_wayfern_extensions(&state, &profile, &profile_root)?;
+        ensure_keepassxc_bridge_for_profile(state.inner(), &profile, &profile_root)?;
     }
     let gateway = ensure_profile_gateway(&app_handle, profile.id)?;
     let runtime_handle = app_handle.clone();
@@ -738,6 +741,9 @@ fn collect_active_profile_extensions(
     engine: Engine,
 ) -> Vec<ExtensionLibraryItem> {
     let profile_key = profile_id.to_string();
+    let allow_system_access = tags_allow_system_access(tags);
+    let allow_keepassxc = tags_allow_keepassxc(tags);
+    let disable_extensions_launch = tags_disable_extension_launch(tags);
     let enabled = tags
         .iter()
         .filter_map(|tag| tag.strip_prefix("ext:").map(str::to_string))
@@ -762,8 +768,67 @@ fn collect_active_profile_extensions(
                     .any(|value| value == &profile_key)
         })
         .filter(|item| !disabled.contains(&item.id))
+        .filter(|item| {
+            extension_allowed_for_launch(
+                item,
+                allow_system_access,
+                allow_keepassxc,
+                disable_extensions_launch,
+            )
+        })
         .cloned()
         .collect()
+}
+
+fn extension_allowed_for_launch(
+    item: &ExtensionLibraryItem,
+    allow_system_access: bool,
+    allow_keepassxc: bool,
+    disable_extensions_launch: bool,
+) -> bool {
+    if is_keepassxc_extension(item) {
+        return allow_keepassxc;
+    }
+    if disable_extensions_launch {
+        return false;
+    }
+    if is_system_access_extension(item) {
+        return allow_system_access;
+    }
+    true
+}
+
+fn extension_has_tag(item: &ExtensionLibraryItem, expected: &str) -> bool {
+    item.tags
+        .iter()
+        .any(|tag| tag.trim().eq_ignore_ascii_case(expected))
+}
+
+fn extension_contains_marker(item: &ExtensionLibraryItem, marker: &str) -> bool {
+    [
+        Some(item.display_name.as_str()),
+        Some(item.source_value.as_str()),
+        item.store_url.as_deref(),
+        item.package_file_name.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| value.to_ascii_lowercase().contains(marker))
+}
+
+fn is_keepassxc_extension(item: &ExtensionLibraryItem) -> bool {
+    extension_has_tag(item, "keepassxc")
+        || extension_contains_marker(item, "keepassxc")
+        || item.id.eq_ignore_ascii_case("oboonakemofpalcgghocfoadofidjkkk")
+}
+
+fn is_system_access_extension(item: &ExtensionLibraryItem) -> bool {
+    is_keepassxc_extension(item)
+        || extension_has_tag(item, "system-access")
+        || extension_has_tag(item, "system access")
+        || extension_has_tag(item, "native-messaging")
+        || extension_has_tag(item, "native messaging")
+        || extension_contains_marker(item, "native messaging")
 }
 
 fn extension_scope_matches_engine(engine_scope: &str, engine: Engine) -> bool {
@@ -1788,7 +1853,8 @@ async fn ensure_engine_ready(
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_camoufox_profile_runtime;
+    use super::{extension_allowed_for_launch, prepare_camoufox_profile_runtime};
+    use crate::state::ExtensionLibraryItem;
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -1842,5 +1908,77 @@ mod tests {
         assert!(user_js.contains("browser.sessionstore.privacy_level\", 2"));
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    fn sample_extension(
+        id: &str,
+        display_name: &str,
+        store_url: Option<&str>,
+        tags: &[&str],
+    ) -> ExtensionLibraryItem {
+        ExtensionLibraryItem {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            version: "1.0.0".to_string(),
+            engine_scope: "chromium".to_string(),
+            source_kind: "url".to_string(),
+            source_value: store_url.unwrap_or_default().to_string(),
+            logo_url: None,
+            store_url: store_url.map(str::to_string),
+            tags: tags.iter().map(|value| value.to_string()).collect(),
+            assigned_profile_ids: Vec::new(),
+            auto_update_enabled: false,
+            preserve_on_panic_wipe: false,
+            protect_data_from_panic_wipe: false,
+            package_path: None,
+            package_file_name: None,
+        }
+    }
+
+    #[test]
+    fn keepassxc_requires_explicit_profile_allowance() {
+        let keepass = sample_extension(
+            "oboonakemofpalcgghocfoadofidjkkk",
+            "KeePassXC-Browser",
+            Some("https://chromewebstore.google.com/detail/keepassxc-browser/oboonakemofpalcgghocfoadofidjkkk"),
+            &[],
+        );
+        assert!(!extension_allowed_for_launch(&keepass, false, false, false));
+        assert!(extension_allowed_for_launch(&keepass, false, true, false));
+        assert!(!extension_allowed_for_launch(&keepass, true, false, false));
+    }
+
+    #[test]
+    fn disable_extensions_launch_blocks_non_keepassxc_extensions() {
+        let regular = sample_extension(
+            "plain-extension",
+            "Sample Extension",
+            Some("https://example.invalid/sample"),
+            &[],
+        );
+        assert!(!extension_allowed_for_launch(&regular, false, false, true));
+        assert!(!extension_allowed_for_launch(&regular, true, true, true));
+    }
+
+    #[test]
+    fn system_access_extensions_require_opt_in() {
+        let native_extension = sample_extension(
+            "native-extension",
+            "Native Bridge",
+            Some("https://example.invalid/native"),
+            &["native-messaging"],
+        );
+        assert!(!extension_allowed_for_launch(
+            &native_extension,
+            false,
+            false,
+            false
+        ));
+        assert!(extension_allowed_for_launch(
+            &native_extension,
+            true,
+            false,
+            false
+        ));
     }
 }

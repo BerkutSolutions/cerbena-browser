@@ -4,6 +4,7 @@ mod device_posture;
 mod envelope;
 mod extensions_commands;
 mod identity_commands;
+mod keepassxc_bridge;
 mod launch_sessions;
 mod launcher_commands;
 mod network_commands;

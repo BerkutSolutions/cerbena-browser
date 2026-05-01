@@ -112,7 +112,8 @@ function profileTags(profile) {
     && !tag.startsWith("cert-id:")
     && !tag.startsWith("cert:")
     && tag !== "ext-system-access"
-    && tag !== "ext-keepassxc");
+    && tag !== "ext-keepassxc"
+    && tag !== "ext-launch-disabled");
 }
 
 function collectProfileTags(profiles) {
@@ -156,7 +157,8 @@ function profileSecurityFlags(profile) {
   const tags = profile?.tags ?? [];
   return {
     allowSystemAccess: tags.includes("ext-system-access"),
-    allowKeepassxc: tags.includes("ext-keepassxc")
+    allowKeepassxc: tags.includes("ext-keepassxc"),
+    disableExtensionsLaunch: tags.includes("ext-launch-disabled")
   };
 }
 
@@ -720,7 +722,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
                   ${extensionLibraryOptions(model, ext, profile)}
                 </select>
               </label>
-              <label>&nbsp;<button type="button" id="profile-extension-add">${t("extensions.add")}</button></label>
+              <label class="profile-toolbar-action">&nbsp;<button type="button" class="profile-toolbar-button" id="profile-extension-add">${t("extensions.add")}</button></label>
             </div>
             <table class="extensions-table">
               <thead><tr><th>${t("extensions.name")}</th><th>${t("extensions.status")}</th><th>${t("extensions.actions")}</th></tr></thead>
@@ -741,6 +743,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
                 <label>${t("profile.security.passwordConfirm")}<input type="password" name="profilePasswordConfirm" autocomplete="new-password" /></label>
               </div>
               <label class="checkbox-inline security-toggle-row"><input type="checkbox" name="ephemeral" ${profile?.ephemeral_mode ? "checked" : ""}/> <span>${t("profile.field.ephemeral")}</span></label>
+              <label class="checkbox-inline security-toggle-row"><input type="checkbox" name="disableExtensionsLaunch" ${securityFlags.disableExtensionsLaunch ? "checked" : ""}/> <span>${t("profile.security.disableExtensionsLaunch")}</span></label>
               <label class="checkbox-inline security-toggle-row"><input type="checkbox" name="allowSystemAccess" ${securityFlags.allowSystemAccess ? "checked" : ""}/> <span>${t("profile.security.allowSystemAccess")}</span></label>
               <label class="checkbox-inline security-toggle-row"><input type="checkbox" name="allowKeepassxc" ${securityFlags.allowKeepassxc ? "checked" : ""}/> <span>${t("profile.security.allowKeepassxc")}</span></label>
             </div>
@@ -749,8 +752,8 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
               <p class="meta">${t("security.certificates.hint")}</p>
               <div class="grid-two profile-certificates-toolbar">
                 <label>${t("security.certificates.profile")}<select name="profileCertificateSelect"><option value="">${t("security.selectCertificate")}</option>${certificateOptions}</select></label>
-                <label>&nbsp;<button type="button" id="profile-certificate-add">${t("security.certificates.add")}</button></label>
-                <label class="profile-modal-span-2">&nbsp;<button type="button" id="profile-certificate-pick">${t("security.certificates.pickFiles")}</button></label>
+                <label class="profile-toolbar-action">&nbsp;<button type="button" class="profile-toolbar-button" id="profile-certificate-add">${t("security.certificates.add")}</button></label>
+                <label class="profile-modal-span-2 profile-toolbar-action">&nbsp;<button type="button" class="profile-toolbar-button profile-toolbar-button-wide" id="profile-certificate-pick">${t("security.certificates.pickFiles")}</button></label>
               </div>
               <table class="extensions-table">
                 <thead><tr><th>${t("extensions.name")}</th><th>${t("security.path")}</th><th>${t("extensions.actions")}</th></tr></thead>
@@ -1856,7 +1859,8 @@ async function openProfileModal(root, model, rerender, t, existing) {
       && !x.startsWith("cert-id:")
       && !x.startsWith("cert:")
       && x !== "ext-system-access"
-      && x !== "ext-keepassxc");
+      && x !== "ext-keepassxc"
+      && x !== "ext-launch-disabled");
     tags.push(`policy:${form.policyLevel.value}`);
     if (form.dnsMode.value === "custom" && form.dnsTemplateId.value) {
       tags.push(`dns-template:${form.dnsTemplateId.value}`);
@@ -1864,6 +1868,14 @@ async function openProfileModal(root, model, rerender, t, existing) {
     tags.push(...certificateState.filter((item) => item.kind === "id").map((item) => `cert-id:${item.value}`));
     tags.push(...certificateState.filter((item) => item.kind === "path").map((item) => `cert:${item.value}`));
     tags.push(...extensionState.disabled.map((id) => `ext-disabled:${id}`));
+    if (form.disableExtensionsLaunch.checked && extensionState.enabled.length && !form.allowKeepassxc.checked) {
+      setNotice(model, "error", t("profile.security.disableExtensionsLaunchBlocked"));
+      rerender();
+      return;
+    }
+    if (form.disableExtensionsLaunch.checked) {
+      tags.push("ext-launch-disabled");
+    }
     if (form.allowSystemAccess.checked) {
       const accepted = await askConfirm(root, t, t("profile.security.allowSystemAccess"), t("profile.security.systemAccessWarning"));
       if (!accepted) return;
