@@ -23,6 +23,8 @@ const GITHUB_LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/BerkutSolutions/cerbena-browser/releases/latest";
 const RELEASE_CHECKSUMS_ASSET: &str = "checksums.txt";
 const RELEASE_CHECKSUMS_SIGNATURE_ASSET: &str = "checksums.sig";
+const RELEASE_CHECKSUMS_B64_ENV: &str = "CERBENA_RELEASE_CHECKSUMS_B64";
+const RELEASE_CHECKSUMS_SIGNATURE_B64_ENV: &str = "CERBENA_RELEASE_CHECKSUMS_SIGNATURE_B64";
 const UPDATE_CHECK_INTERVAL_MS: u128 = 6 * 60 * 60 * 1000;
 const SCHEDULER_TICK: Duration = Duration::from_secs(15 * 60);
 const USER_AGENT: &str = concat!("Cerbena-Updater/", env!("CARGO_PKG_VERSION"));
@@ -1158,8 +1160,13 @@ fn verify_release_checksums_signature_variant(
 $publicXml = @'
 __PUBLIC_KEY_XML__
 '@
-$checksums = [Convert]::FromBase64String($args[0])
-$signature = [Convert]::FromBase64String($args[1])
+$checksumsB64 = [Environment]::GetEnvironmentVariable('__CHECKSUMS_ENV__')
+$signatureB64 = [Environment]::GetEnvironmentVariable('__SIGNATURE_ENV__')
+if ([string]::IsNullOrWhiteSpace($checksumsB64) -or [string]::IsNullOrWhiteSpace($signatureB64)) {
+  exit 2
+}
+$checksums = [Convert]::FromBase64String($checksumsB64)
+$signature = [Convert]::FromBase64String($signatureB64)
 $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
 $rsa.PersistKeyInCsp = $false
 $rsa.FromXmlString($publicXml)
@@ -1168,7 +1175,9 @@ if (-not $rsa.VerifyData($checksums, $sha, $signature)) {
   exit 1
 }
 "#
-    .replace("__PUBLIC_KEY_XML__", RELEASE_SIGNING_PUBLIC_KEY_XML);
+    .replace("__PUBLIC_KEY_XML__", RELEASE_SIGNING_PUBLIC_KEY_XML)
+    .replace("__CHECKSUMS_ENV__", RELEASE_CHECKSUMS_B64_ENV)
+    .replace("__SIGNATURE_ENV__", RELEASE_CHECKSUMS_SIGNATURE_B64_ENV);
 
     let mut command = Command::new("powershell");
     command.args([
@@ -1178,9 +1187,9 @@ if (-not $rsa.VerifyData($checksums, $sha, $signature)) {
         "Bypass",
         "-Command",
         &script,
-        &B64.encode(checksums_bytes),
-        signature_b64,
     ]);
+    command.env(RELEASE_CHECKSUMS_B64_ENV, B64.encode(checksums_bytes));
+    command.env(RELEASE_CHECKSUMS_SIGNATURE_B64_ENV, signature_b64);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1435,8 +1444,10 @@ mod tests {
     use super::{
         asset_rank, can_auto_apply_asset, extract_checksum_for_asset, is_version_newer,
         normalize_version, pick_release_asset, sha256_hex, should_run_auto_update_check,
-        signature_verification_variants, AppUpdateStore, GithubReleaseAsset, UpdaterLaunchMode,
+        signature_verification_variants, AppUpdateStore, GithubReleaseAsset,
+        RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV, UpdaterLaunchMode,
     };
+    use std::process::Command;
 
     #[test]
     fn version_normalization_drops_leading_v() {
@@ -1523,6 +1534,38 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             ..AppUpdateStore::default()
         };
         assert!(should_run_auto_update_check(&store));
+    }
+
+    #[test]
+    fn powershell_command_reads_checksum_payloads_from_environment() {
+        let script = format!(
+            "$a=[Environment]::GetEnvironmentVariable('{checksums}'); \
+             $b=[Environment]::GetEnvironmentVariable('{signature}'); \
+             if ([string]::IsNullOrWhiteSpace($a) -or [string]::IsNullOrWhiteSpace($b)) {{ exit 2 }}; \
+             if ($a -eq 'alpha' -and $b -eq 'beta') {{ exit 0 }}; \
+             exit 1",
+            checksums = RELEASE_CHECKSUMS_B64_ENV,
+            signature = RELEASE_CHECKSUMS_SIGNATURE_B64_ENV
+        );
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
+            .env(RELEASE_CHECKSUMS_B64_ENV, "alpha")
+            .env(RELEASE_CHECKSUMS_SIGNATURE_B64_ENV, "beta")
+            .output()
+            .expect("run powershell env transport test");
+        assert!(
+            output.status.success(),
+            "powershell env transport must succeed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

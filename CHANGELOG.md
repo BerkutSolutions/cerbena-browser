@@ -1,5 +1,17 @@
 # Журнал изменений
 
+## 1.0.6 — transport-fix для secure updater
+
+### Тесты и release gates
+
+- Релиз `1.0.6` выпущен как исправление живого updater-regression из `1.0.5`, где подпись релиза ломалась не на GitHub assets, а на локальной передаче checksum payload в PowerShell verifier.
+
+### Апдейтер
+
+- Проверка `checksums.sig` больше не передает base64 payload через хвостовые аргументы `powershell -Command`, потому что в установленной среде такой вызов не гарантирует попадание значений в `$args`; verifier теперь получает checksum/signature через явные environment variables.
+- Добавлен regression-тест на transport-путь PowerShell verifier, чтобы secure updater больше не зависал и не падал на этапе `Security validation` из-за пустых аргументов.
+- Логика `Проверить сейчас` и автозапуска updater при включенном чекбоксе сохранена: после ручной установки этой версии дальнейшие релизы снова должны открываться через trusted updater без ручного обхода.
+
 ## 1.0.5 — автостарт апдейтера и проверка живого обновления
 
 ### Тесты и release gates
