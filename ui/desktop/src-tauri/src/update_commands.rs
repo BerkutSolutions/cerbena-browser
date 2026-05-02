@@ -1302,28 +1302,7 @@ fn launch_zip_apply_helper(
     install_root: &Path,
     relaunch_executable: Option<&Path>,
 ) -> Result<(), String> {
-    let relaunch = relaunch_executable
-        .map(powershell_quote)
-        .unwrap_or_else(|| "$null".to_string());
-    let helper = format!(
-        "$pidValue={pid};\
-        $archive={archive};\
-        $installRoot={install};\
-        $relaunchExe={relaunch};\
-        while (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 500 }};\
-        $temp=Join-Path ([System.IO.Path]::GetTempPath()) ('cerbena-update-' + [guid]::NewGuid().ToString('N'));\
-        New-Item -ItemType Directory -Path $temp -Force | Out-Null;\
-        Expand-Archive -LiteralPath $archive -DestinationPath $temp -Force;\
-        $source=$temp;\
-        $entries=Get-ChildItem -LiteralPath $temp;\
-        if ($entries.Count -eq 1 -and $entries[0].PSIsContainer) {{ $source=$entries[0].FullName }};\
-        Get-ChildItem -LiteralPath $source | ForEach-Object {{ Copy-Item -LiteralPath $_.FullName -Destination $installRoot -Recurse -Force }};\
-        if ($relaunchExe -and (Test-Path -LiteralPath $relaunchExe)) {{ Start-Process -FilePath $relaunchExe }}",
-        pid = pid,
-        archive = powershell_quote(archive_path),
-        install = powershell_quote(install_root),
-        relaunch = relaunch
-    );
+    let helper = build_zip_apply_helper_script(pid, archive_path, install_root, relaunch_executable);
     Command::new("powershell")
         .args([
             "-NoProfile",
@@ -1337,6 +1316,75 @@ fn launch_zip_apply_helper(
         .spawn()
         .map_err(|e| format!("spawn zip update helper: {e}"))?;
     Ok(())
+}
+
+fn build_zip_apply_helper_script(
+    pid: u32,
+    archive_path: &Path,
+    install_root: &Path,
+    relaunch_executable: Option<&Path>,
+) -> String {
+    let relaunch = relaunch_executable
+        .map(powershell_quote)
+        .unwrap_or_else(|| "$null".to_string());
+    format!(
+        "$pidValue={pid};\
+        $archive={archive};\
+        $installRoot={install};\
+        $relaunchExe={relaunch};\
+        $targetExecutables=@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe');\
+        while (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }};\
+        $targetPaths=@();\
+        foreach ($exeName in $targetExecutables) {{\
+            $candidate=Join-Path $installRoot $exeName;\
+            if (Test-Path -LiteralPath $candidate) {{\
+                $targetPaths += [System.IO.Path]::GetFullPath($candidate);\
+            }}\
+        }};\
+        $runningTargets=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {{\
+            $_.Id -ne $PID -and $_.Id -ne $pidValue\
+        }} | Where-Object {{\
+            try {{\
+                $processPath=$_.Path;\
+                $processPath -and ($targetPaths -contains [System.IO.Path]::GetFullPath($processPath))\
+            }} catch {{\
+                $false\
+            }}\
+        }});\
+        foreach ($proc in $runningTargets) {{\
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue;\
+        }};\
+        foreach ($proc in $runningTargets) {{\
+            try {{\
+                $proc.WaitForExit(15000) | Out-Null;\
+            }} catch {{}}\
+        }};\
+        $temp=Join-Path ([System.IO.Path]::GetTempPath()) ('cerbena-update-' + [guid]::NewGuid().ToString('N'));\
+        New-Item -ItemType Directory -Path $temp -Force | Out-Null;\
+        try {{\
+            Expand-Archive -LiteralPath $archive -DestinationPath $temp -Force;\
+            $source=$temp;\
+            $entries=Get-ChildItem -LiteralPath $temp;\
+            if ($entries.Count -eq 1 -and $entries[0].PSIsContainer) {{ $source=$entries[0].FullName }};\
+            $copySucceeded=$false;\
+            for ($attempt=0; $attempt -lt 10 -and -not $copySucceeded; $attempt++) {{\
+                try {{\
+                    Get-ChildItem -LiteralPath $source | ForEach-Object {{ Copy-Item -LiteralPath $_.FullName -Destination $installRoot -Recurse -Force }};\
+                    $copySucceeded=$true;\
+                }} catch {{\
+                    if ($attempt -ge 9) {{ throw }};\
+                    Start-Sleep -Milliseconds 500;\
+                }}\
+            }};\
+            if ($relaunchExe -and (Test-Path -LiteralPath $relaunchExe)) {{ Start-Process -FilePath $relaunchExe }}\
+        }} finally {{\
+            if (Test-Path -LiteralPath $temp) {{ Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }}\
+        }}",
+        pid = pid,
+        archive = powershell_quote(archive_path),
+        install = powershell_quote(install_root),
+        relaunch = relaunch
+    )
 }
 
 fn launch_msi_installer(msi_path: &Path) -> Result<(), String> {
@@ -1500,8 +1548,9 @@ mod tests {
         resolve_relaunch_executable_path, sha256_hex, should_run_auto_update_check,
         signature_verification_variants, AppUpdateStore, GithubReleaseAsset, CURRENT_VERSION,
         RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV, UpdaterLaunchMode,
+        build_zip_apply_helper_script,
     };
-    use std::{process::Command, path::PathBuf};
+    use std::{path::{Path, PathBuf}, process::Command};
 
     #[test]
     fn version_normalization_drops_leading_v() {
@@ -1654,6 +1703,20 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             resolve_relaunch_executable_path(temp.path()),
             Some(PathBuf::from(cerbena))
         );
+    }
+
+    #[test]
+    fn zip_apply_helper_stops_existing_launcher_processes_before_copy() {
+        let script = build_zip_apply_helper_script(
+            4242,
+            Path::new("C:/tmp/update.zip"),
+            Path::new("C:/Program Files/Cerbena Browser"),
+            Some(Path::new("C:/Program Files/Cerbena Browser/cerbena.exe")),
+        );
+        assert!(script.contains("Stop-Process -Id $proc.Id -Force"));
+        assert!(script.contains("WaitForExit(15000)"));
+        assert!(script.contains("@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe')"));
+        assert!(script.contains("for ($attempt=0; $attempt -lt 10 -and -not $copySucceeded; $attempt++)"));
     }
 
     #[test]

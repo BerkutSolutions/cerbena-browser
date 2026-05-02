@@ -205,12 +205,12 @@ export async function hydrateTrafficModel(model) {
 export function wireTraffic(root, model, rerender, t) {
   const refreshTraffic = async () => {
     await hydrateTrafficModel(model);
-    await rerender();
+    await rerender({ refreshProfiles: false, refreshFeature: false });
   };
   if (!model.trafficPoller) {
     model.trafficPoller = setInterval(async () => {
       await hydrateTrafficModel(model);
-      await rerender();
+      await rerender({ refreshProfiles: false, refreshFeature: false });
     }, TRAFFIC_POLL_INTERVAL_MS);
   }
   root.querySelector("#traffic-refresh")?.addEventListener("click", refreshTraffic);
@@ -223,7 +223,7 @@ export function wireTraffic(root, model, rerender, t) {
     filters.responseQuery = root.querySelector("#traffic-filter-response")?.value ?? "";
     filters.profileId = root.querySelector("#traffic-filter-profile")?.value ?? "all";
     filters.status = root.querySelector("#traffic-filter-status")?.value ?? "all";
-    await rerender();
+    await rerender({ refreshProfiles: false, refreshFeature: false });
   };
 
   for (const selector of [

@@ -32,7 +32,7 @@ const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.7";
+const APP_VERSION = "1.0.7-1";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";
@@ -684,20 +684,22 @@ async function bootstrap() {
   } else {
     await hydrateProfilesModel(model);
     if (!model.selectedProfileId && model.profiles[0]) model.selectedProfileId = model.profiles[0].id;
+    await hydrateCurrentFeatureModel(state.currentFeature, model);
   }
 
   const bus = createEventBus();
-  const rerender = async () => {
+  const rerender = async ({ refreshProfiles = true, refreshFeature = true, refreshOverlay = true } = {}) => {
     if (isPanicFrameOverlay()) {
-      await hydrateOverlayModel(model);
+      if (refreshOverlay) {
+        await hydrateOverlayModel(model);
+      }
     } else {
-      await hydrateProfilesModel(model);
-      if (state.currentFeature === "network" || state.currentFeature === "dns") await hydrateNetworkModel(model);
-      if (state.currentFeature === "dns") await hydrateDnsModel(model);
-      if (state.currentFeature === "extensions") await hydrateExtensionsModel(model);
-      if (state.currentFeature === "traffic") await hydrateTrafficModel(model);
-      if (state.currentFeature === "home") await hydrateHomeModel(model);
-      if (state.currentFeature === "settings") await hydrateSettingsModel(model);
+      if (refreshProfiles) {
+        await hydrateProfilesModel(model);
+      }
+      if (refreshFeature) {
+        await hydrateCurrentFeatureModel(state.currentFeature, model);
+      }
     }
     renderApp(root, state, i18n, model);
     wire(root, bus, state, model, rerender, i18n);
@@ -720,20 +722,20 @@ async function bootstrap() {
   bus.on("locale:set", async (locale) => {
     i18n.setLocale(locale);
     state.locale = locale;
-    await rerender();
+    await rerender({ refreshProfiles: false, refreshFeature: false });
   });
 
   bus.on("sidebar:toggled", async () => {
     state.sidebarCollapsed = !state.sidebarCollapsed;
-    await rerender();
+    await rerender({ refreshProfiles: false, refreshFeature: false });
   });
 
   bus.on("window:resized", async () => {
     applyResponsiveState(state);
-    await rerender();
+    await rerender({ refreshProfiles: false, refreshFeature: false });
   });
 
-  await rerender();
+  await rerender({ refreshProfiles: false, refreshFeature: false, refreshOverlay: false });
   if (!isPanicFrameOverlay()) {
     await consumePendingLinkLaunch(model, rerender, i18n.t);
   }
@@ -816,6 +818,15 @@ async function bootstrap() {
   }, { once: true });
   window.addEventListener("contextmenu", (event) => event.preventDefault());
   log.info("bootstrap complete");
+}
+
+async function hydrateCurrentFeatureModel(featureKey, model) {
+  if (featureKey === "network" || featureKey === "dns") await hydrateNetworkModel(model);
+  if (featureKey === "dns") await hydrateDnsModel(model);
+  if (featureKey === "extensions") await hydrateExtensionsModel(model);
+  if (featureKey === "traffic") await hydrateTrafficModel(model);
+  if (featureKey === "home") await hydrateHomeModel(model);
+  if (featureKey === "settings") await hydrateSettingsModel(model);
 }
 
 function wire(root, bus, state, model, rerender, i18n) {
