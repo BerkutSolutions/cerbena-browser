@@ -42,7 +42,7 @@ const UPDATER_STEP_RELAUNCH: &str = "relaunch";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUpdateStore {
-    #[serde(default)]
+    #[serde(default = "default_auto_update_enabled")]
     pub auto_update_enabled: bool,
     #[serde(default)]
     pub last_checked_at: Option<String>,
@@ -70,10 +70,14 @@ pub struct AppUpdateStore {
     pub updater_handoff_version: Option<String>,
 }
 
+fn default_auto_update_enabled() -> bool {
+    true
+}
+
 impl Default for AppUpdateStore {
     fn default() -> Self {
         Self {
-            auto_update_enabled: true,
+            auto_update_enabled: default_auto_update_enabled(),
             last_checked_at: None,
             last_checked_epoch_ms: None,
             latest_version: None,
@@ -345,6 +349,7 @@ pub fn check_launcher_updates(
 
 pub fn start_update_scheduler(app: AppHandle) {
     thread::spawn(move || loop {
+        thread::sleep(SCHEDULER_TICK);
         let state = app.state::<AppState>();
         let updater_active = state
             .updater_runtime
@@ -352,7 +357,6 @@ pub fn start_update_scheduler(app: AppHandle) {
             .map(|runtime| runtime.launch_mode.is_active())
             .unwrap_or(false);
         if updater_active {
-            thread::sleep(SCHEDULER_TICK);
             continue;
         }
         let should_run = match state.app_update_store.lock() {
@@ -362,7 +366,6 @@ pub fn start_update_scheduler(app: AppHandle) {
         if should_run {
             let _ = run_update_cycle(&state, false);
         }
-        thread::sleep(SCHEDULER_TICK);
     });
 }
 
@@ -640,9 +643,7 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         "running",
         "i18n:updater.detail.live_discover_running",
     )?;
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
+    let client = build_release_http_client(Duration::from_secs(30), false)
         .map_err(|e| format!("build updater client: {e}"))?;
     let candidate = fetch_latest_release(&client)?;
     update_updater_overview(state, |overview| {
@@ -776,9 +777,7 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
 }
 
 fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, String> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
+    let client = build_release_http_client(Duration::from_secs(20), false)
         .map_err(|e| format!("build update http client: {e}"))?;
 
     let result = fetch_latest_release(&client);
@@ -879,24 +878,9 @@ fn stage_release_if_needed(
     fs::create_dir_all(&target_dir).map_err(|e| format!("create update dir: {e}"))?;
     let asset_path = target_dir.join(asset_name);
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
+    let client = build_release_http_client(Duration::from_secs(60), true)
         .map_err(|e| format!("build update download client: {e}"))?;
-    let response = client
-        .get(asset_url)
-        .header("User-Agent", USER_AGENT)
-        .send()
-        .map_err(|e| format!("download update asset: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "download update asset failed with HTTP {}",
-            response.status()
-        ));
-    }
-    let bytes = response
-        .bytes()
-        .map_err(|e| format!("read update asset body: {e}"))?;
+    let bytes = download_release_bytes(&client, asset_url, "update asset")?;
     verify_release_candidate(candidate, &bytes)?;
     fs::write(&asset_path, &bytes).map_err(|e| format!("write update asset: {e}"))?;
 
@@ -1046,9 +1030,15 @@ fn finalize_updater_failure(state: &AppState, error: &str) -> Result<(), String>
 }
 
 fn fetch_latest_release(client: &Client) -> Result<ReleaseCandidate, String> {
+    fetch_latest_release_from_url(client, GITHUB_LATEST_RELEASE_API)
+}
+
+fn fetch_latest_release_from_url(
+    client: &Client,
+    latest_release_url: &str,
+) -> Result<ReleaseCandidate, String> {
     let response = client
-        .get(GITHUB_LATEST_RELEASE_API)
-        .header("User-Agent", USER_AGENT)
+        .get(latest_release_url)
         .send()
         .map_err(|e| format!("request latest release: {e}"))?;
     if !response.status().is_success() {
@@ -1124,9 +1114,7 @@ fn verify_release_security_bundle(
         .as_deref()
         .ok_or_else(|| "release checksums signature asset is missing".to_string())?;
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
+    let client = build_release_http_client(Duration::from_secs(30), false)
         .map_err(|e| format!("build checksum verification client: {e}"))?;
     let checksums_bytes = download_release_bytes(&client, checksums_url, "release checksums")?;
     let signature_bytes =
@@ -1156,21 +1144,56 @@ fn ensure_asset_matches_verified_checksum(
 }
 
 fn download_release_bytes(client: &Client, url: &str, label: &str) -> Result<Vec<u8>, String> {
-    let response = client
-        .get(url)
-        .header("User-Agent", USER_AGENT)
-        .send()
-        .map_err(|e| format!("download {label}: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "download {label} failed with HTTP {}",
-            response.status()
-        ));
+    let mut last_error = String::new();
+    for attempt in 1..=3 {
+        let response = match client.get(url).send() {
+            Ok(value) => value,
+            Err(error) => {
+                last_error = format!("download {label}: {error}");
+                if attempt < 3 {
+                    thread::sleep(Duration::from_millis(250 * attempt as u64));
+                    continue;
+                }
+                break;
+            }
+        };
+        if !response.status().is_success() {
+            last_error = format!("download {label} failed with HTTP {}", response.status());
+            if response.status().is_server_error() && attempt < 3 {
+                thread::sleep(Duration::from_millis(250 * attempt as u64));
+                continue;
+            }
+            break;
+        }
+        match response.bytes() {
+            Ok(value) => return Ok(value.to_vec()),
+            Err(error) => {
+                last_error = format!("read {label} body: {error}");
+                if attempt < 3 {
+                    thread::sleep(Duration::from_millis(250 * attempt as u64));
+                    continue;
+                }
+                break;
+            }
+        }
     }
-    response
-        .bytes()
-        .map(|value| value.to_vec())
-        .map_err(|e| format!("read {label} body: {e}"))
+    Err(last_error)
+}
+
+fn build_release_http_client(
+    timeout: Duration,
+    disable_auto_decompression: bool,
+) -> Result<Client, String> {
+    let mut builder = Client::builder()
+        .timeout(timeout)
+        .connect_timeout(Duration::from_secs(20))
+        .user_agent(USER_AGENT);
+    if disable_auto_decompression {
+        builder = builder.no_gzip().no_brotli().no_deflate();
+    }
+    builder
+        .build()
+        .map_err(|e| format!("build release http client: {e}"))
 }
 
 fn verify_release_checksums_signature(
@@ -1563,14 +1586,81 @@ fn powershell_quote(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        asset_rank, can_auto_apply_asset, extract_checksum_for_asset, is_version_newer,
-        normalize_version, pick_release_asset, reconcile_update_store_with_current_version,
-        resolve_relaunch_executable_path, sha256_hex, should_run_auto_update_check,
-        signature_verification_variants, AppUpdateStore, GithubReleaseAsset, CURRENT_VERSION,
+        asset_rank, build_release_http_client, build_zip_apply_helper_script,
+        can_auto_apply_asset, default_auto_update_enabled, download_release_bytes,
+        ensure_asset_matches_verified_checksum, extract_checksum_for_asset,
+        fetch_latest_release_from_url, is_version_newer, normalize_version, pick_release_asset,
+        reconcile_update_store_with_current_version, resolve_relaunch_executable_path,
+        sha256_hex, should_run_auto_update_check, signature_verification_variants,
+        AppUpdateStore, GithubReleaseAsset, VerifiedReleaseSecurityBundle, CURRENT_VERSION,
         RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV, UpdaterLaunchMode,
-        build_zip_apply_helper_script,
     };
-    use std::{path::{Path, PathBuf}, process::Command};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        path::{Path, PathBuf},
+        process::Command,
+        thread,
+        time::Duration,
+    };
+
+    fn next_release_version(version: &str) -> String {
+        let normalized = normalize_version(version);
+        let mut parts = normalized
+            .split('.')
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
+        let last = parts
+            .pop()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        parts.push((last + 1).to_string());
+        parts.join(".")
+    }
+
+    fn spawn_http_server(routes: Vec<(String, Vec<u8>, &'static str, Vec<(&'static str, &'static str)>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test http server");
+        let addr = listener.local_addr().expect("local addr");
+        thread::spawn(move || {
+            for _ in 0..routes.len() {
+                let (mut stream, _) = listener.accept().expect("accept test connection");
+                let mut buffer = [0u8; 8192];
+                let read = stream.read(&mut buffer).expect("read request");
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let first_line = request.lines().next().unwrap_or_default();
+                let path = first_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("/");
+                let (status, body, content_type, extra_headers) = routes
+                    .iter()
+                    .find(|(route, _, _, _)| route == path)
+                    .map(|(_, body, content_type, headers)| {
+                        ("200 OK", body.clone(), *content_type, headers.clone())
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            "404 Not Found",
+                            b"not found".to_vec(),
+                            "text/plain",
+                            Vec::new(),
+                        )
+                    });
+                let mut headers = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nConnection: close\r\n",
+                    body.len()
+                );
+                for (name, value) in extra_headers {
+                    headers.push_str(&format!("{name}: {value}\r\n"));
+                }
+                headers.push_str("\r\n");
+                stream.write_all(headers.as_bytes()).expect("write headers");
+                stream.write_all(&body).expect("write body");
+                stream.flush().expect("flush response");
+            }
+        });
+        format!("http://{}", addr)
+    }
 
     #[test]
     fn version_normalization_drops_leading_v() {
@@ -1657,6 +1747,12 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             ..AppUpdateStore::default()
         };
         assert!(should_run_auto_update_check(&store));
+    }
+
+    #[test]
+    fn missing_auto_update_field_defaults_to_enabled() {
+        let store: AppUpdateStore = serde_json::from_str("{}").expect("deserialize update store");
+        assert_eq!(store.auto_update_enabled, default_auto_update_enabled());
     }
 
     #[test]
@@ -1753,5 +1849,78 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             UpdaterLaunchMode::from_args(["--updater"]),
             UpdaterLaunchMode::Auto
         ));
+    }
+
+    #[test]
+    fn trusted_updater_downloads_mocked_newer_release_asset() {
+        let asset_name = "cerbena-windows-x64.zip";
+        let asset_bytes = b"trusted-update-asset".to_vec();
+        let checksum = sha256_hex(&asset_bytes);
+        let next_version = next_release_version(CURRENT_VERSION);
+        let checksums_text = format!("{checksum}  {asset_name}\n");
+        let base = spawn_http_server(vec![
+            (
+                format!("/{asset_name}"),
+                asset_bytes.clone(),
+                "application/octet-stream",
+                Vec::new(),
+            ),
+        ]);
+        let release_payload = format!(
+            r#"{{
+                "tag_name":"v{version}",
+                "html_url":"https://example.invalid/releases/v{version}",
+                "assets":[
+                    {{"name":"checksums.txt","browser_download_url":"{base}/checksums.txt"}},
+                    {{"name":"checksums.sig","browser_download_url":"{base}/checksums.sig"}},
+                    {{"name":"{asset_name}","browser_download_url":"{base}/{asset_name}"}}
+                ]
+            }}"#,
+            version = next_version,
+            asset_name = asset_name,
+            base = base
+        );
+        let api_base = spawn_http_server(vec![
+            (
+                "/latest".to_string(),
+                release_payload.into_bytes(),
+                "application/json",
+                Vec::new(),
+            ),
+        ]);
+        let client = build_release_http_client(Duration::from_secs(5), false)
+            .expect("build discovery client");
+        let candidate = fetch_latest_release_from_url(&client, &format!("{api_base}/latest"))
+            .expect("discover mocked release");
+        assert!(is_version_newer(&candidate.version, CURRENT_VERSION));
+        assert_eq!(candidate.asset_name.as_deref(), Some(asset_name));
+        let download_client = build_release_http_client(Duration::from_secs(5), true)
+            .expect("build download client");
+        let downloaded = download_release_bytes(
+            &download_client,
+            candidate.asset_url.as_deref().expect("asset url"),
+            "release asset",
+        )
+        .expect("download mocked asset");
+        let security_bundle = VerifiedReleaseSecurityBundle { checksums_text };
+        ensure_asset_matches_verified_checksum(&security_bundle, asset_name, &downloaded)
+            .expect("verify checksum");
+        assert_eq!(downloaded, asset_bytes);
+    }
+
+    #[test]
+    fn trusted_updater_download_tolerates_bad_content_encoding_headers() {
+        let payload = b"plain-binary-payload".to_vec();
+        let base = spawn_http_server(vec![(
+            "/asset.zip".to_string(),
+            payload.clone(),
+            "application/octet-stream",
+            vec![("Content-Encoding", "gzip")],
+        )]);
+        let client = build_release_http_client(Duration::from_secs(5), true)
+            .expect("build raw download client");
+        let downloaded = download_release_bytes(&client, &format!("{base}/asset.zip"), "release asset")
+            .expect("download payload with broken content encoding header");
+        assert_eq!(downloaded, payload);
     }
 }

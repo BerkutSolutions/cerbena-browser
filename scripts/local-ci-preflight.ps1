@@ -53,6 +53,64 @@ function Invoke-Native([string]$FilePath, [string[]]$Arguments = @(), [switch]$Q
     }
 }
 
+function Invoke-DesktopDevSmoke([string]$WorkingDirectory, [int]$GraceSeconds = 12) {
+    $stdoutPath = Join-Path ([System.IO.Path]::GetTempPath()) ("cerbena-dev-smoke-out-" + [guid]::NewGuid().ToString("N") + ".log")
+    $stderrPath = Join-Path ([System.IO.Path]::GetTempPath()) ("cerbena-dev-smoke-err-" + [guid]::NewGuid().ToString("N") + ".log")
+    $localAppDataRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("cerbena-dev-smoke-localappdata-" + [guid]::NewGuid().ToString("N"))
+    $process = $null
+    try {
+        [System.IO.Directory]::CreateDirectory($localAppDataRoot) | Out-Null
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = (Join-Path $env:SystemRoot "System32\cmd.exe")
+        $startInfo.WorkingDirectory = $WorkingDirectory
+        $startInfo.Arguments = "/d /c npm.cmd run dev"
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.Environment["LOCALAPPDATA"] = $localAppDataRoot
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            throw "failed to start desktop dev smoke process"
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $deadline = [DateTime]::UtcNow.AddSeconds($GraceSeconds)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            if (-not $process.HasExited) {
+                continue
+            }
+            $stdoutTask.Wait()
+            $stderrTask.Wait()
+            [System.IO.File]::WriteAllText($stdoutPath, $stdoutTask.Result)
+            [System.IO.File]::WriteAllText($stderrPath, $stderrTask.Result)
+            $stdoutTail = if ([string]::IsNullOrWhiteSpace($stdoutTask.Result)) { "" } else { (($stdoutTask.Result -split "`r?`n") | Select-Object -Last 40) -join [Environment]::NewLine }
+            $stderrTail = if ([string]::IsNullOrWhiteSpace($stderrTask.Result)) { "" } else { (($stderrTask.Result -split "`r?`n") | Select-Object -Last 40) -join [Environment]::NewLine }
+            $tail = @($stdoutTail, $stderrTail) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            if ($process.ExitCode -ne 0) {
+                throw "desktop dev smoke failed ($($process.ExitCode)): npm run dev`n$($tail -join [Environment]::NewLine)"
+            }
+            $combinedOutput = @($stdoutTask.Result, $stderrTask.Result) -join [Environment]::NewLine
+            if ($combinedOutput -match "\[dev\]\[page-load\] window=main") {
+                return
+            }
+            throw "desktop dev smoke exited too early before the grace window completed.`n$($tail -join [Environment]::NewLine)"
+        }
+    } finally {
+        if ($null -ne $process -and -not $process.HasExited) {
+            try {
+                & taskkill /PID $process.Id /T /F *> $null
+            } catch {
+            }
+        }
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $localAppDataRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 Push-Location $repoRoot
@@ -115,6 +173,17 @@ try {
         }
     }
 
+    if (-not $SkipDesktopRust) {
+        Step "Trusted updater regression tests" {
+            Push-Location (Join-Path $repoRoot "ui\desktop\src-tauri")
+            try {
+                Invoke-Native "cargo" @("test", "trusted_updater") -Quiet:$CompactOutput
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
     if (-not $SkipReleaseBuild) {
         Step "Launcher release build" {
             Invoke-Native "cargo" @("build", "-p", "cerbena-launcher", "--release") -Quiet:$CompactOutput
@@ -137,6 +206,12 @@ try {
             } finally {
                 Pop-Location
             }
+        }
+    }
+
+    if (-not $SkipUi) {
+        Step "Desktop UI dev smoke" {
+            Invoke-DesktopDevSmoke (Join-Path $repoRoot "ui\desktop")
         }
     }
 

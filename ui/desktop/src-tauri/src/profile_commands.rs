@@ -533,7 +533,15 @@ pub async fn launch_profile(
         &app_handle,
         profile.id,
         "engine",
-        "profile.launchProgress.engine",
+        if runtime
+            .installed(engine)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            "profile.launchProgress.engine"
+        } else {
+            "profile.launchProgress.engineDownload"
+        },
         false,
         None,
     );

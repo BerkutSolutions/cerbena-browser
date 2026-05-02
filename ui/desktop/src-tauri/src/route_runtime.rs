@@ -15,7 +15,7 @@ use base64::{
 };
 use flate2::read::ZlibDecoder;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::{
@@ -28,7 +28,8 @@ use crate::{
     network_runtime::{
         ensure_network_runtime_tools, resolve_amneziawg_binary_path,
         resolve_openvpn_binary_path, resolve_sing_box_binary_path, resolve_tor_binary_path,
-        resolve_tor_pt_binary_path, NetworkTool,
+        resolve_tor_pt_binary_path, tool_is_resolved_without_download, NetworkRuntime,
+        NetworkTool,
     },
     process_tracking::is_process_running,
     state::AppState,
@@ -42,6 +43,24 @@ fn hidden_command(program: &str) -> Command {
         command.creation_flags(0x08000000);
     }
     command
+}
+
+fn emit_profile_launch_progress(
+    app_handle: &AppHandle,
+    profile_id: Uuid,
+    stage_key: &str,
+    message_key: &str,
+) {
+    let _ = app_handle.emit(
+        "profile-launch-progress",
+        serde_json::json!({
+            "profileId": profile_id.to_string(),
+            "stageKey": stage_key,
+            "messageKey": message_key,
+            "done": false,
+            "error": serde_json::Value::Null,
+        }),
+    );
 }
 
 #[derive(Debug, Default)]
@@ -369,6 +388,14 @@ pub fn ensure_profile_route_runtime(
         uses_amnezia_container,
         uses_container_runtime,
     );
+    if profile_route_runtime_needs_download(app_handle, &required_tools) {
+        emit_profile_launch_progress(
+            app_handle,
+            profile_id,
+            "network-runtime",
+            "profile.launchProgress.networkRuntime",
+        );
+    }
     append_route_runtime_log(
         state.inner(),
         format!(
@@ -650,6 +677,25 @@ pub fn ensure_profile_route_runtime(
     );
 
     Ok(())
+}
+
+fn profile_route_runtime_needs_download(
+    app_handle: &AppHandle,
+    required_tools: &BTreeSet<NetworkTool>,
+) -> bool {
+    if required_tools.is_empty() {
+        return false;
+    }
+    let state = app_handle.state::<AppState>();
+    let Ok(runtime) = NetworkRuntime::new(state.network_runtime_root.clone()) else {
+        return false;
+    };
+    required_tools.iter().any(|tool| {
+        if tool_is_resolved_without_download(app_handle, *tool) {
+            return false;
+        }
+        runtime.installed(*tool).ok().flatten().is_none()
+    })
 }
 
 fn resolve_effective_route_selection(

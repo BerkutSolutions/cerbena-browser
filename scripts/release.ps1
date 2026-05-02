@@ -368,6 +368,24 @@ function Publish-GitHubReleaseAssets([string]$Root, [string]$Version) {
     $uploadArgs = @("release", "upload", $tag, "--repo", $defaultRepoSlug, "--clobber")
     $uploadArgs += Resolve-ReleaseUploadAssetPaths $Root $Version
     Invoke-Native "gh" $uploadArgs
+    Assert-GitHubReleaseAssetsPublished $Root $Version
+}
+
+function Assert-GitHubReleaseAssetsPublished([string]$Root, [string]$Version) {
+    $tag = "v$Version"
+    $expectedAssetNames = Resolve-ReleaseUploadAssetPaths $Root $Version |
+        ForEach-Object { [System.IO.Path]::GetFileName($_) }
+    $publishedAssetNames = Invoke-Native "gh" @(
+        "release", "view", $tag,
+        "--repo", $defaultRepoSlug,
+        "--json", "assets",
+        "--jq", ".assets[].name"
+    ) -Quiet
+    $publishedSet = @($publishedAssetNames | ForEach-Object { $_.ToString().Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $missing = @($expectedAssetNames | Where-Object { $publishedSet -notcontains $_ })
+    if ($missing.Count -gt 0) {
+        throw "GitHub Release is missing required published assets: $($missing -join ', ')"
+    }
 }
 
 function Run-Checks([string]$Root) {

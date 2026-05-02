@@ -7,7 +7,6 @@ import { initEngineDownloadNotifications } from "../core/engine-downloads.js";
 import { initDnsBlocklistNotifications } from "../core/dns-blocklist-downloads.js";
 import { minimizeWindow, toggleMaximizeWindow, closeWindow } from "../core/window-controls.js";
 import { renderHome, hydrateHomeModel, wireHome } from "../features/home/view.js";
-import { ensureEngineBinaries } from "../features/profiles/api.js";
 import { launchProfile } from "../features/profiles/api.js";
 import { updateProfile } from "../features/profiles/api.js";
 import { hydrateProfilesModel, wireProfiles } from "../features/profiles/view.js";
@@ -27,12 +26,13 @@ import {
   wireLinkLaunchModal,
   consumePendingLinkLaunch
 } from "../features/settings/view.js";
+import { checkLauncherUpdates, getLauncherUpdateState } from "../features/settings/api.js";
 
 const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.8";
+const APP_VERSION = "1.0.9";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";
@@ -850,9 +850,21 @@ async function bootstrap() {
     });
   }
   if (!isPanicFrameOverlay() && window.__TAURI__?.core?.invoke) {
-    ensureEngineBinaries().catch((error) => {
-      log.error("engine bootstrap failed", String(error));
-    });
+    window.setTimeout(async () => {
+      try {
+        const updateState = await getLauncherUpdateState();
+        if (!updateState?.ok) {
+          log.error("update state load failed", String(updateState?.data?.error ?? "unknown error"));
+          return;
+        }
+        if (!updateState.data?.autoUpdateEnabled) {
+          return;
+        }
+        await checkLauncherUpdates(false);
+      } catch (error) {
+        log.error("post-bootstrap update check failed", String(error));
+      }
+    }, 0);
   }
   window.addEventListener("resize", () => bus.emit("window:resized"));
   window.addEventListener("beforeunload", () => {

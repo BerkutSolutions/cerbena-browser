@@ -732,7 +732,7 @@ fn ensure_network_tool_with_lock(
     }
 }
 
-fn tool_is_resolved_without_download(app_handle: &AppHandle, tool: NetworkTool) -> bool {
+pub(crate) fn tool_is_resolved_without_download(app_handle: &AppHandle, tool: NetworkTool) -> bool {
     match tool {
         NetworkTool::SingBox => resolve_sing_box_binary_path(app_handle).is_ok(),
         NetworkTool::OpenVpn => resolve_openvpn_binary_path(app_handle).is_ok(),
