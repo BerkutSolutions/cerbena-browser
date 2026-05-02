@@ -174,7 +174,8 @@ impl ProfileStorage {
         let mut affected = Vec::new();
         let site_scopes = normalize_site_scopes(&request.site_scopes);
         for data_type in &request.data_types {
-            let preserved_engine_targets = retain_scoped_engine_data(&root, *data_type, &site_scopes)?;
+            let preserved_engine_targets =
+                retain_scoped_engine_data(&root, *data_type, &site_scopes)?;
             let targets = wipe_targets_for_type(&root, *data_type, &request.site_scopes);
             for target in targets {
                 if !target.exists() {
@@ -350,7 +351,12 @@ fn wipe_targets_for_type(root: &Path, ty: WipeDataType, scopes: &[String]) -> Ve
                 targets.push(root.join("data").join("cookies").join(scope));
             }
             targets.push(engine_root.join("Default").join("Network").join("Cookies"));
-            targets.push(engine_root.join("Default").join("Network").join("Cookies-journal"));
+            targets.push(
+                engine_root
+                    .join("Default")
+                    .join("Network")
+                    .join("Cookies-journal"),
+            );
             targets.push(engine_root.join("Default").join("Cookies"));
             targets.push(engine_root.join("Default").join("Cookies-journal"));
             targets.push(engine_root.join("cookies.sqlite"));
@@ -381,7 +387,12 @@ fn wipe_targets_for_type(root: &Path, ty: WipeDataType, scopes: &[String]) -> Ve
             targets.push(engine_root.join("Default").join("Cache"));
             targets.push(engine_root.join("Default").join("Code Cache"));
             targets.push(engine_root.join("Default").join("GPUCache"));
-            targets.push(engine_root.join("Default").join("Service Worker").join("CacheStorage"));
+            targets.push(
+                engine_root
+                    .join("Default")
+                    .join("Service Worker")
+                    .join("CacheStorage"),
+            );
             targets.push(engine_root.join("cache2"));
             targets.push(engine_root.join("startupCache"));
             targets.push(engine_root.join("shader-cache"));

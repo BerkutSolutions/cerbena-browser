@@ -12,34 +12,34 @@ The Cerbena Browser desktop UI is a local shell on top of `Tauri` backend comman
 - `Security`: root certificates and global shell security controls.
 - `Identity`: `Automatic` and `Manual` identity modes, generation, and templates.
 - `DNS`: DNS modes, policy-level table/editor, blocklists, service catalog, suffix bans, and domain rules.
-- `Network`: connection templates, route mode, global VPN policy, and node health checks.
-- `Traffic`: gateway decisions and manual domain blocks.
+- `Network`: connection templates, route mode, global VPN policy, global traffic-isolation policy, and node health checks.
+- `Traffic`: gateway decisions, manual domain blocks, and route diagnostics.
 - `Settings`: global shell settings with `General`, `Links`, `Sync`, and update controls.
 - `Updater`: a separate `cerbena-updater.exe` window for trusted update flow, preview checks, and safe installation handoff.
 
 ## Key UX principles
 
 - Every sensitive action is backed by backend validation.
-- Profile data is edited through a modal with a left-side vertical section rail for `General`, `Identity`, `VPN`, `DNS`, `Extensions`, `Security`, `Sync`, and `Advanced`.
-- `Home` replaces the old standalone profiles tab and now hosts the main profile lifecycle UI.
-- `Settings` centralizes default search/start page, external-link routing, sync operations, and update policy controls.
-- When an update is detected, the launcher hands control to the standalone updater instead of performing UI-critical installation inside the main browser shell.
-- `Identity` in `Automatic` mode hides manual fields and regenerates a realistic platform-scoped identity on each session.
-- `Identity` in `Manual` mode exposes generation and template tools that populate real editable values.
+- Profile data is edited through a modal with a left-side vertical rail for `General`, `Identity`, `VPN`, `DNS`, `Extensions`, `Security`, `Sync`, and `Advanced`.
+- The main `Network` screen owns global route templates and the global `Сетевая изоляция профилей` frame. That frame only appears when global VPN is enabled, because only then does the launcher have an active global route to evaluate.
+- The profile modal `VPN` tab owns profile-specific route selection and the `Сетевая изоляция профиля` frame. That frame is route-aware and only offers isolation modes that are actually compatible with the selected template.
+- `Traffic` is now a denser operational table: the request column is intentionally wider, the result column is more compact, and decision/action overlays render above the rest of the UI instead of being clipped by table rows.
+- Long profile launches show a temporary progress modal so users can see when launcher is preparing the profile, route runtime, container sandbox, helper image, or browser engine.
 - Network and runtime statuses are not considered valid without backend verification.
 
 ## Typical workflow
 
 1. Create a profile in `Home`.
-2. Configure `Identity`, `Network`, and `DNS`.
-3. Import and assign extensions where needed.
-4. Review global `Links`, `Sync`, and update behavior in `Settings`.
-5. Launch the profile and watch `Traffic`.
+2. Open the profile modal and configure `Identity`, `VPN`, `DNS`, `Extensions`, and `Security`.
+3. If needed, configure the global default route and global isolation policy in `Network`.
+4. Review `Settings` for default search/start page, links, sync, and update behavior.
+5. Launch the profile and inspect `Traffic` if a route is blocked or slow.
 
 ## Where to look when something fails
 
-- `Traffic` for explicit block reasons.
+- `Traffic` for explicit block reasons, route latency, and kill-switch decisions.
+- `Network` when the issue is related to templates, isolation strategy, container capacity, or helper availability.
 - `DNS` when the issue is related to policy levels, blocklists, denylist, or service restrictions.
 - `Settings > Sync` for synchronization, endpoint health, and snapshot issues.
-- `Updater` when the issue is related to release validation, trusted download, checksum comparison, or "already up to date" behavior.
+- `Updater` when the issue is related to release validation, trusted download, checksum comparison, or `already up to date` behavior.
 - operator/runtime diagnostics for provisioning, installer, engine download, or route-runtime failures.

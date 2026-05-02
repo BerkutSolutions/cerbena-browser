@@ -9,6 +9,11 @@ mod launch_sessions;
 mod launcher_commands;
 mod network_commands;
 mod network_runtime;
+mod network_sandbox_adapter;
+mod network_sandbox_container;
+mod network_sandbox_container_runtime;
+mod network_sandbox;
+mod network_sandbox_lifecycle;
 mod panic_frame;
 mod process_tracking;
 mod profile_commands;
@@ -48,7 +53,8 @@ fn main() {
             if let WindowEvent::CloseRequested { .. } = event {
                 update_commands::launch_pending_update_on_exit(&window.app_handle());
                 process_tracking::stop_all_profile_processes(&window.app_handle());
-                route_runtime::stop_all_route_runtime(&window.app_handle());
+                network_sandbox_lifecycle::stop_all_profile_network_stacks(&window.app_handle());
+                network_sandbox_lifecycle::cleanup_network_sandbox_janitor(&window.app_handle());
             }
         })
         .on_page_load(|window, payload| {
@@ -98,6 +104,7 @@ fn main() {
                 }
             }
             app.manage(state);
+            network_sandbox_lifecycle::cleanup_network_sandbox_janitor(app.handle());
             if updater_launch_mode.is_active() {
                 let state = app.state::<AppState>();
                 let _ = update_commands::ensure_updater_flow_started(&state);
@@ -140,6 +147,9 @@ fn main() {
             network_commands::test_connection_template_request,
             network_commands::save_global_route_settings,
             network_commands::save_dns_policy,
+            network_sandbox::save_network_sandbox_profile_settings,
+            network_sandbox::save_network_sandbox_global_settings,
+            network_sandbox::preview_network_sandbox_settings,
             network_commands::get_service_catalog,
             network_commands::set_service_block_all,
             network_commands::set_service_allowed,

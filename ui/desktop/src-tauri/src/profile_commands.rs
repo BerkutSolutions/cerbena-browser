@@ -24,6 +24,7 @@ use crate::{
     envelope::ok,
     envelope::UiEnvelope,
     keepassxc_bridge::ensure_keepassxc_bridge_for_profile,
+    network_sandbox_lifecycle::{ensure_profile_network_stack, stop_profile_network_stack},
     launch_sessions::{
         issue_launch_session, revoke_launch_session, trusted_session_for_profile,
         trusted_session_pid,
@@ -40,11 +41,29 @@ use crate::{
         tags_allow_system_access, tags_disable_extension_launch, ERR_COOKIES_COPY_BLOCKED,
         ERR_LOCKED_REQUIRES_UNLOCK, ERR_MAXIMUM_POLICY_EXTENSIONS_FORBIDDEN,
     },
-    route_runtime::{ensure_profile_route_runtime, stop_profile_route_runtime},
     service_domains::service_domain_seeds,
     state::{ensure_default_profiles, AppState, ExtensionLibraryItem},
-    traffic_gateway::ensure_profile_gateway,
 };
+
+fn emit_profile_launch_progress(
+    app_handle: &tauri::AppHandle,
+    profile_id: Uuid,
+    stage_key: &str,
+    message_key: &str,
+    done: bool,
+    error: Option<&str>,
+) {
+    let _ = app_handle.emit(
+        "profile-launch-progress",
+        serde_json::json!({
+            "profileId": profile_id.to_string(),
+            "stageKey": stage_key,
+            "messageKey": message_key,
+            "done": done,
+            "error": error,
+        }),
+    );
+}
 use zip::ZipArchive;
 
 #[derive(Debug, Deserialize)]
@@ -341,6 +360,14 @@ pub async fn launch_profile(
     let profile_root = state.profile_root.join(profile.id.to_string());
     let user_data_dir = profile_root.join("engine-profile");
     fs::create_dir_all(&user_data_dir).map_err(|e| e.to_string())?;
+    emit_profile_launch_progress(
+        &app_handle,
+        profile.id,
+        "preflight",
+        "profile.launchProgress.preflight",
+        false,
+        None,
+    );
     let session_engine = engine_session_key(&profile.engine);
     {
         let launched = state
@@ -416,21 +443,60 @@ pub async fn launch_profile(
     let runtime =
         EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
     let engine = engine_kind(profile.engine.clone());
+    emit_profile_launch_progress(
+        &app_handle,
+        profile.id,
+        "policy",
+        "profile.launchProgress.policy",
+        false,
+        None,
+    );
     write_profile_blocked_domains(&state, &profile.id, &profile_root).map_err(|e| e.to_string())?;
     if matches!(engine, EngineKind::Wayfern) {
+        emit_profile_launch_progress(
+            &app_handle,
+            profile.id,
+            "extensions",
+            "profile.launchProgress.extensions",
+            false,
+            None,
+        );
         prepare_profile_wayfern_extensions(&state, &profile, &profile_root)?;
+        emit_profile_launch_progress(
+            &app_handle,
+            profile.id,
+            "keepassxc",
+            "profile.launchProgress.keepassxc",
+            false,
+            None,
+        );
         ensure_keepassxc_bridge_for_profile(state.inner(), &profile, &profile_root)?;
     }
-    let gateway = ensure_profile_gateway(&app_handle, profile.id)?;
-    let runtime_handle = app_handle.clone();
-    let runtime_profile_id = profile.id;
-    tauri::async_runtime::spawn_blocking(move || {
-        ensure_profile_route_runtime(&runtime_handle, runtime_profile_id)
+    emit_profile_launch_progress(
+        &app_handle,
+        profile.id,
+        "network",
+        "profile.launchProgress.network",
+        false,
+        None,
+    );
+    let network_handle = app_handle.clone();
+    let network_profile_id = profile.id;
+    let gateway = tauri::async_runtime::spawn_blocking(move || {
+        ensure_profile_network_stack(&network_handle, network_profile_id)
     })
     .await
     .map_err(|e| e.to_string())??;
     let runtime_hardening = assess_profile(&profile).runtime_hardening;
     if matches!(engine, EngineKind::Camoufox) {
+        emit_profile_launch_progress(
+            &app_handle,
+            profile.id,
+            "profile-runtime",
+            "profile.launchProgress.profileRuntime",
+            false,
+            None,
+        );
         prepare_camoufox_profile_runtime(
             &user_data_dir,
             profile.default_start_page.as_deref(),
@@ -463,6 +529,14 @@ pub async fn launch_profile(
             }
         }
     }
+    emit_profile_launch_progress(
+        &app_handle,
+        profile.id,
+        "engine",
+        "profile.launchProgress.engine",
+        false,
+        None,
+    );
     let installation = ensure_engine_ready(&app_handle, &state, &runtime, engine).await?;
     if matches!(engine, EngineKind::Camoufox) {
         neutralize_camoufox_builtin_theme(&installation.binary_path).map_err(|e| e.to_string())?;
@@ -489,6 +563,14 @@ pub async fn launch_profile(
     let launch_runtime = runtime.clone();
     let launch_root = profile_root.clone();
     let gateway_port = Some(gateway.port);
+    emit_profile_launch_progress(
+        &app_handle,
+        profile.id,
+        "browser",
+        "profile.launchProgress.browser",
+        false,
+        None,
+    );
     let pid = tauri::async_runtime::spawn_blocking(move || {
         launch_runtime.launch(
             engine,
@@ -541,6 +623,14 @@ pub async fn launch_profile(
             "state": "running"
         }),
     );
+    emit_profile_launch_progress(
+        &app_handle,
+        profile.id,
+        "done",
+        "profile.launchProgress.done",
+        true,
+        None,
+    );
 
     patch_state(&state, &request, correlation_id, ProfileState::Running)
 }
@@ -553,10 +643,7 @@ fn prepare_camoufox_profile_runtime(
     runtime_hardening: bool,
 ) -> Result<(), std::io::Error> {
     fs::create_dir_all(profile_dir)?;
-    let startup_page = default_start_page
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("https://duckduckgo.com")
+    let startup_page = normalize_start_page_url(default_start_page)
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
 
@@ -566,6 +653,10 @@ fn prepare_camoufox_profile_runtime(
         "sessionstore.jsonlz4",
         "sessionCheckpoints.json",
         "times.json",
+        "search.json.mozlz4",
+        "search.sqlite",
+        "search.sqlite-wal",
+        "search.sqlite-shm",
     ];
     for file_name in stale_files {
         let path = profile_dir.join(file_name);
@@ -607,6 +698,8 @@ fn prepare_camoufox_profile_runtime(
         "user_pref(\"ui.primaryPointerCapabilities\", 1);".to_string(),
         "user_pref(\"ui.allPointerCapabilities\", 1);".to_string(),
         "user_pref(\"browser.ui.touch_activation.enabled\", false);".to_string(),
+        "user_pref(\"userChrome.decoration.cursor\", false);".to_string(),
+        "user_pref(\"browser.search.newSearchConfigEnabled\", false);".to_string(),
     ];
     if let Some(engine_name) = map_search_provider_to_firefox_engine(default_search_provider) {
         user_js_lines
@@ -690,6 +783,22 @@ fn prepare_camoufox_profile_runtime(
     Ok(())
 }
 
+fn normalize_start_page_url(default_start_page: Option<&str>) -> String {
+    let raw = default_start_page
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https://duckduckgo.com");
+    if raw.contains("://")
+        || raw.starts_with("about:")
+        || raw.starts_with("chrome:")
+        || raw.starts_with("file:")
+        || raw.starts_with("data:")
+    {
+        return raw.to_string();
+    }
+    format!("https://{raw}")
+}
+
 fn map_search_provider_to_firefox_engine(provider: Option<&str>) -> Option<&'static str> {
     match provider.unwrap_or("duckduckgo").to_lowercase().as_str() {
         "duckduckgo" => Some("DuckDuckGo"),
@@ -701,6 +810,141 @@ fn map_search_provider_to_firefox_engine(provider: Option<&str>) -> Option<&'sta
         "startpage" => Some("Startpage"),
         _ => Some("DuckDuckGo"),
     }
+}
+
+fn firefox_search_engine_policy_entries() -> Vec<serde_json::Value> {
+    vec![
+        firefox_search_engine_entry(
+            "DuckDuckGo",
+            "https://duckduckgo.com/?q={searchTerms}",
+            Some("https://duckduckgo.com/ac/?q={searchTerms}&type=list"),
+        ),
+        firefox_search_engine_entry(
+            "Google",
+            "https://www.google.com/search?q={searchTerms}",
+            Some("https://suggestqueries.google.com/complete/search?output=firefox&q={searchTerms}"),
+        ),
+        firefox_search_engine_entry(
+            "Bing",
+            "https://www.bing.com/search?q={searchTerms}",
+            Some("https://www.bing.com/osjson.aspx?query={searchTerms}"),
+        ),
+        firefox_search_engine_entry(
+            "Yandex",
+            "https://yandex.com/search/?text={searchTerms}",
+            Some("https://suggest.yandex.com/suggest-ff.cgi?part={searchTerms}"),
+        ),
+        firefox_search_engine_entry(
+            "Brave",
+            "https://search.brave.com/search?q={searchTerms}",
+            Some("https://search.brave.com/api/suggest?q={searchTerms}"),
+        ),
+        firefox_search_engine_entry(
+            "Ecosia",
+            "https://www.ecosia.org/search?q={searchTerms}",
+            Some("https://ac.ecosia.org/autocomplete?q={searchTerms}"),
+        ),
+        firefox_search_engine_entry(
+            "Startpage",
+            "https://www.startpage.com/sp/search?query={searchTerms}",
+            Some("https://www.startpage.com/suggestions?q={searchTerms}"),
+        ),
+    ]
+}
+
+fn firefox_search_engine_entry(
+    name: &str,
+    url_template: &str,
+    suggest_url_template: Option<&str>,
+) -> serde_json::Value {
+    let mut entry = serde_json::json!({
+        "Name": name,
+        "URLTemplate": url_template,
+    });
+    if let Some(suggest_url_template) = suggest_url_template {
+        entry["SuggestURLTemplate"] = serde_json::Value::String(suggest_url_template.to_string());
+    }
+    entry
+}
+
+fn firefox_search_engine_catalog() -> Vec<(&'static str, &'static str, &'static str, Option<&'static str>)> {
+    vec![
+        (
+            "duckduckgo",
+            "DuckDuckGo",
+            "https://duckduckgo.com/?q={searchTerms}",
+            Some("https://duckduckgo.com/ac/?q={searchTerms}&type=list"),
+        ),
+        (
+            "google",
+            "Google",
+            "https://www.google.com/search?q={searchTerms}",
+            Some("https://suggestqueries.google.com/complete/search?output=firefox&q={searchTerms}"),
+        ),
+        (
+            "bing",
+            "Bing",
+            "https://www.bing.com/search?q={searchTerms}",
+            Some("https://www.bing.com/osjson.aspx?query={searchTerms}"),
+        ),
+        (
+            "yandex",
+            "Yandex",
+            "https://yandex.com/search/?text={searchTerms}",
+            Some("https://suggest.yandex.com/suggest-ff.cgi?part={searchTerms}"),
+        ),
+        (
+            "brave",
+            "Brave",
+            "https://search.brave.com/search?q={searchTerms}",
+            Some("https://search.brave.com/api/suggest?q={searchTerms}"),
+        ),
+        (
+            "ecosia",
+            "Ecosia",
+            "https://www.ecosia.org/search?q={searchTerms}",
+            Some("https://ac.ecosia.org/autocomplete?q={searchTerms}"),
+        ),
+        (
+            "startpage",
+            "Startpage",
+            "https://www.startpage.com/sp/search?query={searchTerms}",
+            Some("https://www.startpage.com/suggestions?q={searchTerms}"),
+        ),
+    ]
+}
+
+fn write_firefox_search_plugin_bundle(distribution_dir: &Path) -> Result<(), std::io::Error> {
+    let searchplugins_dir = distribution_dir.join("searchplugins").join("common");
+    fs::create_dir_all(&searchplugins_dir)?;
+    for (id, name, url_template, suggest_template) in firefox_search_engine_catalog() {
+        let xml = build_firefox_search_plugin_xml(name, url_template, suggest_template);
+        fs::write(searchplugins_dir.join(format!("{id}.xml")), xml)?;
+    }
+    Ok(())
+}
+
+fn build_firefox_search_plugin_xml(
+    name: &str,
+    url_template: &str,
+    suggest_template: Option<&str>,
+) -> String {
+    let mut xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">
+  <ShortName>{name}</ShortName>
+  <Description>{name}</Description>
+  <InputEncoding>UTF-8</InputEncoding>
+  <Url type="text/html" method="GET" template="{url_template}"/>
+"#
+    );
+    if let Some(suggest_template) = suggest_template {
+        xml.push_str(&format!(
+            "  <Url type=\"application/x-suggestions+json\" method=\"GET\" template=\"{suggest_template}\"/>\n"
+        ));
+    }
+    xml.push_str("</OpenSearchDescription>\n");
+    xml
 }
 
 fn prepare_profile_wayfern_extensions(
@@ -920,6 +1164,7 @@ fn apply_camoufox_website_filter(
     };
     let distribution_dir = engine_dir.join("distribution");
     fs::create_dir_all(&distribution_dir)?;
+    write_firefox_search_plugin_bundle(&distribution_dir)?;
 
     let mut blocked_domains: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
@@ -963,14 +1208,8 @@ fn apply_camoufox_website_filter(
         .collect();
     let mut cert_paths: Vec<String> = Vec::new();
     let mut extension_install_urls: Vec<String> = Vec::new();
-    let mut default_search_engine = "DuckDuckGo".to_string();
     if let Ok(manager) = state.manager.lock() {
         if let Ok(profile) = manager.get_profile(*profile_id) {
-            if let Some(mapped) =
-                map_search_provider_to_firefox_engine(profile.default_search_provider.as_deref())
-            {
-                default_search_engine = mapped.to_string();
-            }
             cert_paths.extend(resolve_profile_certificate_paths(
                 state,
                 *profile_id,
@@ -999,35 +1238,8 @@ fn apply_camoufox_website_filter(
             "Certificates": {
                 "Install": cert_paths
             },
-            "Preferences": {
-                "browser.search.defaultenginename": {
-                    "Value": default_search_engine,
-                    "Status": "locked",
-                    "Type": "string"
-                },
-                "browser.search.defaultenginename.private": {
-                    "Value": default_search_engine,
-                    "Status": "locked",
-                    "Type": "string"
-                },
-                "browser.search.defaultEngine": {
-                    "Value": default_search_engine,
-                    "Status": "locked",
-                    "Type": "string"
-                },
-                "browser.search.defaultEngineName": {
-                    "Value": default_search_engine,
-                    "Status": "locked",
-                    "Type": "string"
-                },
-                "browser.search.selectedEngine": {
-                    "Value": default_search_engine,
-                    "Status": "locked",
-                    "Type": "string"
-                }
-            },
             "SearchEngines": {
-                "Default": default_search_engine
+                "Add": firefox_search_engine_policy_entries()
             }
         }
     });
@@ -1255,7 +1467,7 @@ pub fn stop_profile(
         terminate_process_tree(pid);
     }
     revoke_launch_session(&state, profile_id, tracked_pid)?;
-    stop_profile_route_runtime(&state.app_handle, profile_id);
+    stop_profile_network_stack(&state.app_handle, profile_id);
     clear_profile_process(
         &state.app_handle,
         profile_id,
@@ -1853,7 +2065,11 @@ async fn ensure_engine_ready(
 
 #[cfg(test)]
 mod tests {
-    use super::{extension_allowed_for_launch, prepare_camoufox_profile_runtime};
+    use super::{
+        build_firefox_search_plugin_xml, extension_allowed_for_launch,
+        firefox_search_engine_policy_entries, normalize_start_page_url,
+        prepare_camoufox_profile_runtime,
+    };
     use crate::state::ExtensionLibraryItem;
     use std::{
         fs,
@@ -1908,6 +2124,47 @@ mod tests {
         assert!(user_js.contains("browser.sessionstore.privacy_level\", 2"));
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn firefox_search_policy_catalog_contains_supported_defaults() {
+        let entries = firefox_search_engine_policy_entries();
+        let names = entries
+            .iter()
+            .filter_map(|entry| entry.get("Name").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"DuckDuckGo"));
+        assert!(names.contains(&"Google"));
+        assert!(names.contains(&"Startpage"));
+        assert!(entries.iter().all(|entry| entry.get("URLTemplate").is_some()));
+    }
+
+    #[test]
+    fn normalize_start_page_url_adds_https_for_plain_host() {
+        assert_eq!(
+            normalize_start_page_url(Some("duckduckgo.com")),
+            "https://duckduckgo.com"
+        );
+        assert_eq!(
+            normalize_start_page_url(Some("https://example.com")),
+            "https://example.com"
+        );
+        assert_eq!(
+            normalize_start_page_url(Some("about:blank")),
+            "about:blank"
+        );
+    }
+
+    #[test]
+    fn firefox_search_plugin_xml_contains_engine_name_and_url() {
+        let xml = build_firefox_search_plugin_xml(
+            "DuckDuckGo",
+            "https://duckduckgo.com/?q={searchTerms}",
+            Some("https://duckduckgo.com/ac/?q={searchTerms}&type=list"),
+        );
+        assert!(xml.contains("<ShortName>DuckDuckGo</ShortName>"));
+        assert!(xml.contains("https://duckduckgo.com/?q={searchTerms}"));
+        assert!(xml.contains("application/x-suggestions+json"));
     }
 
     fn sample_extension(

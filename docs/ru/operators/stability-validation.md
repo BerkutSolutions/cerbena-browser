@@ -24,4 +24,4 @@ sidebar_position: 2
 
 ## Локальная предварительная проверка
 
-Полная локальная проверка описана в `scripts/local-ci-preflight.ps1`. Скрипт объединяет Rust-тесты, сборку документации, UI smoke-проверки и отдельные шаги `security-gates` / `vulnerability-gates` в один поток.
+Полная локальная проверка описана в `scripts/local-ci-preflight.ps1`. Скрипт объединяет Rust-тесты, сборку документации, UI smoke-проверки, проверку контейнерной среды и отдельные шаги `security-gates` / `vulnerability-gates` в один поток.

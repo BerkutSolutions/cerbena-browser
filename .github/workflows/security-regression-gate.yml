@@ -7,6 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
+  traffic-isolation-regression:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - working-directory: ui/desktop/src-tauri
+        run: cargo test traffic_isolation
+
   launcher-security-preflight:
     runs-on: windows-latest
     steps:

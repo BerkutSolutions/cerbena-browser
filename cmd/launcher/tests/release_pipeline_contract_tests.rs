@@ -12,13 +12,16 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
     let root = repo_root();
     let release_script =
         fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release.ps1");
-    let artifacts_script = fs::read_to_string(root.join("scripts").join("generate-release-artifacts.ps1"))
-        .expect("read generate-release-artifacts.ps1");
-    let installer_script =
-        fs::read_to_string(root.join("scripts").join("build-installer.ps1")).expect("read build-installer.ps1");
+    let artifacts_script =
+        fs::read_to_string(root.join("scripts").join("generate-release-artifacts.ps1"))
+            .expect("read generate-release-artifacts.ps1");
+    let installer_script = fs::read_to_string(root.join("scripts").join("build-installer.ps1"))
+        .expect("read build-installer.ps1");
 
     for needle in [
         "local-ci-preflight.ps1",
+        "docker-runtime-preflight.ps1",
+        "vulnerability-gates-preflight.ps1",
         "generate-release-artifacts.ps1",
         "cargo",
         "npm.cmd",
@@ -40,7 +43,11 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         );
     }
 
-    for needle in ["ISCC.exe", "localappdata}\\Cerbena Browser", "cerbena-browser-setup"] {
+    for needle in [
+        "ISCC.exe",
+        "localappdata}\\Cerbena Browser",
+        "cerbena-browser-setup",
+    ] {
         assert!(
             installer_script.contains(needle),
             "installer build script must mention {needle}"
@@ -69,11 +76,19 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
         fs::read_to_string(workflows.join("ci-quality.yml")).expect("read ci-quality workflow");
     assert!(ci_quality.contains("npm run docs:build"));
     assert!(ci_quality.contains("cargo test --workspace"));
-    assert!(ci_quality.contains("scripts\\release.ps1") || ci_quality.contains("./scripts/release.ps1"));
+    assert!(
+        ci_quality.contains("scripts\\release.ps1") || ci_quality.contains("./scripts/release.ps1")
+    );
 
     let security_supply = fs::read_to_string(workflows.join("security-supply-chain.yml"))
         .expect("read security-supply-chain workflow");
-    for needle in ["dependency-review", "cargo-audit", "npm audit", "gitleaks", "trivy"] {
+    for needle in [
+        "dependency-review",
+        "cargo-audit",
+        "npm audit",
+        "gitleaks",
+        "trivy",
+    ] {
         assert!(
             security_supply.contains(needle),
             "security-supply-chain workflow must mention {needle}"

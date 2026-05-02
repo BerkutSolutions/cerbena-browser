@@ -11,6 +11,7 @@ sidebar_position: 3
 - тесты качества документации
 - `npm run docs:build`
 - `cd ui/desktop && npm test`
+- `powershell -ExecutionPolicy Bypass -File scripts/docker-runtime-preflight.ps1`
 - `powershell -ExecutionPolicy Bypass -File scripts/security-gates-preflight.ps1`
 - `powershell -ExecutionPolicy Bypass -File scripts/vulnerability-gates-preflight.ps1`
 - проверка `README.md`, `README.en.md`, `docs/ru`, `docs/eng`

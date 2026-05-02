@@ -1,10 +1,10 @@
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
 };
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

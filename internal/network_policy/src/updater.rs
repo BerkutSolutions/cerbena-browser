@@ -13,7 +13,9 @@ use thiserror::Error;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlocklistSource {
-    LocalFile { path: PathBuf },
+    LocalFile {
+        path: PathBuf,
+    },
     RemoteUrl {
         url: String,
         #[serde(default = "default_true")]
@@ -21,7 +23,9 @@ pub enum BlocklistSource {
         #[serde(default)]
         expected_sha256: Option<String>,
     },
-    InlineDomains { domains: Vec<String> },
+    InlineDomains {
+        domains: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

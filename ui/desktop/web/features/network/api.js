@@ -34,6 +34,22 @@ export async function saveGlobalRouteSettings(request) {
   return callCommand("save_global_route_settings", { request });
 }
 
+export async function saveNetworkSandboxProfileSettings(profileId, preferredMode = null) {
+  return callCommand("save_network_sandbox_profile_settings", {
+    request: { profileId, preferredMode }
+  });
+}
+
+export async function saveNetworkSandboxGlobalSettings(enabled, defaultMode = null) {
+  return callCommand("save_network_sandbox_global_settings", {
+    request: { enabled, defaultMode }
+  });
+}
+
+export async function previewNetworkSandboxSettings(request) {
+  return callCommand("preview_network_sandbox_settings", { request });
+}
+
 export async function saveDnsPolicy(profileId, payload) {
   return callCommand("save_dns_policy", { request: { profileId, payload } });
 }

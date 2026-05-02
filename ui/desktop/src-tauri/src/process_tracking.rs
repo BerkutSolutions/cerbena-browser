@@ -11,8 +11,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::launch_sessions::revoke_launch_session;
+use crate::network_sandbox_lifecycle::stop_profile_network_stack;
 use crate::panic_frame::close_panic_frame;
-use crate::route_runtime::stop_profile_route_runtime;
 use crate::state::AppState;
 
 pub fn track_profile_process(
@@ -28,12 +28,20 @@ pub fn track_profile_process(
             if let Some(actual_pid) = find_profile_process_pid(&profile_data_dir) {
                 missing_profile_ticks = 0;
                 if actual_pid != tracked_pid {
+                    eprintln!(
+                        "[process-tracking] profile={} tracked_pid_replaced old={} new={}",
+                        profile_id, tracked_pid, actual_pid
+                    );
                     replace_tracked_pid(&app_handle, profile_id, tracked_pid, actual_pid);
                     tracked_pid = actual_pid;
                 }
             } else {
                 missing_profile_ticks = missing_profile_ticks.saturating_add(1);
-                if !is_process_running(tracked_pid) || missing_profile_ticks >= 4 {
+                if !is_process_running(tracked_pid) && missing_profile_ticks >= 4 {
+                    eprintln!(
+                        "[process-tracking] profile={} tracked_pid={} considered stopped after {} missing ticks",
+                        profile_id, tracked_pid, missing_profile_ticks
+                    );
                     clear_profile_process(&app_handle, profile_id, tracked_pid, true);
                     break;
                 }
@@ -73,8 +81,12 @@ pub fn clear_profile_process(app_handle: &AppHandle, profile_id: Uuid, pid: u32,
     }
     launched.remove(&profile_id);
     drop(launched);
+    eprintln!(
+        "[process-tracking] clearing profile={} pid={} emit_event={}",
+        profile_id, pid, emit_event
+    );
     let _ = revoke_launch_session(state.inner(), profile_id, Some(pid));
-    stop_profile_route_runtime(app_handle, profile_id);
+    stop_profile_network_stack(app_handle, profile_id);
     close_panic_frame(app_handle, profile_id);
 
     if let Ok(manager) = state.manager.lock() {

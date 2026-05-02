@@ -139,7 +139,10 @@ fn prune_chromium_history_store(path: &Path, scopes: &[String]) -> Result<bool, 
         let tx = conn.transaction()?;
         for row_id in &url_ids {
             tx.execute("DELETE FROM visits WHERE url = ?1", [row_id])?;
-            let _ = tx.execute("DELETE FROM keyword_search_terms WHERE url_id = ?1", [row_id]);
+            let _ = tx.execute(
+                "DELETE FROM keyword_search_terms WHERE url_id = ?1",
+                [row_id],
+            );
             let _ = tx.execute("DELETE FROM segments WHERE url_id = ?1", [row_id]);
             tx.execute("DELETE FROM urls WHERE id = ?1", [row_id])?;
         }
@@ -179,7 +182,10 @@ fn prune_firefox_history_store(path: &Path, scopes: &[String]) -> Result<bool, P
     if !place_ids.is_empty() {
         let tx = conn.transaction()?;
         for row_id in &place_ids {
-            tx.execute("DELETE FROM moz_historyvisits WHERE place_id = ?1", [row_id])?;
+            tx.execute(
+                "DELETE FROM moz_historyvisits WHERE place_id = ?1",
+                [row_id],
+            )?;
             let _ = tx.execute("DELETE FROM moz_inputhistory WHERE place_id = ?1", [row_id]);
             tx.execute(
                 "DELETE FROM moz_places WHERE id = ?1 AND id NOT IN (SELECT fk FROM moz_bookmarks)",
@@ -201,11 +207,7 @@ fn finalize_sqlite(conn: &mut Connection) -> Result<(), ProfileError> {
     Ok(())
 }
 
-fn delete_rowids(
-    conn: &mut Connection,
-    sql: &str,
-    row_ids: &[i64],
-) -> Result<(), ProfileError> {
+fn delete_rowids(conn: &mut Connection, sql: &str, row_ids: &[i64]) -> Result<(), ProfileError> {
     if row_ids.is_empty() {
         return Ok(());
     }
@@ -277,7 +279,10 @@ mod tests {
             ".example.com".to_string(),
             "sub.example.com".to_string(),
         ]);
-        assert_eq!(scopes, vec!["example.com".to_string(), "sub.example.com".to_string()]);
+        assert_eq!(
+            scopes,
+            vec!["example.com".to_string(), "sub.example.com".to_string()]
+        );
     }
 
     #[test]
@@ -295,7 +300,10 @@ mod tests {
             extract_url_host("https://sub.example.com/path?q=1"),
             Some("sub.example.com")
         );
-        assert!(url_matches_scope("https://sub.example.com/path?q=1", &scopes));
+        assert!(url_matches_scope(
+            "https://sub.example.com/path?q=1",
+            &scopes
+        ));
         assert!(!url_matches_scope("file:///tmp/demo", &scopes));
     }
 }

@@ -11,6 +11,7 @@ A release should not rely on a successful build alone.
 - docs quality tests
 - `npm run docs:build`
 - `cd ui/desktop && npm test`
+- `powershell -ExecutionPolicy Bypass -File scripts/docker-runtime-preflight.ps1`
 - `powershell -ExecutionPolicy Bypass -File scripts/security-gates-preflight.ps1`
 - `powershell -ExecutionPolicy Bypass -File scripts/vulnerability-gates-preflight.ps1`
 - validation of `README.md`, `README.en.md`, `docs/ru`, and `docs/eng`

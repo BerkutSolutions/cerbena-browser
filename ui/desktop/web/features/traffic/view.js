@@ -171,6 +171,13 @@ export function renderTraffic(t, model) {
       ${filtersFrame(model, t, profiles)}
       <div class="panel">
         <table class="extensions-table traffic-table">
+          <colgroup>
+            <col class="traffic-col-time" />
+            <col class="traffic-col-request" />
+            <col class="traffic-col-result" />
+            <col class="traffic-col-profile" />
+            <col class="traffic-col-actions" />
+          </colgroup>
           <thead>
             <tr>
               <th>${t("traffic.time")}</th>

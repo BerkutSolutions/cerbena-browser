@@ -394,7 +394,11 @@ fn selective_wipe_preserves_scoped_domains_in_chromium_sqlite_stores() {
         })
         .expect("create profile");
 
-    let root = tmp.path().join(created.id.to_string()).join("engine-profile").join("Default");
+    let root = tmp
+        .path()
+        .join(created.id.to_string())
+        .join("engine-profile")
+        .join("Default");
     std::fs::create_dir_all(root.join("Network")).expect("network dir");
     let cookies_path = root.join("Network").join("Cookies");
     let history_path = root.join("History");
@@ -467,7 +471,10 @@ fn selective_wipe_preserves_scoped_domains_in_firefox_sqlite_stores() {
         })
         .expect("create profile");
 
-    let root = tmp.path().join(created.id.to_string()).join("engine-profile");
+    let root = tmp
+        .path()
+        .join(created.id.to_string())
+        .join("engine-profile");
     std::fs::create_dir_all(&root).expect("engine root");
     let cookies_path = root.join("cookies.sqlite");
     let places_path = root.join("places.sqlite");
@@ -514,8 +521,14 @@ fn selective_wipe_preserves_scoped_domains_in_firefox_sqlite_stores() {
         ),
         0
     );
-    assert_eq!(read_i64(&places_path, "SELECT COUNT(*) FROM moz_historyvisits"), 1);
-    assert_eq!(read_i64(&places_path, "SELECT COUNT(*) FROM moz_bookmarks"), 1);
+    assert_eq!(
+        read_i64(&places_path, "SELECT COUNT(*) FROM moz_historyvisits"),
+        1
+    );
+    assert_eq!(
+        read_i64(&places_path, "SELECT COUNT(*) FROM moz_bookmarks"),
+        1
+    );
 }
 
 #[test]
@@ -728,10 +741,16 @@ fn seed_firefox_places(path: &std::path::Path) {
         params!["https://bookmark-only.example.com/path"],
     )
     .expect("bookmark place");
-    conn.execute("INSERT INTO moz_historyvisits(id, place_id) VALUES (1, 1)", [])
-        .expect("keep visit");
-    conn.execute("INSERT INTO moz_historyvisits(id, place_id) VALUES (2, 2)", [])
-        .expect("drop visit");
+    conn.execute(
+        "INSERT INTO moz_historyvisits(id, place_id) VALUES (1, 1)",
+        [],
+    )
+    .expect("keep visit");
+    conn.execute(
+        "INSERT INTO moz_historyvisits(id, place_id) VALUES (2, 2)",
+        [],
+    )
+    .expect("drop visit");
     conn.execute("INSERT INTO moz_bookmarks(id, fk) VALUES (1, 3)", [])
         .expect("bookmark");
     conn.execute("INSERT INTO moz_inputhistory(place_id) VALUES (2)", [])

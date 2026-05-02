@@ -19,6 +19,8 @@ sidebar_position: 90
 powershell -ExecutionPolicy Bypass -File .\scripts\local-ci-preflight.ps1 -CompactOutput
 ```
 
+The local preflight now runs the Docker runtime contract plus security and vulnerability gates in one pass.
+
 ### Full release packaging
 
 ```powershell

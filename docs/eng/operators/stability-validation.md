@@ -24,4 +24,4 @@ For Cerbena Browser, stability means more than "the app launches". It also means
 
 ## Local preflight
 
-The full local validation path is described in `scripts/local-ci-preflight.ps1`. It combines Rust tests, docs build, UI smoke checks, and dedicated `security-gates` / `vulnerability-gates` preflight hooks in one repeatable flow.
+The full local validation path is described in `scripts/local-ci-preflight.ps1`. It combines Rust tests, docs build, UI smoke checks, the Docker runtime preflight, and dedicated `security-gates` / `vulnerability-gates` hooks in one repeatable flow.

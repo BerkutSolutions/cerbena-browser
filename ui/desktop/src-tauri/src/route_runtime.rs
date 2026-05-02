@@ -19,10 +19,16 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::{
+    network_sandbox::{resolve_profile_network_sandbox_mode, ResolvedNetworkSandboxMode},
+    network_sandbox_container_runtime::{
+        cleanup_stale_container_route_runtimes, launch_amnezia_container_runtime,
+        launch_openvpn_container_runtime, launch_sing_box_container_runtime, stop_container_runtime,
+        CONTAINER_PROXY_PORT,
+    },
     network_runtime::{
-        ensure_network_runtime_tools, resolve_amneziawg_binary_path, resolve_openvpn_binary_path,
-        resolve_sing_box_binary_path, resolve_tor_binary_path, resolve_tor_pt_binary_path,
-        NetworkTool,
+        ensure_network_runtime_tools, resolve_amneziawg_binary_path,
+        resolve_openvpn_binary_path, resolve_sing_box_binary_path, resolve_tor_binary_path,
+        resolve_tor_pt_binary_path, NetworkTool,
     },
     process_tracking::is_process_running,
     state::AppState,
@@ -42,6 +48,16 @@ pub struct RouteRuntimeSession {
     pub config_path: PathBuf,
     pub cleanup_paths: Vec<PathBuf>,
     pub tunnel_name: Option<String>,
+    pub container_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RouteRuntimeSessionSnapshot {
+    pub backend: RouteRuntimeBackend,
+    pub listen_port: Option<u16>,
+    pub config_path: PathBuf,
+    pub cleanup_paths: Vec<PathBuf>,
+    pub tunnel_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +65,7 @@ pub enum RouteRuntimeBackend {
     SingBox,
     OpenVpn,
     AmneziaWg,
+    ContainerSocks,
 }
 
 pub fn runtime_proxy_endpoint(app_handle: &AppHandle, profile_id: Uuid) -> Option<(String, u16)> {
@@ -60,6 +77,10 @@ pub fn runtime_proxy_endpoint(app_handle: &AppHandle, profile_id: Uuid) -> Optio
     }
     match session.backend {
         RouteRuntimeBackend::SingBox => {
+            let port = session.listen_port?;
+            Some(("127.0.0.1".to_string(), port))
+        }
+        RouteRuntimeBackend::ContainerSocks => {
             let port = session.listen_port?;
             Some(("127.0.0.1".to_string(), port))
         }
@@ -80,11 +101,32 @@ pub fn runtime_session_active(app_handle: &AppHandle, profile_id: Uuid) -> bool 
         .unwrap_or(false)
 }
 
+pub fn runtime_session_snapshot(
+    app_handle: &AppHandle,
+    profile_id: Uuid,
+) -> Option<RouteRuntimeSessionSnapshot> {
+    let state = app_handle.state::<AppState>();
+    let runtime = state.route_runtime.lock().ok()?;
+    let session = runtime.sessions.get(&profile_id.to_string())?.clone();
+    Some(RouteRuntimeSessionSnapshot {
+        backend: session.backend,
+        listen_port: session.listen_port,
+        config_path: session.config_path,
+        cleanup_paths: session.cleanup_paths,
+        tunnel_name: session.tunnel_name,
+    })
+}
+
 fn session_is_active(session: &RouteRuntimeSession) -> bool {
     match session.backend {
         RouteRuntimeBackend::SingBox | RouteRuntimeBackend::OpenVpn => {
             session.pid.map(is_process_running).unwrap_or(false)
         }
+        RouteRuntimeBackend::ContainerSocks => session
+            .container_name
+            .as_deref()
+            .map(is_container_runtime_active)
+            .unwrap_or(false),
         RouteRuntimeBackend::AmneziaWg => session
             .tunnel_name
             .as_deref()
@@ -147,6 +189,11 @@ pub fn stop_profile_route_runtime(app_handle: &AppHandle, profile_id: Uuid) {
                 }
             }
         }
+        if session.backend == RouteRuntimeBackend::ContainerSocks {
+            if let Some(container_name) = session.container_name.as_deref() {
+                stop_container_runtime(container_name);
+            }
+        }
         let _ = fs::remove_file(session.config_path);
         for path in session.cleanup_paths {
             let _ = fs::remove_file(path);
@@ -169,6 +216,53 @@ pub fn stop_all_route_runtime(app_handle: &AppHandle) {
     };
     for profile_id in sessions {
         stop_profile_route_runtime(app_handle, profile_id);
+    }
+}
+
+pub fn cleanup_legacy_route_runtime(app_handle: &AppHandle) {
+    cleanup_legacy_amnezia_tunnels(app_handle);
+    let active_profiles = {
+        let state = app_handle.state::<AppState>();
+        state
+            .launched_processes
+            .lock()
+            .ok()
+            .map(|value| {
+                value
+                    .iter()
+                    .filter_map(|(profile_id, pid)| {
+                        if is_process_running(*pid) {
+                            Some(*profile_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default()
+    };
+    cleanup_stale_container_route_runtimes(app_handle, &active_profiles);
+}
+
+pub fn cleanup_stale_route_runtime_artifacts(
+    app_handle: &AppHandle,
+    active_profiles: &BTreeSet<Uuid>,
+) {
+    let state = app_handle.state::<AppState>();
+    if let Ok(entries) = fs::read_dir(&state.profile_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let Ok(profile_id) = Uuid::parse_str(name) else {
+                continue;
+            };
+            if active_profiles.contains(&profile_id) {
+                continue;
+            }
+            cleanup_profile_runtime_artifacts(path.join("runtime"));
+        }
     }
 }
 
@@ -216,11 +310,27 @@ pub fn ensure_profile_route_runtime(
         return Ok(());
     }
 
-    let uses_amnezia_native =
-        nodes.len() == 1 && nodes[0].connection_type == "vpn" && nodes[0].protocol == "amnezia";
     let uses_openvpn = nodes
         .iter()
         .any(|node| node.connection_type == "vpn" && node.protocol == "openvpn");
+    let sandbox_strategy =
+        resolve_profile_network_sandbox_mode(&state, profile_id, Some(&template))?;
+    if !sandbox_strategy.available {
+        return Err(format!(
+            "network sandbox strategy `{}` is not available for this profile: {}",
+            sandbox_strategy.mode.as_str(),
+            sandbox_strategy.reason
+        ));
+    }
+    let amnezia_native_required = nodes.len() == 1
+        && nodes[0].connection_type == "vpn"
+        && nodes[0].protocol == "amnezia"
+        && amnezia_node_requires_native_backend(&nodes[0])?;
+    let uses_amnezia_native =
+        sandbox_strategy.mode == ResolvedNetworkSandboxMode::CompatibilityNative
+            && amnezia_native_required;
+    let uses_container_runtime = sandbox_strategy.mode == ResolvedNetworkSandboxMode::Container;
+    let uses_amnezia_container = uses_container_runtime && amnezia_native_required;
     if uses_openvpn
         && !(nodes.len() == 1
             && nodes[0].connection_type == "vpn"
@@ -242,7 +352,32 @@ pub fn ensure_profile_route_runtime(
             "route runtime does not support protocol chain yet: {unsupported}"
         ));
     }
-    let required_tools = required_runtime_tools(&nodes, uses_openvpn, uses_amnezia_native);
+    let required_tools = required_runtime_tools(
+        &nodes,
+        uses_openvpn,
+        uses_amnezia_native,
+        uses_amnezia_container,
+        uses_container_runtime,
+    );
+    append_route_runtime_log(
+        state.inner(),
+        format!(
+            "[route-runtime] profile={} strategy={} requested={} native_required={} reason={}",
+            profile_id,
+            sandbox_strategy.mode.as_str(),
+            sandbox_strategy.requested_mode,
+            sandbox_strategy.requires_native_backend,
+            sandbox_strategy.reason
+        ),
+    );
+    eprintln!(
+        "[route-runtime] profile={} strategy={} requested={} native_required={} reason={}",
+        profile_id,
+        sandbox_strategy.mode.as_str(),
+        sandbox_strategy.requested_mode,
+        sandbox_strategy.requires_native_backend,
+        sandbox_strategy.reason
+    );
 
     let signature_payload = json!({
         "route_mode": route_mode,
@@ -272,6 +407,117 @@ pub fn ensure_profile_route_runtime(
     fs::create_dir_all(&runtime_dir).map_err(|e| format!("create runtime dir: {e}"))?;
     let sing_box_log_path = runtime_dir.join("sing-box-route.log");
 
+    if uses_amnezia_container {
+        let node = nodes
+            .first()
+            .ok_or_else(|| "amnezia container runtime requires one node".to_string())?;
+        let key = node
+            .settings
+            .get("amneziaKey")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "amnezia key is required".to_string())?;
+        let config_text = build_amnezia_native_config_text(key)?;
+        let host_proxy_port = reserve_local_port()?;
+        let launch = launch_amnezia_container_runtime(
+            app_handle,
+            profile_id,
+            &runtime_dir,
+            host_proxy_port,
+            &config_text,
+        )?;
+        let mut runtime = state
+            .route_runtime
+            .lock()
+            .map_err(|_| "route runtime lock poisoned".to_string())?;
+        runtime.sessions.insert(
+            profile_key,
+            RouteRuntimeSession {
+                signature,
+                pid: None,
+                backend: RouteRuntimeBackend::ContainerSocks,
+                listen_port: Some(launch.host_proxy_port),
+                config_path: launch.config_path,
+                cleanup_paths: launch.cleanup_paths,
+                tunnel_name: None,
+                container_name: Some(launch.container_name),
+            },
+        );
+        return Ok(());
+    }
+
+    if uses_container_runtime {
+        let host_proxy_port = reserve_local_port()?;
+        if uses_openvpn {
+            let node = nodes
+                .first()
+                .ok_or_else(|| "openvpn container runtime requires one node".to_string())?;
+            let container_log_path = PathBuf::from("/work/route.log");
+            let config_text = build_openvpn_config_text(node, None, &container_log_path)?;
+            let launch = launch_openvpn_container_runtime(
+                app_handle,
+                profile_id,
+                &runtime_dir,
+                host_proxy_port,
+                &config_text,
+            )?;
+            let mut runtime = state
+                .route_runtime
+                .lock()
+                .map_err(|_| "route runtime lock poisoned".to_string())?;
+            runtime.sessions.insert(
+                profile_key,
+                RouteRuntimeSession {
+                    signature,
+                    pid: None,
+                    backend: RouteRuntimeBackend::ContainerSocks,
+                    listen_port: Some(launch.host_proxy_port),
+                    config_path: launch.config_path,
+                    cleanup_paths: launch.cleanup_paths,
+                    tunnel_name: None,
+                    container_name: Some(launch.container_name),
+                },
+            );
+            return Ok(());
+        }
+
+        let container_log_path = PathBuf::from("/work/container-route.log");
+        let config = build_runtime_config(
+            app_handle,
+            &nodes,
+            CONTAINER_PROXY_PORT,
+            &container_log_path,
+            RuntimeExecutionTarget::Container,
+        )?;
+        let config_json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+        let launch = launch_sing_box_container_runtime(
+            app_handle,
+            profile_id,
+            &runtime_dir,
+            host_proxy_port,
+            &config_json,
+        )?;
+        let mut runtime = state
+            .route_runtime
+            .lock()
+            .map_err(|_| "route runtime lock poisoned".to_string())?;
+        runtime.sessions.insert(
+            profile_key,
+            RouteRuntimeSession {
+                signature,
+                pid: None,
+                backend: RouteRuntimeBackend::ContainerSocks,
+                listen_port: Some(launch.host_proxy_port),
+                config_path: launch.config_path,
+                cleanup_paths: launch.cleanup_paths,
+                tunnel_name: None,
+                container_name: Some(launch.container_name),
+            },
+        );
+        return Ok(());
+    }
+
     if uses_amnezia_native {
         let node = nodes
             .first()
@@ -294,6 +540,7 @@ pub fn ensure_profile_route_runtime(
                 config_path: launch.config_path,
                 cleanup_paths: launch.cleanup_paths,
                 tunnel_name: Some(launch.tunnel_name),
+                container_name: None,
             },
         );
         return Ok(());
@@ -320,6 +567,7 @@ pub fn ensure_profile_route_runtime(
                 config_path: openvpn.config_path,
                 cleanup_paths: openvpn.cleanup_paths,
                 tunnel_name: None,
+                container_name: None,
             },
         );
         return Ok(());
@@ -327,7 +575,13 @@ pub fn ensure_profile_route_runtime(
 
     let local_port = reserve_local_port()?;
     let _ = fs::remove_file(&sing_box_log_path);
-    let config = build_runtime_config(app_handle, &nodes, local_port, &sing_box_log_path)?;
+    let config = build_runtime_config(
+        app_handle,
+        &nodes,
+        local_port,
+        &sing_box_log_path,
+        RuntimeExecutionTarget::Host,
+    )?;
     let config_path = runtime_dir.join("sing-box-route.json");
     let config_bytes = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(&config_path, config_bytes)
@@ -386,6 +640,7 @@ pub fn ensure_profile_route_runtime(
             config_path,
             cleanup_paths: vec![sing_box_log_path],
             tunnel_name: None,
+            container_name: None,
         },
     );
 
@@ -417,6 +672,16 @@ fn resolve_effective_route_selection(
     (profile_route_mode, template_id)
 }
 
+fn append_route_runtime_log(state: &AppState, entry: String) {
+    if let Ok(mut logs) = state.runtime_logs.lock() {
+        logs.push(entry);
+        if logs.len() > 1000 {
+            let overflow = logs.len() - 1000;
+            logs.drain(0..overflow);
+        }
+    }
+}
+
 fn reserve_local_port() -> Result<u16, String> {
     let listener =
         TcpListener::bind("127.0.0.1:0").map_err(|e| format!("bind local route runtime: {e}"))?;
@@ -428,6 +693,89 @@ fn reserve_local_port() -> Result<u16, String> {
         return Err("route runtime local port is zero".to_string());
     }
     Ok(port)
+}
+
+fn cleanup_legacy_amnezia_tunnels(app_handle: &AppHandle) {
+    let state = app_handle.state::<AppState>();
+    let mut tunnel_names = BTreeSet::new();
+    let mut artifact_paths = Vec::new();
+    if let Ok(entries) = fs::read_dir(&state.profile_root) {
+        for profile_entry in entries.flatten() {
+            let runtime_dir = profile_entry.path().join("runtime");
+            if !runtime_dir.is_dir() {
+                continue;
+            }
+            if let Ok(runtime_entries) = fs::read_dir(&runtime_dir) {
+                for runtime_entry in runtime_entries.flatten() {
+                    let path = runtime_entry.path();
+                    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+                        continue;
+                    };
+                    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                        continue;
+                    };
+                    if stem.starts_with("awg-") {
+                        tunnel_names.insert(stem.to_string());
+                        if file_name.ends_with(".conf") {
+                            artifact_paths.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for tunnel_name in tunnel_names {
+        cleanup_legacy_amnezia_tunnel(app_handle, &tunnel_name);
+    }
+    for artifact_path in artifact_paths {
+        let _ = fs::remove_file(artifact_path);
+    }
+}
+
+fn cleanup_profile_runtime_artifacts(runtime_dir: PathBuf) {
+    if !runtime_dir.is_dir() {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(&runtime_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if should_remove_runtime_artifact(file_name) {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+    let is_empty = fs::read_dir(&runtime_dir)
+        .ok()
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false);
+    if is_empty {
+        let _ = fs::remove_dir(&runtime_dir);
+    }
+}
+
+fn should_remove_runtime_artifact(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        "sing-box-route.json" | "sing-box-route.log" | "openvpn-route.log" | "openvpn-route.ovpn"
+    ) || file_name.starts_with("awg-")
+}
+
+fn cleanup_legacy_amnezia_tunnel(app_handle: &AppHandle, tunnel_name: &str) {
+    if !amnezia_tunnel_service_exists(tunnel_name) {
+        return;
+    }
+    let _ = stop_amnezia_tunnel_service(tunnel_name);
+    let _ = wait_amnezia_tunnel_state(tunnel_name, false, 8_000);
+    if let Ok(binary) = crate::network_runtime::resolve_amneziawg_binary_path(app_handle) {
+        if uninstall_amnezia_tunnel(&binary, tunnel_name).is_ok() {
+            return;
+        }
+    }
+    let _ = delete_amnezia_tunnel_service(tunnel_name);
 }
 
 #[derive(Debug)]
@@ -472,13 +820,6 @@ fn launch_amneziawg_runtime(
     }
 
     install_amnezia_tunnel(&binary_path, &config_path, &tunnel_name)?;
-    if let Err(error) = set_amnezia_tunnel_service_start_mode(&tunnel_name, "demand") {
-        let cleanup_error = uninstall_amnezia_tunnel(&binary_path, &tunnel_name).err();
-        return Err(match cleanup_error {
-            Some(cleanup) => format!("{error}. Cleanup failed: {cleanup}"),
-            None => error,
-        });
-    }
     if !is_amnezia_tunnel_active(&tunnel_name) {
         start_amnezia_tunnel_service(&tunnel_name)?;
     }
@@ -813,57 +1154,48 @@ fn stop_amnezia_tunnel_service(tunnel_name: &str) -> Result<(), String> {
     }
 }
 
-fn set_amnezia_tunnel_service_start_mode(
-    tunnel_name: &str,
-    start_mode: &str,
-) -> Result<(), String> {
+fn delete_amnezia_tunnel_service(tunnel_name: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let service_name = amnezia_service_name(tunnel_name);
-        let args = vec![
-            "config".to_string(),
-            service_name.clone(),
-            "start=".to_string(),
-            start_mode.to_string(),
-        ];
-        let output = Command::new("sc.exe")
-            .arg("config")
+        let args = vec!["delete".to_string(), service_name.clone()];
+        let output = Command::new("sc")
+            .arg("delete")
             .arg(&service_name)
-            .arg("start=")
-            .arg(start_mode)
             .output()
-            .map_err(|e| format!("set amneziawg tunnel service start mode failed: {e}"))?;
+            .map_err(|e| format!("delete amneziawg tunnel service failed: {e}"))?;
         if output.status.success() {
             return Ok(());
         }
         if is_amnezia_access_denied(&output) {
-            let elevated = run_sc_command_elevated(&args, "configure amneziawg service start mode");
+            let elevated = run_sc_command_elevated(&args, "delete amneziawg service");
             match elevated {
                 Ok(out) if out.status.success() => return Ok(()),
-                Ok(out) if is_uac_elevation_cancelled(&out) => {
-                    return Err(
-                        "amneziawg service start mode update requires administrator approval (UAC was cancelled)"
-                            .to_string(),
-                    )
+                Ok(out) => {
+                    if is_uac_elevation_cancelled(&out) {
+                        return Err(
+                            "amneziawg service deletion requires administrator approval (UAC was cancelled)"
+                                .to_string(),
+                        );
+                    }
+                    let reason = describe_process_failure(&out, "amneziawg elevated delete");
+                    return Err(format!("unable to delete amneziawg tunnel service: {reason}"));
                 }
-                Ok(_) | Err(_) => {}
+                Err(error) => {
+                    return Err(format!(
+                        "amneziawg service deletion requires administrator privileges: {error}"
+                    ));
+                }
             }
         }
-        let text = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return Err(format!(
-            "unable to set amneziawg tunnel service start mode to {start_mode}: {}",
-            tail_lines(&text, 12)
-        ));
+        let reason = describe_process_failure(&output, "amneziawg delete");
+        Err(format!("unable to delete amneziawg tunnel service: {reason}"))
     }
+
     #[cfg(not(target_os = "windows"))]
     {
         let _ = tunnel_name;
-        let _ = start_mode;
-        Err("amneziawg service configuration is only supported on Windows".to_string())
+        Err("amneziawg service deletion is only supported on Windows".to_string())
     }
 }
 
@@ -1431,8 +1763,10 @@ fn build_runtime_config(
     nodes: &[NormalizedNode],
     listen_port: u16,
     log_path: &PathBuf,
+    target: RuntimeExecutionTarget,
 ) -> Result<Value, String> {
     let mut outbounds = Vec::new();
+    let mut endpoints = Vec::new();
     let tags = nodes
         .iter()
         .enumerate()
@@ -1444,8 +1778,10 @@ fn build_runtime_config(
         } else {
             None
         };
-        let outbound = node_to_sing_box_outbound(app_handle, node, &tags[idx], detour)?;
-        outbounds.push(outbound);
+        match node_to_sing_box_runtime_entry(app_handle, node, &tags[idx], detour, target)? {
+            SingBoxRuntimeEntry::Outbound(outbound) => outbounds.push(outbound),
+            SingBoxRuntimeEntry::Endpoint(endpoint) => endpoints.push(endpoint),
+        }
     }
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
 
@@ -1460,10 +1796,11 @@ fn build_runtime_config(
             {
                 "type": "mixed",
                 "tag": "mixed-in",
-                "listen": "127.0.0.1",
+                "listen": if target == RuntimeExecutionTarget::Container { "0.0.0.0" } else { "127.0.0.1" },
                 "listen_port": listen_port
             }
         ],
+        "endpoints": endpoints,
         "outbounds": outbounds,
         "route": {
             "final": tags.first().cloned().unwrap_or_else(|| "direct".to_string())
@@ -1472,25 +1809,41 @@ fn build_runtime_config(
     Ok(config)
 }
 
-fn node_to_sing_box_outbound(
+enum SingBoxRuntimeEntry {
+    Outbound(Value),
+    Endpoint(Value),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeExecutionTarget {
+    Host,
+    Container,
+}
+
+fn node_to_sing_box_runtime_entry(
     app_handle: &AppHandle,
     node: &NormalizedNode,
     tag: &str,
     detour: Option<String>,
-) -> Result<Value, String> {
-    let mut outbound = match node.connection_type.as_str() {
-        "proxy" => proxy_outbound(node, tag)?,
-        "v2ray" => v2ray_outbound(node, tag)?,
-        "vpn" => vpn_outbound(node, tag)?,
-        "tor" => tor_outbound(app_handle, node, tag)?,
+    target: RuntimeExecutionTarget,
+) -> Result<SingBoxRuntimeEntry, String> {
+    let mut entry = match node.connection_type.as_str() {
+        "proxy" => SingBoxRuntimeEntry::Outbound(proxy_outbound(node, tag)?),
+        "v2ray" => SingBoxRuntimeEntry::Outbound(v2ray_outbound(node, tag)?),
+        "vpn" => vpn_runtime_entry(node, tag, target)?,
+        "tor" => SingBoxRuntimeEntry::Outbound(tor_outbound(app_handle, node, tag, target)?),
         _ => return Err("unsupported node type for runtime".to_string()),
     };
     if let Some(detour_tag) = detour {
-        if let Some(map) = outbound.as_object_mut() {
+        let value = match &mut entry {
+            SingBoxRuntimeEntry::Outbound(value) => value,
+            SingBoxRuntimeEntry::Endpoint(value) => value,
+        };
+        if let Some(map) = value.as_object_mut() {
             map.insert("detour".to_string(), json!(detour_tag));
         }
     }
-    Ok(outbound)
+    Ok(entry)
 }
 
 fn node_supported_by_runtime(node: &NormalizedNode) -> bool {
@@ -1830,20 +2183,28 @@ fn apply_v2ray_transport_and_tls(
     Ok(())
 }
 
-fn vpn_outbound(node: &NormalizedNode, tag: &str) -> Result<Value, String> {
+fn vpn_runtime_entry(
+    node: &NormalizedNode,
+    tag: &str,
+    target: RuntimeExecutionTarget,
+) -> Result<SingBoxRuntimeEntry, String> {
     if node.protocol == "wireguard" {
-        return wireguard_outbound(node, tag);
+        return Ok(SingBoxRuntimeEntry::Endpoint(wireguard_endpoint(node, tag)?));
     }
     if node.protocol == "amnezia" {
-        return amnezia_outbound(node, tag);
+        return Ok(SingBoxRuntimeEntry::Endpoint(amnezia_endpoint(node, tag)?));
     }
     if node.protocol == "openvpn" {
-        return Err("openvpn runtime requires native openvpn backend and is not yet available in sing-box mode".to_string());
+        return if target == RuntimeExecutionTarget::Container {
+            Err("openvpn requires dedicated container-openvpn backend".to_string())
+        } else {
+            Err("openvpn runtime requires native openvpn backend and is not yet available in sing-box mode".to_string())
+        };
     }
     Err("unsupported vpn protocol for runtime".to_string())
 }
 
-fn wireguard_outbound(node: &NormalizedNode, tag: &str) -> Result<Value, String> {
+fn wireguard_endpoint(node: &NormalizedNode, tag: &str) -> Result<Value, String> {
     let host = node
         .host
         .as_deref()
@@ -1893,24 +2254,39 @@ fn wireguard_outbound(node: &NormalizedNode, tag: &str) -> Result<Value, String>
         return Err("wireguard allowed IPs are required".to_string());
     }
 
-    let peer = json!({
-        "server": host,
-        "server_port": port,
+    let mut peer = json!({
+        "address": host,
+        "port": port,
         "public_key": public_key,
         "allowed_ips": allowed_ips,
     });
-    Ok(json!({
+
+    if let Some(psk) = node
+        .settings
+        .get("preSharedKey")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(peer_map) = peer.as_object_mut() {
+            peer_map.insert("pre_shared_key".to_string(), json!(psk));
+        }
+    }
+
+    let endpoint = json!({
         "type": "wireguard",
         "tag": tag,
+        "system": false,
         "private_key": private_key,
-        "local_address": address,
+        "address": address,
         "peers": [peer],
         "workers": 1,
         "mtu": 1408
-    }))
+    });
+    Ok(endpoint)
 }
 
-fn amnezia_outbound(node: &NormalizedNode, tag: &str) -> Result<Value, String> {
+fn amnezia_endpoint(node: &NormalizedNode, tag: &str) -> Result<Value, String> {
     let key = node
         .settings
         .get("amneziaKey")
@@ -1926,8 +2302,8 @@ fn amnezia_outbound(node: &NormalizedNode, tag: &str) -> Result<Value, String> {
         return Err("amnezia key does not contain allowed IPs".to_string());
     }
     let mut peer = json!({
-        "server": config.host,
-        "server_port": config.port,
+        "address": config.host,
+        "port": config.port,
         "public_key": config.server_public_key,
         "allowed_ips": config.allowed_ips,
     });
@@ -1936,24 +2312,25 @@ fn amnezia_outbound(node: &NormalizedNode, tag: &str) -> Result<Value, String> {
             peer_map.insert("pre_shared_key".to_string(), json!(psk));
         }
     }
-    let mut outbound = json!({
+    let endpoint = json!({
         "type": "wireguard",
         "tag": tag,
+        "system": false,
         "private_key": config.client_private_key,
-        "local_address": config.addresses,
+        "address": config.addresses,
         "peers": [peer],
         "workers": 1,
         "mtu": config.mtu.unwrap_or(1408),
     });
-    if let Some(network) = config.transport.filter(|value| !value.is_empty()) {
-        if let Some(map) = outbound.as_object_mut() {
-            map.insert("network".to_string(), json!(network));
-        }
-    }
-    Ok(outbound)
+    Ok(endpoint)
 }
 
-fn tor_outbound(app_handle: &AppHandle, node: &NormalizedNode, tag: &str) -> Result<Value, String> {
+fn tor_outbound(
+    app_handle: &AppHandle,
+    node: &NormalizedNode,
+    tag: &str,
+    target: RuntimeExecutionTarget,
+) -> Result<Value, String> {
     let mut torrc = BTreeMap::<String, String>::new();
     torrc.insert("ClientOnly".to_string(), "1".to_string());
     match node.protocol.as_str() {
@@ -1980,13 +2357,24 @@ fn tor_outbound(app_handle: &AppHandle, node: &NormalizedNode, tag: &str) -> Res
             }
             torrc.insert("UseBridges".to_string(), "1".to_string());
             torrc.insert("Bridge".to_string(), first_bridge);
-            let plugin_binary =
-                resolve_tor_pt_binary_path(app_handle, &node.protocol).ok_or_else(|| {
+            let plugin_binary = if target == RuntimeExecutionTarget::Container {
+                container_tor_transport_binary(&node.protocol).ok_or_else(|| {
                     format!(
-                        "tor {} requires pluggable transport binary, but none is available",
+                        "tor {} pluggable transport is not available in container runtime yet",
                         node.protocol
                     )
-                })?;
+                })?
+            } else {
+                resolve_tor_pt_binary_path(app_handle, &node.protocol)
+                    .ok_or_else(|| {
+                        format!(
+                            "tor {} requires pluggable transport binary, but none is available",
+                            node.protocol
+                        )
+                    })?
+                    .to_string_lossy()
+                    .to_string()
+            };
             let transport = match node.protocol.as_str() {
                 "obfs4" => "obfs4",
                 "snowflake" => "snowflake",
@@ -1995,7 +2383,7 @@ fn tor_outbound(app_handle: &AppHandle, node: &NormalizedNode, tag: &str) -> Res
             };
             torrc.insert(
                 "ClientTransportPlugin".to_string(),
-                format!("{transport} exec {}", plugin_binary.to_string_lossy()),
+                format!("{transport} exec {}", plugin_binary),
             );
         }
         _ => return Err("unsupported tor transport for runtime".to_string()),
@@ -2006,8 +2394,10 @@ fn tor_outbound(app_handle: &AppHandle, node: &NormalizedNode, tag: &str) -> Res
         "tag": tag,
         "torrc": torrc,
     });
-    if let Some(binary) = resolve_tor_binary_path(app_handle) {
-        if let Some(map) = out.as_object_mut() {
+    if let Some(map) = out.as_object_mut() {
+        if target == RuntimeExecutionTarget::Container {
+            map.insert("executable_path".to_string(), json!("/usr/bin/tor"));
+        } else if let Some(binary) = resolve_tor_binary_path(app_handle) {
             map.insert(
                 "executable_path".to_string(),
                 json!(binary.to_string_lossy().to_string()),
@@ -2017,16 +2407,31 @@ fn tor_outbound(app_handle: &AppHandle, node: &NormalizedNode, tag: &str) -> Res
     Ok(out)
 }
 
+fn container_tor_transport_binary(protocol: &str) -> Option<String> {
+    match protocol {
+        "obfs4" => Some("/usr/bin/obfs4proxy".to_string()),
+        "snowflake" => Some("/usr/bin/snowflake-client".to_string()),
+        "meek" => Some("/usr/bin/obfs4proxy".to_string()),
+        _ => None,
+    }
+}
+
 fn required_runtime_tools(
     nodes: &[NormalizedNode],
     uses_openvpn: bool,
     uses_amnezia_native: bool,
+    uses_amnezia_container: bool,
+    uses_container_runtime: bool,
 ) -> BTreeSet<NetworkTool> {
     let mut tools = BTreeSet::new();
-    if uses_openvpn {
+    if uses_container_runtime {
+        // Container runtime provisions Linux helpers inside its own image.
+    } else if uses_openvpn {
         tools.insert(NetworkTool::OpenVpn);
     } else if uses_amnezia_native {
         tools.insert(NetworkTool::AmneziaWg);
+    } else if uses_amnezia_container {
+        // Container helper builds its own Linux AWG runtime image on demand.
     } else {
         tools.insert(NetworkTool::SingBox);
     }
@@ -2034,6 +2439,87 @@ fn required_runtime_tools(
         tools.insert(NetworkTool::TorBundle);
     }
     tools
+}
+
+fn amnezia_node_requires_native_backend(node: &NormalizedNode) -> Result<bool, String> {
+    if node.connection_type != "vpn" || node.protocol != "amnezia" {
+        return Ok(false);
+    }
+    let key = node
+        .settings
+        .get("amneziaKey")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "amnezia key is required".to_string())?;
+    amnezia_config_requires_native_backend(key)
+}
+
+pub(crate) fn amnezia_config_requires_native_backend(value: &str) -> Result<bool, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("amnezia key is required".to_string());
+    }
+    if looks_like_amnezia_conf(trimmed) {
+        return Ok(amnezia_conf_contains_native_fields(trimmed));
+    }
+
+    let root = decode_amnezia_json(trimmed)?;
+    let awg = extract_awg_payload(&root)
+        .ok_or_else(|| "amnezia key does not contain awg payload".to_string())?;
+    if amnezia_json_contains_native_fields(&awg) {
+        return Ok(true);
+    }
+    if let Some(config) = extract_amnezia_conf_text_from_payload(&root, &awg) {
+        if amnezia_conf_contains_native_fields(&config) {
+            return Ok(true);
+        }
+    }
+    let runtime = parse_amnezia_runtime_config(trimmed)?;
+    Ok(runtime
+        .transport
+        .as_deref()
+        .map(|value| !value.eq_ignore_ascii_case("udp"))
+        .unwrap_or(false))
+}
+
+fn amnezia_conf_contains_native_fields(text: &str) -> bool {
+    text.replace('\r', "")
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(left, _)| left.trim())
+        .any(is_amnezia_native_only_key)
+}
+
+fn amnezia_json_contains_native_fields(value: &Value) -> bool {
+    const KEYS: &[&str] = &[
+        "Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2",
+        "I3", "I4", "I5",
+    ];
+    KEYS.iter()
+        .any(|key| extract_string_case_insensitive(value, key).is_some())
+}
+
+fn is_amnezia_native_only_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "jc"
+            | "jmin"
+            | "jmax"
+            | "s1"
+            | "s2"
+            | "s3"
+            | "s4"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "i1"
+            | "i2"
+            | "i3"
+            | "i4"
+            | "i5"
+    )
 }
 
 fn terminate_pid(pid: u32) {
@@ -2049,6 +2535,24 @@ fn terminate_pid(pid: u32) {
             .args(["-TERM", &pid.to_string()])
             .status();
     }
+}
+
+fn is_container_runtime_active(container_name: &str) -> bool {
+    Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{.State.Running}}",
+            container_name,
+        ])
+        .output()
+        .map(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -2555,6 +3059,7 @@ mod tests {
     use crate::state::{NetworkGlobalRouteSettings, NetworkStore};
     use browser_network_policy::VpnProxyTabPayload;
     use flate2::{write::ZlibEncoder, Compression};
+    use std::collections::BTreeMap;
     use std::io::Write;
 
     fn build_amnezia_key(payload: &str) -> String {
@@ -2664,6 +3169,26 @@ PersistentKeepalive = 25
     }
 
     #[test]
+    fn single_amnezia_profile_uses_sing_box_runtime_tools() {
+        let nodes = vec![NormalizedNode {
+            connection_type: "vpn".to_string(),
+            protocol: "amnezia".to_string(),
+            host: Some("demo.example".to_string()),
+            port: Some(443),
+            username: None,
+            password: None,
+            bridges: None,
+            settings: BTreeMap::from([(
+                "amneziaKey".to_string(),
+                build_amnezia_key(r#"{"containers":[{"awg":{"last_config":"{\"client_priv_key\":\"PRIVATE\",\"server_pub_key\":\"PUBLIC\",\"client_ip\":\"10.0.0.2\",\"allowed_ips\":[\"0.0.0.0/0\"],\"port\":\"443\",\"hostName\":\"demo.example\"}"}}]}"#),
+            )]),
+        }];
+        let tools = required_runtime_tools(&nodes, false, false, false, false);
+        assert!(tools.contains(&NetworkTool::SingBox));
+        assert!(!tools.contains(&NetworkTool::AmneziaWg));
+    }
+
+    #[test]
     fn resolve_effective_route_selection_prioritizes_direct_profile_over_global_vpn() {
         let profile_key = "profile-direct-priority".to_string();
         let mut store = NetworkStore::default();
@@ -2715,5 +3240,30 @@ PersistentKeepalive = 25
         let (mode, template) = resolve_effective_route_selection(&store, &profile_key);
         assert_eq!(mode, "vpn");
         assert_eq!(template.as_deref(), Some("global-template"));
+    }
+
+    #[test]
+    fn stale_runtime_cleanup_targets_known_launcher_artifacts_only() {
+        assert!(should_remove_runtime_artifact("sing-box-route.json"));
+        assert!(should_remove_runtime_artifact("openvpn-route.ovpn"));
+        assert!(should_remove_runtime_artifact("awg-test.conf"));
+        assert!(!should_remove_runtime_artifact("notes.txt"));
+    }
+
+    #[test]
+    fn container_tor_transport_binary_covers_supported_transports() {
+        assert_eq!(
+            container_tor_transport_binary("obfs4").as_deref(),
+            Some("/usr/bin/obfs4proxy")
+        );
+        assert_eq!(
+            container_tor_transport_binary("snowflake").as_deref(),
+            Some("/usr/bin/snowflake-client")
+        );
+        assert_eq!(
+            container_tor_transport_binary("meek").as_deref(),
+            Some("/usr/bin/obfs4proxy")
+        );
+        assert!(container_tor_transport_binary("unknown").is_none());
     }
 }

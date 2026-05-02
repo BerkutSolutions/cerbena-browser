@@ -496,7 +496,7 @@ mod tests {
     };
     use std::{
         fs,
-        path::{Path, PathBuf},
+        path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -514,12 +514,22 @@ mod tests {
         std::env::temp_dir().join(format!("cerbena-{label}-{unique}.json"))
     }
 
+    fn temp_dir_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("cerbena-{label}-{unique}"))
+    }
+
     #[test]
     fn sensitive_store_roundtrip_encrypts_payload() {
         let path = temp_path("sensitive-roundtrip");
+        let app_data_dir = temp_dir_path("sensitive-roundtrip-app-data");
+        let binary_path = app_data_dir.join("cerbena.exe");
         let secret = derive_app_secret_material(
-            Path::new("C:/tmp/app-data"),
-            Path::new("C:/tmp/cerbena.exe"),
+            &app_data_dir,
+            &binary_path,
             "dev.cerbena.app",
         )
         .expect("derive secret");
@@ -537,15 +547,18 @@ mod tests {
         assert_eq!(loaded, value);
 
         let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(app_data_dir);
     }
 
     #[test]
     fn sensitive_store_migrates_plaintext_legacy_json_into_encrypted_store() {
         let path = temp_path("sensitive-legacy");
         fs::write(&path, r#"{"value":"legacy","enabled":true}"#).expect("write");
+        let app_data_dir = temp_dir_path("sensitive-legacy-app-data");
+        let binary_path = app_data_dir.join("cerbena.exe");
         let secret = derive_app_secret_material(
-            Path::new("C:/tmp/app-data"),
-            Path::new("C:/tmp/cerbena.exe"),
+            &app_data_dir,
+            &binary_path,
             "dev.cerbena.app",
         )
         .expect("derive secret");
@@ -561,20 +574,22 @@ mod tests {
         let on_disk = fs::read_to_string(&path).expect("read migrated store");
         assert!(!on_disk.contains("\"value\":\"legacy\""));
         let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(app_data_dir);
     }
 
     #[test]
     fn sensitive_store_resets_to_default_after_secret_mismatch() {
         let path = temp_path("sensitive-mismatch");
+        let app_data_dir = temp_dir_path("sensitive-mismatch-app-data");
         let original_secret = derive_app_secret_material(
-            Path::new("C:/tmp/app-data"),
-            Path::new("C:/tmp/cerbena-old.exe"),
+            &app_data_dir,
+            &app_data_dir.join("cerbena-old.exe"),
             "dev.cerbena.app",
         )
         .expect("derive original secret");
         let next_secret = derive_app_secret_material(
-            Path::new("C:/tmp/app-data"),
-            Path::new("C:/tmp/cerbena-new.exe"),
+            &app_data_dir,
+            &app_data_dir.join("cerbena-new.exe"),
             "dev.cerbena.app",
         )
         .expect("derive next secret");
@@ -621,5 +636,7 @@ mod tests {
                 }
             }
         }
+
+        let _ = fs::remove_dir_all(app_data_dir);
     }
 }

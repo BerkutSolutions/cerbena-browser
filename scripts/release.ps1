@@ -1,6 +1,7 @@
 param(
     [ValidateSet("check", "package", "publish", "full")]
     [string]$Mode = "check",
+    [switch]$SkipDockerPreflight,
     [switch]$SkipSecurityGates,
     [switch]$SkipVulnerabilityGates,
     [switch]$SkipLocalDockerVulnerabilityGates,
@@ -196,6 +197,7 @@ function Assert-ReleaseContracts([string]$Root) {
         "README.en.md",
         "CHANGELOG.md",
         "scripts\local-ci-preflight.ps1",
+        "scripts\docker-runtime-preflight.ps1",
         "scripts\security-gates-preflight.ps1",
         "scripts\vulnerability-gates-preflight.ps1",
         "scripts\generate-release-artifacts.ps1",
@@ -215,9 +217,13 @@ function Run-Checks([string]$Root) {
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $Root "scripts\local-ci-preflight.ps1")
     )
+    if ($SkipDockerPreflight) {
+        $args += "-SkipDockerPreflight"
+    }
     if ($SkipSecurityGates) {
         $args += "-SkipSecurityGates"
     }
+    $args += "-SkipVulnerabilityGates"
     if ($CompactOutput) {
         $args += "-CompactOutput"
     }
@@ -315,6 +321,7 @@ Write-Host ("Mode: " + $Mode) -ForegroundColor White
 switch ($Mode) {
     "check" {
         Run-Checks $repoRoot
+        Run-VulnerabilityGates $repoRoot
     }
     "package" {
         Run-Checks $repoRoot

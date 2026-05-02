@@ -97,7 +97,10 @@ struct WrappedDataKey {
     ciphertext: Vec<u8>,
 }
 
-fn wrap_data_key(key: &SyncKeyMaterial, data_key: &[u8; DATA_KEY_LEN]) -> Result<WrappedDataKey, E2EError> {
+fn wrap_data_key(
+    key: &SyncKeyMaterial,
+    data_key: &[u8; DATA_KEY_LEN],
+) -> Result<WrappedDataKey, E2EError> {
     let kek = derive_wrap_key(key);
     let cipher = Aes256Gcm::new_from_slice(&kek)
         .map_err(|e| E2EError::Crypto(format!("wrap cipher init failed: {e}")))?;
@@ -117,7 +120,9 @@ fn unwrap_data_key(key: &SyncKeyMaterial, envelope: &E2EEnvelope) -> Result<Vec<
         .decode(&envelope.wrapped_data_key_b64)
         .map_err(|e| E2EError::Crypto(format!("decode wrapped key: {e}")))?;
     if nonce.len() != WRAP_NONCE_LEN {
-        return Err(E2EError::Crypto("invalid wrapped-key nonce length".to_string()));
+        return Err(E2EError::Crypto(
+            "invalid wrapped-key nonce length".to_string(),
+        ));
     }
 
     let kek = derive_wrap_key(key);

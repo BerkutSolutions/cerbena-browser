@@ -57,7 +57,11 @@ impl SnapshotManager {
     }
 
     pub fn verify_or_quarantine(&mut self, snapshot_id: &str, computed_sha256_hex: &str) -> bool {
-        let Some(index) = self.snapshots.iter().position(|v| v.snapshot_id == snapshot_id) else {
+        let Some(index) = self
+            .snapshots
+            .iter()
+            .position(|v| v.snapshot_id == snapshot_id)
+        else {
             self.quarantined.push(BackupSnapshot {
                 snapshot_id: snapshot_id.to_string(),
                 profile_id: Uuid::nil(),

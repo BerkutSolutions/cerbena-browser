@@ -2,6 +2,7 @@ import {
   deleteConnectionTemplate,
   getNetworkState,
   pingConnectionTemplate,
+  saveNetworkSandboxGlobalSettings,
   saveGlobalRouteSettings,
   saveConnectionTemplate,
   testConnectionTemplateRequest
@@ -146,10 +147,6 @@ function templateChainLabel(template, t) {
 }
 
 function templateRow(template, model, t) {
-  const globalRoute = model.networkGlobalRoute ?? {};
-  const globalVpnEnabled = Boolean(globalRoute.globalVpnEnabled);
-  const blockWithoutVpn = Boolean(globalRoute.blockWithoutVpn);
-  const isDefault = (globalRoute.defaultTemplateId ?? "") === template.id;
   return `
     <tr data-template-id="${template.id}">
       <td>${escapeHtml(template.name)}</td>
@@ -158,20 +155,6 @@ function templateRow(template, model, t) {
       <td class="actions network-table-actions-cell">
         <div class="dns-dropdown network-actions-dropdown">
           <button type="button" class="dns-dropdown-toggle network-actions-toggle" data-template-menu-toggle="${template.id}">...</button>
-          <div class="dns-dropdown-menu hidden network-actions-menu" data-template-menu="${template.id}">
-            <button type="button" class="dns-dropdown-option" data-action="ping">${t("network.testConnection")}</button>
-            <button type="button" class="dns-dropdown-option" data-action="edit">${t("extensions.edit")}</button>
-            <button type="button" class="dns-dropdown-option" data-action="delete">${t("extensions.remove")}</button>
-            <button type="button" class="dns-dropdown-option" data-action="toggle-global-vpn">
-              ${globalVpnEnabled ? t("network.globalVpnDisable") : t("network.globalVpnEnable")}
-            </button>
-            <button type="button" class="dns-dropdown-option" data-action="toggle-block-without-vpn">
-              ${blockWithoutVpn ? t("network.blockWithoutVpnDisable") : t("network.blockWithoutVpnEnable")}
-            </button>
-            ${globalVpnEnabled ? `<button type="button" class="dns-dropdown-option" data-action="set-default">
-              ${isDefault ? t("network.defaultTemplateActive") : t("network.defaultTemplateSet")}
-            </button>` : ""}
-          </div>
         </div>
       </td>
     </tr>
@@ -465,7 +448,6 @@ function listFrame(model, t) {
   return `
     <div class="panel network-list-frame">
       <h3>${t("network.chainTitle")}</h3>
-      <p class="meta">${t("network.chainHint")}</p>
       <div class="network-global-controls">
         <label class="checkbox-inline">
           <input id="network-block-without-vpn" type="checkbox" ${blockWithoutVpn ? "checked" : ""} />
@@ -477,6 +459,7 @@ function listFrame(model, t) {
         </label>
         <p class="meta">${t("network.defaultTemplateLabel")}: ${escapeHtml(defaultTemplateName)}</p>
       </div>
+      ${globalVpnEnabled ? sandboxFrame(model, t, { scope: "global" }) : ""}
       <div class="network-table-shell">
         <table class="extensions-table">
           <thead>
@@ -492,6 +475,194 @@ function listFrame(model, t) {
           </tbody>
         </table>
       </div>
+    </div>
+  `;
+}
+
+function sandboxBadge(type, text) {
+  return `<span class="badge ${type}">${escapeHtml(text)}</span>`;
+}
+
+function sandboxModeLabel(mode, t) {
+  return t(`network.sandbox.mode.${mode}`) || mode;
+}
+
+function sandboxAdapterLabel(adapterKind, t) {
+  return t(`network.sandbox.adapter.${adapterKind}`) || adapterKind;
+}
+
+function activeRouteSummary(model, t, scope = "profile") {
+  const templates = model.networkTemplates ?? [];
+  const globalRoute = model.networkGlobalRoute ?? {};
+  const payload = model.networkPolicyPayload ?? null;
+  const selectedTemplateId = scope === "global"
+    ? (globalRoute.globalVpnEnabled ? (globalRoute.defaultTemplateId ?? null) : null)
+    : (model.networkSelectedTemplateId ?? null);
+  const template = selectedTemplateId
+    ? templates.find((item) => item.id === selectedTemplateId)
+    : null;
+  if (template) {
+    return `${template.name} (${templateChainLabel(template, t)})`;
+  }
+  if (scope === "global") {
+    return t("network.sandbox.routeUnknown");
+  }
+  if ((payload?.routeMode ?? "").toLowerCase() === "direct") {
+    return t("network.sandbox.routeDirect");
+  }
+  return t("network.sandbox.routeUnknown");
+}
+
+function formatSandboxReason(reason, sandbox, adapter, activeRoute, t) {
+  const value = String(reason || "").trim();
+  if (!value) {
+    return t("network.sandbox.unknown");
+  }
+  const exactMap = {
+    "Template is compatible with isolated userspace runtime": "network.sandbox.reason.userspaceCompatible",
+    "Profile is pinned to compatibility-native mode": "network.sandbox.reason.compatibilityPinned",
+    "Legacy profile was auto-adapted to compatibility-native mode": "network.sandbox.reason.legacyMigrated",
+    "Global sandbox policy allows compatibility-native fallback": "network.sandbox.reason.globalCompatibilityFallback",
+    "This Amnezia profile requires a machine-wide compatibility backend; isolated mode forbids that path": "network.sandbox.reason.isolatedBlockedByNative",
+    "Container sandbox mode is selected; launcher will validate the host runtime and per-profile sandbox capacity during launch": "network.sandbox.reason.containerSelected",
+    "Docker Desktop container runtime is available and can build a profile-scoped isolated route helper on first launch": "network.sandbox.reason.containerReady",
+    "Selected route is not compatible with container isolation yet": "network.sandbox.reason.containerUnsupported"
+  };
+  if (exactMap[value]) {
+    const localized = t(exactMap[value]);
+    return localized
+      .replace("{route}", activeRoute)
+      .replace("{mode}", sandboxModeLabel(sandbox?.requestedMode || "auto", t));
+  }
+  const capacityMatch = value.match(/Container sandbox capacity is exhausted \((\d+)\/(\d+) active\)/i);
+  if (capacityMatch) {
+    return t("network.sandbox.reason.containerCapacity")
+      .replace("{active}", capacityMatch[1])
+      .replace("{max}", capacityMatch[2]);
+  }
+  if (value.startsWith("container runtime probe failed:")) {
+    return t("network.sandbox.reason.containerProbeFailed");
+  }
+  if (value.startsWith("docker runtime is not installed or not reachable:")) {
+    return t("network.sandbox.reason.containerRuntimeMissing");
+  }
+  if (value === "No resolved strategy yet") {
+    return t("network.sandbox.unknown");
+  }
+  if (sandbox?.effectiveMode === "container" && !adapter?.available) {
+    return t("network.sandbox.reason.containerProbeFailed");
+  }
+  return value;
+}
+
+function sandboxFrame(model, t, options = {}) {
+  const scope = options.scope || "profile";
+  const sandbox = model.networkSandbox ?? null;
+  const isGlobal = scope === "global";
+  if (!isGlobal && !model.selectedProfileId) {
+    return `
+      <div class="panel" style="margin-bottom:12px;">
+        <h4>${t("network.sandbox.title")}</h4>
+        <p class="meta">${t("network.sandbox.profileRequired")}</p>
+      </div>
+    `;
+  }
+  if (!sandbox) {
+    return `
+      <div class="panel" style="margin-bottom:12px;">
+        <h4>${t("network.sandbox.title")}</h4>
+        <p class="meta">${t("network.sandbox.loading")}</p>
+      </div>
+    `;
+  }
+  const adapter = sandbox.adapter ?? {
+    adapterKind: "unknown",
+    runtimeKind: "unknown",
+    available: true,
+    requiresSystemNetworkAccess: false,
+    maxHelperProcesses: 0,
+    estimatedMemoryMb: 0,
+    activeSandboxes: 0,
+    maxActiveSandboxes: 0,
+    supportsNativeIsolation: false,
+    reason: t("network.sandbox.unknown")
+  };
+  const routeSummary = activeRouteSummary(model, t, isGlobal ? "global" : "profile");
+  const resolutionBadge = adapter.available
+    ? sandboxBadge("success", t("network.sandbox.available"))
+    : sandboxBadge("error", t("network.sandbox.unavailable"));
+  const nativeWarning = sandbox.effectiveMode === "blocked"
+    ? ""
+    : adapter.requiresSystemNetworkAccess
+    ? `<p class="notice error">${t("network.sandbox.nativeWarning")}</p>`
+    : sandbox.requiresNativeBackend && sandbox.effectiveMode === "container"
+      ? `<p class="notice success">${t("network.sandbox.containerNativeIsolated")}</p>`
+      : `<p class="meta">${t("network.sandbox.isolatedHint")}</p>`;
+  const selectedMode = isGlobal
+    ? (sandbox.globalPolicyEnabled
+      ? (["isolated", "compatibility-native", "container"].includes(sandbox.requestedMode) ? sandbox.requestedMode : "isolated")
+      : "isolated")
+    : (sandbox.preferredMode ?? "auto");
+  const modeOptions = ["isolated", "compatibility-native", "container"]
+    .map((mode) => `<option value="${mode}" ${mode === selectedMode ? "selected" : ""}>${sandboxModeLabel(mode, t)}</option>`)
+    .join("");
+  return `
+    <div class="panel" style="margin-top:12px; margin-bottom:12px;">
+      <div class="top-actions" style="align-items:flex-start; justify-content:space-between; gap:12px;">
+        <div>
+          <h4 style="margin:0 0 6px 0;">${isGlobal ? t("network.sandbox.globalTitle") : t("network.sandbox.title")}</h4>
+          ${isGlobal ? "" : `<p class="meta" style="margin:0;">${t("network.sandbox.subtitle")}</p>`}
+        </div>
+        ${resolutionBadge}
+      </div>
+      <div class="grid-two" style="margin-top:12px;">
+        <div>
+          <strong>${t("network.sandbox.effectiveMode")}</strong>
+          <p>${escapeHtml(sandboxModeLabel(sandbox.effectiveMode, t))}</p>
+        </div>
+        <div>
+          <strong>${t("network.sandbox.activeRoute")}</strong>
+          <p>${escapeHtml(routeSummary)}</p>
+        </div>
+        <div>
+          <strong>${t("network.sandbox.adapterLabel")}</strong>
+          <p>${escapeHtml(sandboxAdapterLabel(adapter.adapterKind, t))}</p>
+        </div>
+        <div>
+          <strong>${t("network.sandbox.runtimeLabel")}</strong>
+          <p>${escapeHtml(adapter.runtimeKind || "unknown")}</p>
+        </div>
+        <div>
+          <strong>${t("network.sandbox.requestedMode")}</strong>
+          <p>${escapeHtml(sandboxModeLabel(sandbox.requestedMode, t))}</p>
+        </div>
+        <div>
+          <strong>${t("network.sandbox.resourceBudget")}</strong>
+          <p>${t("network.sandbox.resourceBudgetValue")
+            .replace("{helpers}", String(adapter.maxHelperProcesses ?? 0))
+            .replace("{memory}", String(adapter.estimatedMemoryMb ?? 0))}</p>
+        </div>
+        <div>
+          <strong>${t("network.sandbox.slotUsage")}</strong>
+          <p>${escapeHtml(`${adapter.activeSandboxes ?? 0}/${adapter.maxActiveSandboxes ?? 0}`)}</p>
+        </div>
+      </div>
+      ${isGlobal ? `
+        <label class="checkbox-inline" style="margin-top:12px;">
+          <input id="network-global-sandbox-enabled" type="checkbox" ${sandbox.globalPolicyEnabled ? "checked" : ""} />
+          <span>${t("network.sandbox.globalEnable")}</span>
+        </label>
+      ` : ""}
+      <label style="margin-top:12px;">${isGlobal ? t("network.sandbox.globalChooseMode") : t("network.sandbox.chooseMode")}
+        <select id="${isGlobal ? "network-global-sandbox-mode" : "network-sandbox-mode"}" ${isGlobal && !sandbox.globalPolicyEnabled ? "disabled" : ""}>
+          ${modeOptions}
+        </select>
+      </label>
+      <p class="meta" style="margin-top:8px;">${escapeHtml(formatSandboxReason(adapter.reason || sandbox.lastResolutionReason, sandbox, adapter, routeSummary, t))}</p>
+      ${nativeWarning}
+      ${adapter.requiresSystemNetworkAccess ? `<p class="notice error">${t("network.sandbox.systemWideWarning")}</p>` : ""}
+      ${sandbox.effectiveMode === "container" ? `<p class="notice">${t("network.sandbox.containerMvp")}</p>` : ""}
+      ${sandbox.effectiveMode === "blocked" ? `<p class="notice error">${t("network.sandbox.blockedHint").replace("{route}", routeSummary)}</p>` : ""}
     </div>
   `;
 }
@@ -995,7 +1166,7 @@ function applyImportedNode(model, nodeId, nextNode, suggestedName = "") {
 
 export async function hydrateNetworkModel(model) {
   if (model.networkLoaded && model.networkTemplates) return;
-  const result = await getNetworkState(model.selectedProfileId ?? "");
+  const result = await getNetworkState("");
   const state = result.ok ? JSON.parse(result.data) : {
     payload: null,
     selectedTemplateId: null,
@@ -1026,12 +1197,16 @@ export async function hydrateNetworkModel(model) {
     blockWithoutVpn: true,
     defaultTemplateId: null
   };
+  model.networkPolicyPayload = state.payload ?? null;
+  model.networkSelectedTemplateId = state.selectedTemplateId ?? null;
+  model.networkSandbox = state.sandbox ?? null;
   model.networkPingState = model.networkPingState ?? {};
   model.networkNodeTestState = model.networkNodeTestState ?? {};
   model.networkLoaded = true;
 }
 
 export function wireNetwork(root, model, rerender, t) {
+  document.querySelectorAll(".network-floating-menu").forEach((menu) => menu.remove());
   if (!model.networkPingPoller) {
     model.networkPingPoller = setInterval(async () => {
       const changed = await refreshTemplatePings(model, false).catch(() => false);
@@ -1060,6 +1235,8 @@ export function wireNetwork(root, model, rerender, t) {
         blockWithoutVpn: Boolean(next.blockWithoutVpn),
         defaultTemplateId: next.defaultTemplateId || null
       };
+      model.networkLoaded = false;
+      await hydrateNetworkModel(model);
     }
     await rerender();
   };
@@ -1082,6 +1259,31 @@ export function wireNetwork(root, model, rerender, t) {
       blockWithoutVpn: Boolean(current.blockWithoutVpn),
       defaultTemplateId: current.defaultTemplateId || null
     });
+  });
+
+  const saveGlobalSandboxSettings = async (enabled, defaultMode) => {
+    const response = await saveNetworkSandboxGlobalSettings(enabled, defaultMode);
+    model.networkNotice = {
+      type: response.ok ? "success" : "error",
+      text: response.ok ? t("network.sandbox.saved") : formatNetworkError(response.data.error, t)
+    };
+    if (response.ok) {
+      model.networkLoaded = false;
+      await hydrateNetworkModel(model);
+    }
+    await rerender();
+  };
+
+  root.querySelector("#network-global-sandbox-enabled")?.addEventListener("change", async (event) => {
+    const checkbox = event.target;
+    const currentMode = root.querySelector("#network-global-sandbox-mode")?.value || "isolated";
+    await saveGlobalSandboxSettings(Boolean(checkbox.checked), currentMode);
+  });
+
+  root.querySelector("#network-global-sandbox-mode")?.addEventListener("change", async (event) => {
+    const select = event.target;
+    const enabled = Boolean(model.networkSandbox?.globalPolicyEnabled);
+    await saveGlobalSandboxSettings(enabled, select.value);
   });
 
   root.querySelector("#network-add-node")?.addEventListener("click", async () => {
@@ -1270,108 +1472,127 @@ export function wireNetwork(root, model, rerender, t) {
     });
   }
 
+  let floatingTemplateMenu = null;
   const closeAllTemplateMenus = () => {
-    for (const menu of root.querySelectorAll("[data-template-menu]")) {
-      menu.classList.add("hidden");
+    floatingTemplateMenu?.remove();
+    floatingTemplateMenu = null;
+    for (const row of root.querySelectorAll("[data-template-id].menu-open")) {
+      row.classList.remove("menu-open");
     }
+  };
+  const positionTemplateMenu = (menu, toggle) => {
+    if (!menu || !toggle) return;
+    const rect = toggle.getBoundingClientRect();
+    const width = Math.min(360, Math.max(280, rect.width));
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const left = Math.max(12, Math.min(rect.right - width, viewportWidth - width - 12));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${Math.round(rect.bottom + 8)}px`;
+    menu.style.width = `${width}px`;
   };
   root.addEventListener("click", (event) => {
     const target = event.target;
-    if (target?.closest?.("[data-template-menu]")) return;
+    if (target?.closest?.(".network-floating-menu")) return;
     if (target?.closest?.("[data-template-menu-toggle]")) return;
     closeAllTemplateMenus();
   });
 
+  const handleTemplateAction = async (template, action) => {
+    closeAllTemplateMenus();
+    if (!template || !action) return;
+    if (action === "ping") {
+      const ping = await pingConnectionTemplate(template.id);
+      model.networkNotice = {
+        type: ping.ok && ping.data.reachable ? "success" : "error",
+        text: ping.ok ? ping.data.message : formatNetworkError(ping.data.error, t)
+      };
+      if (ping.ok) {
+        model.networkPingState = {
+          ...(model.networkPingState ?? {}),
+          [template.id]: ping.data
+        };
+      }
+      await rerender();
+      return;
+    }
+    if (action === "edit") {
+      model.networkTemplateDraft = {
+        templateId: template.id,
+        name: template.name,
+        nodes: normalizeTemplateNodes(template)
+      };
+      model.networkNodeTestState = {};
+      await rerender();
+      return;
+    }
+    if (action === "set-default") {
+      const current = model.networkGlobalRoute ?? {};
+      if (!current.globalVpnEnabled) {
+        model.networkNotice = { type: "error", text: t("network.defaultTemplateRequiresGlobal") };
+        await rerender();
+        return;
+      }
+      await saveGlobalSettings({
+        globalVpnEnabled: true,
+        blockWithoutVpn: Boolean(current.blockWithoutVpn),
+        defaultTemplateId: template.id
+      });
+      return;
+    }
+    if (action === "delete") {
+      const result = await deleteConnectionTemplate(template.id);
+      model.networkNotice = {
+        type: result.ok ? "success" : "error",
+        text: result.ok ? t("network.templateDeleted") : formatNetworkError(result.data.error, t)
+      };
+      if (result.ok) {
+        model.networkLoaded = false;
+        await hydrateNetworkModel(model);
+      }
+      await rerender();
+    }
+  };
+
+  const buildTemplateMenu = (template) => {
+    const globalRoute = model.networkGlobalRoute ?? {};
+    const globalVpnEnabled = Boolean(globalRoute.globalVpnEnabled);
+    const blockWithoutVpn = Boolean(globalRoute.blockWithoutVpn);
+    const isDefault = (globalRoute.defaultTemplateId ?? "") === template.id;
+    const menu = document.createElement("div");
+    menu.className = "dns-dropdown-menu network-actions-menu network-floating-menu";
+    menu.innerHTML = `
+      <button type="button" class="dns-dropdown-option" data-action="ping">${t("network.testConnection")}</button>
+      <button type="button" class="dns-dropdown-option" data-action="edit">${t("extensions.edit")}</button>
+      <button type="button" class="dns-dropdown-option" data-action="delete">${t("extensions.remove")}</button>
+      ${globalVpnEnabled ? `<button type="button" class="dns-dropdown-option" data-action="set-default">
+        ${isDefault ? t("network.defaultTemplateActive") : t("network.defaultTemplateSet")}
+      </button>` : ""}
+    `;
+    for (const actionButton of menu.querySelectorAll("[data-action]")) {
+      actionButton.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        await handleTemplateAction(template, actionButton.getAttribute("data-action"));
+      });
+    }
+    menu.addEventListener("click", (event) => event.stopPropagation());
+    return menu;
+  };
+
   for (const row of root.querySelectorAll("[data-template-id]")) {
     const templateId = row.getAttribute("data-template-id");
     const menuToggle = row.querySelector("[data-template-menu-toggle]");
-    const menu = row.querySelector(`[data-template-menu='${templateId}']`);
     menuToggle?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const shouldOpen = menu?.classList.contains("hidden");
-      closeAllTemplateMenus();
-      if (shouldOpen) {
-        menu?.classList.remove("hidden");
-      }
-    });
-    menu?.addEventListener("click", (event) => {
-      event.stopPropagation();
-    });
-    row.addEventListener("click", async (event) => {
-      const action = event.target?.closest?.("[data-action]")?.getAttribute?.("data-action");
-      if (!action) return;
-      menu?.classList.add("hidden");
       const template = (model.networkTemplates ?? []).find((item) => item.id === templateId);
-      if (!template) return;
-      if (action === "ping") {
-        const ping = await pingConnectionTemplate(template.id);
-        model.networkNotice = {
-          type: ping.ok && ping.data.reachable ? "success" : "error",
-          text: ping.ok ? ping.data.message : formatNetworkError(ping.data.error, t)
-        };
-        if (ping.ok) {
-          model.networkPingState = {
-            ...(model.networkPingState ?? {}),
-            [template.id]: ping.data
-          };
-        }
-        await rerender();
-        return;
-      }
-      if (action === "edit") {
-        model.networkTemplateDraft = {
-          templateId: template.id,
-          name: template.name,
-          nodes: normalizeTemplateNodes(template)
-        };
-        model.networkNodeTestState = {};
-        await rerender();
-        return;
-      }
-      if (action === "toggle-global-vpn") {
-        const current = model.networkGlobalRoute ?? {};
-        await saveGlobalSettings({
-          globalVpnEnabled: !Boolean(current.globalVpnEnabled),
-          blockWithoutVpn: Boolean(current.blockWithoutVpn),
-          defaultTemplateId: current.defaultTemplateId || null
-        });
-        return;
-      }
-      if (action === "toggle-block-without-vpn") {
-        const current = model.networkGlobalRoute ?? {};
-        await saveGlobalSettings({
-          globalVpnEnabled: Boolean(current.globalVpnEnabled),
-          blockWithoutVpn: !Boolean(current.blockWithoutVpn),
-          defaultTemplateId: current.defaultTemplateId || null
-        });
-        return;
-      }
-      if (action === "set-default") {
-        const current = model.networkGlobalRoute ?? {};
-        if (!current.globalVpnEnabled) {
-          model.networkNotice = { type: "error", text: t("network.defaultTemplateRequiresGlobal") };
-          await rerender();
-          return;
-        }
-        await saveGlobalSettings({
-          globalVpnEnabled: true,
-          blockWithoutVpn: Boolean(current.blockWithoutVpn),
-          defaultTemplateId: template.id
-        });
-        return;
-      }
-      if (action === "delete") {
-        const result = await deleteConnectionTemplate(template.id);
-        model.networkNotice = {
-          type: result.ok ? "success" : "error",
-          text: result.ok ? t("network.templateDeleted") : formatNetworkError(result.data.error, t)
-        };
-        if (result.ok) {
-          model.networkLoaded = false;
-          await hydrateNetworkModel(model);
-        }
-        await rerender();
+      const shouldOpen = !floatingTemplateMenu || row.classList.contains("menu-open") === false;
+      closeAllTemplateMenus();
+      if (shouldOpen && template) {
+        row.classList.add("menu-open");
+        floatingTemplateMenu = buildTemplateMenu(template);
+        document.body.appendChild(floatingTemplateMenu);
+        positionTemplateMenu(floatingTemplateMenu, menuToggle);
       }
     });
   }

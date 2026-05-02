@@ -906,6 +906,7 @@ button.danger:hover {
 .network-stack {
   display: grid;
   gap: 10px;
+  margin-top: 12px;
 }
 
 .network-node {
@@ -946,8 +947,10 @@ button.danger:hover {
 
 .network-table-shell {
   margin-top: 12px;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 12px;
+  position: relative;
+  z-index: 1;
 }
 
 .network-table-actions-cell {
@@ -961,6 +964,8 @@ button.danger:hover {
   display: flex;
   justify-content: center;
   overflow: visible;
+  position: relative;
+  z-index: 5;
 }
 
 .network-actions-toggle {
@@ -974,11 +979,16 @@ button.danger:hover {
 }
 
 .network-actions-menu {
-  left: auto;
-  right: 0;
+  left: 0;
+  right: auto;
   min-width: 280px;
   max-width: min(360px, calc(100vw - 80px));
-  z-index: 2800;
+  z-index: 9999;
+}
+
+.network-floating-menu {
+  position: fixed;
+  z-index: 2147483647;
 }
 
 .network-actions-menu .dns-dropdown-option {
@@ -1341,13 +1351,17 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
 }
 
 .profiles-tag-more {
-  cursor: default;
+  cursor: pointer;
 }
 
 .profiles-tag-tooltip {
-  position: absolute;
+  display: none !important;
+}
+
+.profiles-floating-tooltip {
+  position: fixed;
   left: 0;
-  top: calc(100% + 8px);
+  top: 0;
   min-width: 180px;
   max-width: 320px;
   padding: 10px;
@@ -1355,15 +1369,11 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   border: 1px solid rgba(125, 155, 255, 0.2);
   background: rgba(17, 20, 29, 0.98);
   box-shadow: 0 18px 34px rgba(0, 0, 0, 0.35);
-  display: none;
+  display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  z-index: 12;
-}
-
-.profiles-tag-overflow:hover .profiles-tag-tooltip,
-.profiles-tag-overflow:focus-within .profiles-tag-tooltip {
-  display: flex;
+  z-index: 2147483647;
+  pointer-events: none;
 }
 
 .profile-extension-toolbar,
@@ -1490,6 +1500,66 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(16, 18, 26, 0.98);
   box-shadow: 0 16px 32px rgba(0, 0, 0, 0.38);
+}
+
+.profile-launch-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3600;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 84px;
+}
+
+.profile-launch-card {
+  min-width: 320px;
+  max-width: min(420px, calc(100vw - 40px));
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(125, 155, 255, 0.24);
+  background: rgba(12, 18, 29, 0.96);
+  box-shadow: 0 22px 44px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(10px);
+}
+
+.profile-launch-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid rgba(125, 155, 255, 0.24);
+  border-top-color: rgba(181, 202, 255, 0.96);
+  animation: profile-launch-spin 0.9s linear infinite;
+  flex: 0 0 auto;
+}
+
+.profile-launch-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.profile-launch-copy strong {
+  color: #fff;
+}
+
+.profile-launch-copy span {
+  color: rgba(203, 217, 247, 0.78);
+  font-size: 13px;
+}
+
+.profile-launch-copy p {
+  margin: 0;
+  color: rgba(239, 244, 255, 0.94);
+}
+
+@keyframes profile-launch-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .profiles-selection-count {
@@ -1665,7 +1735,7 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   top: calc(100% + 8px);
   left: 0;
   right: 0;
-  z-index: 30;
+  z-index: 2147483645;
   display: grid;
   gap: 8px;
   padding: 10px;
@@ -1719,6 +1789,18 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
 .profile-blocklists-menu {
   max-height: 340px;
   overflow: hidden;
+}
+
+#profile-sandbox-frame-slot {
+  margin-top: 12px;
+}
+
+.network-list-frame > .panel,
+.network-template-frame > .panel,
+.security-frame,
+.dns-dropdown,
+.profiles-tag-overflow {
+  position: relative;
 }
 
 .profile-identity-template-option {
@@ -1938,13 +2020,42 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   background: rgba(117, 88, 26, 0.35);
 }
 
+.traffic-table {
+  table-layout: fixed;
+}
+
 .traffic-table td.actions {
   display: table-cell;
+}
+
+.traffic-table .traffic-col-time {
+  width: 176px;
+}
+
+.traffic-table .traffic-col-request {
+  width: 40%;
+}
+
+.traffic-table .traffic-col-result {
+  width: 180px;
+}
+
+.traffic-table .traffic-col-profile {
+  width: 24%;
+}
+
+.traffic-table .traffic-col-actions {
+  width: 78px;
 }
 
 .traffic-table th:last-child,
 .traffic-table td:last-child {
   width: 78px;
+}
+
+.traffic-table td:nth-child(2) .profiles-name,
+.traffic-table td:nth-child(2) .meta {
+  overflow-wrap: anywhere;
 }
 
 .traffic-actions-cell {

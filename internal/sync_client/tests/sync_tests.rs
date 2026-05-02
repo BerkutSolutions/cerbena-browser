@@ -3,8 +3,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use browser_sync_client::{
-    decrypt_sync_payload, encrypt_sync_payload, BackupSnapshot, InMemorySyncServer,
-    E2EEnvelope, ManifestVerifier, MergePolicy, PerformanceBudget, PerformanceMeasurement, PerformanceProfiler,
+    decrypt_sync_payload, encrypt_sync_payload, BackupSnapshot, E2EEnvelope, InMemorySyncServer,
+    ManifestVerifier, MergePolicy, PerformanceBudget, PerformanceMeasurement, PerformanceProfiler,
     RestorePlanner, RestoreRequest, RestoreScope, SnapshotManager, SyncConflictResolution,
     SyncControlsModel, SyncKeyMaterial, SyncMutation, SyncPayload, SyncProtocolVersion,
     SyncServerConfig, SyncStatusLevel, SyncStatusView, TlsPolicy, TransportGuard,

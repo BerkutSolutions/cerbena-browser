@@ -22,8 +22,12 @@ use uuid::Uuid;
 use crate::{
     envelope::{ok, UiEnvelope},
     launcher_commands::load_global_security_record,
+    network_sandbox_lifecycle::{ensure_profile_network_stack, stop_profile_network_stack},
+    network_sandbox::{
+        resolve_global_network_sandbox_view, resolve_profile_network_sandbox_view,
+        NetworkSandboxProfileView,
+    },
     process_tracking::is_process_running as is_pid_running,
-    route_runtime::{ensure_profile_route_runtime, stop_profile_route_runtime},
     state::{
         persist_network_store, AppState, ConnectionNode, ConnectionTemplate,
         NetworkGlobalRouteSettings,
@@ -119,6 +123,7 @@ pub struct NetworkStateView {
     pub selected_template_id: Option<String>,
     pub connection_templates: Vec<ConnectionTemplate>,
     pub global_route: NetworkGlobalRouteSettings,
+    pub sandbox: NetworkSandboxProfileView,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,6 +156,11 @@ pub fn get_network_state(
     let payload = store.vpn_proxy.get(&profile_id).cloned();
     let selected_template_id = store.profile_template_selection.get(&profile_id).cloned();
     let global_route = store.global_route_settings.clone();
+    let global_template = global_route
+        .default_template_id
+        .as_ref()
+        .and_then(|id| store.connection_templates.get(id))
+        .cloned();
     let connection_templates = store
         .connection_templates
         .values()
@@ -160,11 +170,18 @@ pub fn get_network_state(
             template
         })
         .collect::<Vec<_>>();
+    drop(store);
+    let sandbox = if let Ok(id) = Uuid::parse_str(&profile_id) {
+        resolve_profile_network_sandbox_view(state.inner(), id)?
+    } else {
+        resolve_global_network_sandbox_view(state.inner(), global_template.as_ref())?
+    };
     let json = serde_json::to_string_pretty(&NetworkStateView {
         payload,
         selected_template_id,
         connection_templates,
         global_route,
+        sandbox,
     })
     .map_err(|e| e.to_string())?;
     Ok(ok(correlation_id, json))
@@ -247,7 +264,7 @@ pub fn delete_connection_template(
     persist_store(&state, &store)?;
     drop(store);
     for profile_id in &affected_profiles {
-        stop_profile_route_runtime(&state.app_handle, *profile_id);
+        stop_profile_network_stack(&state.app_handle, *profile_id);
     }
     refresh_running_profiles_route_runtime(&state, &affected_profiles)?;
     Ok(ok(correlation_id, true))
@@ -348,7 +365,7 @@ pub fn save_vpn_proxy_policy(
             .and_then(|map| map.get(&profile_uuid).copied());
         if let Some(pid) = maybe_pid {
             if is_pid_running(pid) {
-                ensure_profile_route_runtime(&state.app_handle, profile_uuid)?;
+                ensure_profile_network_stack(&state.app_handle, profile_uuid)?;
             }
         }
     }
@@ -546,7 +563,7 @@ fn refresh_running_profiles_route_runtime(
         .collect::<Vec<_>>();
     drop(launched);
     for profile_id in running {
-        ensure_profile_route_runtime(&state.app_handle, profile_id)?;
+        ensure_profile_network_stack(&state.app_handle, profile_id)?;
     }
     Ok(())
 }

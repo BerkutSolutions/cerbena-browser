@@ -140,6 +140,7 @@ internal static class CerbenaInstallerProgram
     private static readonly string DefaultInstallRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         @"Cerbena Browser");
+    private const string LegacyAmneziaServicePrefix = "AmneziaWGTunnel`$awg-";
     private static readonly Guid FolderIdDesktop = new Guid("B4BFCC3A-DB2C-424C-B029-7FE99A87C641");
     private static readonly Guid FolderIdPrograms = new Guid("A77F5D77-2E2B-44C3-A6A2-ABA601054A51");
 
@@ -222,6 +223,9 @@ internal static class CerbenaInstallerProgram
         RemoveShortcut(Path.Combine(GetKnownFolderPath(FolderIdPrograms), ShortcutFileName));
         RemoveShortcut(Path.Combine(GetKnownFolderPath(FolderIdDesktop), ShortcutFileName));
         RemoveUninstallRegistration();
+        CleanupManagedNetworkArtifacts(installRoot);
+        CleanupManagedContainerArtifacts();
+        CleanupLegacyAmneziaServices(installRoot);
 
         var commandPath = Path.Combine(Path.GetTempPath(), "cerbena-uninstall-" + Guid.NewGuid().ToString("N") + ".cmd");
         File.WriteAllText(
@@ -238,6 +242,211 @@ internal static class CerbenaInstallerProgram
             UseShellExecute = false,
             WindowStyle = ProcessWindowStyle.Hidden
         });
+    }
+
+    private static void CleanupLegacyAmneziaServices(string installRoot)
+    {
+        foreach (var serviceName in DiscoverLegacyAmneziaServices(installRoot))
+        {
+            TryRunSc("stop", serviceName);
+            TryRunSc("delete", serviceName);
+        }
+    }
+
+    private static void CleanupManagedNetworkArtifacts(string installRoot)
+    {
+        TryDeleteFile(Path.Combine(installRoot, ".app-secret.dpapi"));
+        TryDeleteFile(Path.Combine(installRoot, "identity_store.json"));
+        TryDeleteFile(Path.Combine(installRoot, "network_store.json"));
+        TryDeleteFile(Path.Combine(installRoot, "network_sandbox_store.json"));
+        TryDeleteFile(Path.Combine(installRoot, "extension_library.json"));
+        TryDeleteFile(Path.Combine(installRoot, "sync_store.json"));
+        TryDeleteFile(Path.Combine(installRoot, "link_routing_store.json"));
+        TryDeleteFile(Path.Combine(installRoot, "launch_session_store.json"));
+        TryDeleteFile(Path.Combine(installRoot, "device_posture_store.json"));
+        TryDeleteFile(Path.Combine(installRoot, "app_update_store.json"));
+        TryDeleteFile(Path.Combine(installRoot, "global_security_store.json"));
+        TryDeleteFile(Path.Combine(installRoot, "traffic_gateway_log.json"));
+        TryDeleteFile(Path.Combine(installRoot, "traffic_gateway_rules.json"));
+        TryDeleteDirectory(Path.Combine(installRoot, "profiles"));
+        TryDeleteDirectory(Path.Combine(installRoot, "engine-runtime"));
+        TryDeleteDirectory(Path.Combine(installRoot, "network-runtime"));
+        TryDeleteDirectory(Path.Combine(installRoot, "extension-packages"));
+        TryDeleteDirectory(Path.Combine(installRoot, "updates"));
+        TryDeleteDirectory(Path.Combine(installRoot, "native-messaging"));
+    }
+
+    private static void CleanupManagedContainerArtifacts()
+    {
+        TryRunDocker("ps -a --filter label=cerbena.kind=network-sandbox-runtime --format \"{{.Names}}\"");
+        TryRunDocker(
+            "ps -a --filter label=cerbena.kind=network-sandbox-runtime --format \"{{.Names}}\"",
+            names =>
+            {
+                foreach (var name in names)
+                {
+                    RunProcessCapture("docker.exe", "rm -f \"" + name + "\"", 15000);
+                }
+            });
+        TryRunDocker(
+            "network ls --format \"{{.Name}}\"",
+            names =>
+            {
+                foreach (var name in names.Where(value => value.StartsWith("cerbena-profile-", StringComparison.OrdinalIgnoreCase)))
+                {
+                    RunProcessCapture("docker.exe", "network rm \"" + name + "\"", 15000);
+                }
+            });
+        try
+        {
+            RunProcessCapture("docker.exe", "image rm -f cerbena/network-sandbox:2026-05-02-r5", 20000);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string[] DiscoverLegacyAmneziaServices(string installRoot)
+    {
+        var names = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var profilesRoot = Path.Combine(installRoot, "profiles");
+        if (Directory.Exists(profilesRoot))
+        {
+            foreach (var confPath in Directory.EnumerateFiles(profilesRoot, "awg-*.conf", SearchOption.AllDirectories))
+            {
+                var tunnelName = Path.GetFileNameWithoutExtension(confPath);
+                if (!string.IsNullOrWhiteSpace(tunnelName))
+                {
+                    names.Add(LegacyAmneziaServicePrefix + tunnelName);
+                }
+            }
+        }
+
+        try
+        {
+            var output = RunProcessCapture("sc.exe", "query state= all", 5000);
+            using (var reader = new StringReader(output))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    var trimmed = line.Trim();
+                    if (!trimmed.StartsWith("SERVICE_NAME:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    var serviceName = trimmed.Substring("SERVICE_NAME:".Length).Trim();
+                    if (serviceName.StartsWith(LegacyAmneziaServicePrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        names.Add(serviceName);
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return names.ToArray();
+    }
+
+    private static void TryRunSc(string action, string serviceName)
+    {
+        try
+        {
+            RunProcessCapture("sc.exe", action + " \"" + serviceName + "\"", 10000);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void TryRunDocker(string arguments, Action<string[]> onSuccess)
+    {
+        try
+        {
+            var output = RunProcessCapture("docker.exe", arguments, 15000);
+            var items = output
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .ToArray();
+            onSuccess(items);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void TryRunDocker(string arguments)
+    {
+        try
+        {
+            RunProcessCapture("docker.exe", arguments, 15000);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, true);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static string RunProcessCapture(string fileName, string arguments, int timeoutMs)
+    {
+        using (var process = new Process())
+        {
+            process.StartInfo = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            process.Start();
+            if (!process.WaitForExit(timeoutMs))
+            {
+                try
+                {
+                    process.Kill();
+                }
+                catch
+                {
+                }
+                throw new TimeoutException(fileName + " " + arguments);
+            }
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            return stdout + stderr;
+        }
     }
 
     private sealed class InstallerWizardForm : Form
@@ -1093,9 +1302,31 @@ Name: "{autoprograms}\{#MyAppName} Launcher"; Filename: "{app}\{#MyLauncherExeNa
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
+[UninstallDelete]
+Type: files; Name: "{app}\.app-secret.dpapi"
+Type: files; Name: "{app}\identity_store.json"
+Type: files; Name: "{app}\network_store.json"
+Type: files; Name: "{app}\network_sandbox_store.json"
+Type: files; Name: "{app}\extension_library.json"
+Type: files; Name: "{app}\sync_store.json"
+Type: files; Name: "{app}\link_routing_store.json"
+Type: files; Name: "{app}\launch_session_store.json"
+Type: files; Name: "{app}\device_posture_store.json"
+Type: files; Name: "{app}\app_update_store.json"
+Type: files; Name: "{app}\global_security_store.json"
+Type: files; Name: "{app}\traffic_gateway_log.json"
+Type: files; Name: "{app}\traffic_gateway_rules.json"
+Type: filesandordirs; Name: "{app}\profiles"
+Type: filesandordirs; Name: "{app}\engine-runtime"
+Type: filesandordirs; Name: "{app}\network-runtime"
+Type: filesandordirs; Name: "{app}\extension-packages"
+Type: filesandordirs; Name: "{app}\updates"
+Type: filesandordirs; Name: "{app}\native-messaging"
+
 [Code]
 var
   DesktopShortcutCheckBox: TNewCheckBox;
+  LegacyAmneziaServicePrefix: string;
 
 function LauncherExists: Boolean;
 begin
@@ -1104,6 +1335,7 @@ end;
 
 procedure InitializeWizard;
 begin
+  LegacyAmneziaServicePrefix := 'AmneziaWGTunnel`$awg-';
   DesktopShortcutCheckBox := TNewCheckBox.Create(WizardForm);
   DesktopShortcutCheckBox.Parent := WizardForm.FinishedPage.Surface;
   DesktopShortcutCheckBox.Caption := 'Create a desktop shortcut';
@@ -1138,6 +1370,125 @@ begin
     begin
       DeleteFile(ShortcutPath);
     end;
+  end;
+end;
+
+procedure TryRunSc(const ActionName, ServiceName: string);
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\sc.exe'), ActionName + ' "' + ServiceName + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure CleanupLegacyAmneziaServices();
+var
+  TempFile: string;
+  Lines: TArrayOfString;
+  I: Integer;
+  ServiceName: string;
+  ResultCode: Integer;
+begin
+  TempFile := ExpandConstant('{tmp}\cerbena-amnezia-services.txt');
+  if Exec(
+    ExpandConstant('{cmd}'),
+    '/C sc.exe query state= all > "' + TempFile + '"',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+  begin
+    if LoadStringsFromFile(TempFile, Lines) then
+    begin
+      for I := 0 to GetArrayLength(Lines) - 1 do
+      begin
+        if Pos('SERVICE_NAME:', Trim(Lines[I])) = 1 then
+        begin
+          ServiceName := Trim(Copy(Trim(Lines[I]), Length('SERVICE_NAME:') + 1, MaxInt));
+          if Pos(LegacyAmneziaServicePrefix, ServiceName) = 1 then
+          begin
+            TryRunSc('stop', ServiceName);
+            TryRunSc('delete', ServiceName);
+          end;
+        end;
+      end;
+    end;
+    DeleteFile(TempFile);
+  end;
+end;
+
+procedure TryRunDocker(const Arguments: string);
+var
+  ResultCode: Integer;
+begin
+  Exec('docker.exe', Arguments, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure CleanupManagedContainerArtifacts();
+var
+  TempFile: string;
+  Lines: TArrayOfString;
+  I: Integer;
+  Name: string;
+  ResultCode: Integer;
+begin
+  TempFile := ExpandConstant('{tmp}\cerbena-docker-managed.txt');
+  if Exec(
+    ExpandConstant('{cmd}'),
+    '/C docker.exe ps -a --filter label=cerbena.kind=network-sandbox-runtime --format "{{.Names}}" > "' + TempFile + '"',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+  begin
+    if LoadStringsFromFile(TempFile, Lines) then
+    begin
+      for I := 0 to GetArrayLength(Lines) - 1 do
+      begin
+        Name := Trim(Lines[I]);
+        if Name <> '' then
+        begin
+          TryRunDocker('rm -f "' + Name + '"');
+        end;
+      end;
+    end;
+    DeleteFile(TempFile);
+  end;
+
+  TempFile := ExpandConstant('{tmp}\cerbena-docker-networks.txt');
+  if Exec(
+    ExpandConstant('{cmd}'),
+    '/C docker.exe network ls --format "{{.Name}}" > "' + TempFile + '"',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+  begin
+    if LoadStringsFromFile(TempFile, Lines) then
+    begin
+      for I := 0 to GetArrayLength(Lines) - 1 do
+      begin
+        Name := Trim(Lines[I]);
+        if Pos('cerbena-profile-', Name) = 1 then
+        begin
+          TryRunDocker('network rm "' + Name + '"');
+        end;
+      end;
+    end;
+    DeleteFile(TempFile);
+  end;
+
+  TryRunDocker('image rm -f cerbena/network-sandbox:2026-05-02-r5');
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    CleanupLegacyAmneziaServices();
+    CleanupManagedContainerArtifacts();
   end;
 end;
 "@

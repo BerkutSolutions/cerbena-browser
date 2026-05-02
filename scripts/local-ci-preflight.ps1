@@ -4,7 +4,9 @@ param(
     [switch]$SkipDocs,
     [switch]$SkipUi,
     [switch]$SkipGitHygiene,
+    [switch]$SkipDockerPreflight,
     [switch]$SkipSecurityGates,
+    [switch]$SkipVulnerabilityGates,
     [switch]$SkipReleaseBuild,
     [switch]$CompactOutput
 )
@@ -102,6 +104,17 @@ try {
         }
     }
 
+    if (-not $SkipDesktopRust) {
+        Step "Traffic isolation regression tests" {
+            Push-Location (Join-Path $repoRoot "ui\desktop\src-tauri")
+            try {
+                Invoke-Native "cargo" @("test", "traffic_isolation") -Quiet:$CompactOutput
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
     if (-not $SkipReleaseBuild) {
         Step "Launcher release build" {
             Invoke-Native "cargo" @("build", "-p", "cerbena-launcher", "--release") -Quiet:$CompactOutput
@@ -127,11 +140,29 @@ try {
         }
     }
 
+    if (-not $SkipDockerPreflight) {
+        Step "Docker runtime preflight" {
+            Invoke-Native "powershell" @(
+                "-ExecutionPolicy", "Bypass",
+                "-File", "scripts/docker-runtime-preflight.ps1"
+            ) -Quiet:$CompactOutput
+        }
+    }
+
     if (-not $SkipSecurityGates) {
         Step "Security gates preflight" {
             Invoke-Native "powershell" @(
                 "-ExecutionPolicy", "Bypass",
                 "-File", "scripts/security-gates-preflight.ps1"
+            ) -Quiet:$CompactOutput
+        }
+    }
+
+    if (-not $SkipVulnerabilityGates) {
+        Step "Vulnerability gates preflight" {
+            Invoke-Native "powershell" @(
+                "-ExecutionPolicy", "Bypass",
+                "-File", "scripts/vulnerability-gates-preflight.ps1"
             ) -Quiet:$CompactOutput
         }
     }

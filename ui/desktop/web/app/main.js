@@ -32,7 +32,7 @@ const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.3";
+const APP_VERSION = "1.0.4";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";
@@ -363,6 +363,27 @@ function renderPanicOverlay(i18n, model) {
   `;
 }
 
+function renderProfileLaunchOverlay(i18n, model) {
+  const overlay = model.profileLaunchOverlay;
+  if (!overlay) return "";
+  const profile = (model.profiles ?? []).find((item) => item.id === overlay.profileId);
+  const title = i18n.t("profile.launchProgress.title");
+  const profileName = profile?.name ?? i18n.t("profile.launchProgress.profileFallback");
+  const stageText = overlay.messageKey ? i18n.t(overlay.messageKey) : i18n.t("profile.launchProgress.starting");
+  return `
+    <div class="profile-launch-overlay" aria-live="polite">
+      <div class="profile-launch-card">
+        <div class="profile-launch-spinner" aria-hidden="true"></div>
+        <div class="profile-launch-copy">
+          <strong>${title}</strong>
+          <span>${profileName}</span>
+          <p>${stageText}</p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderApp(root, state, i18n, model) {
   if (isPanicFrameOverlay()) {
     document.body.classList.add("panic-overlay-mode");
@@ -415,6 +436,7 @@ function renderApp(root, state, i18n, model) {
     </main>
     ${renderLinkLaunchModal(i18n.t, model)}
     ${renderPanicModal(i18n, model)}
+    ${renderProfileLaunchOverlay(i18n, model)}
   `;
 
   document.body.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
@@ -717,6 +739,7 @@ async function bootstrap() {
   }
   const listen = getListen();
   let unlistenProfileState = null;
+  let unlistenProfileLaunchProgress = null;
   if (listen) {
     unlistenProfileState = await listen("profile-state-changed", async (event) => {
       const payload = event.payload ?? {};
@@ -724,9 +747,36 @@ async function bootstrap() {
       if (profile) {
         profile.state = payload.state;
       }
-      if (isPanicFrameOverlay() || state.currentFeature === "home") {
+      if (payload.state === "running" && model.profileLaunchOverlay?.profileId === payload.profileId) {
+        window.setTimeout(async () => {
+          if (model.profileLaunchOverlay?.profileId === payload.profileId) {
+            model.profileLaunchOverlay = null;
+            await rerender();
+          }
+        }, 900);
+      }
+      if (isPanicFrameOverlay() || state.currentFeature === "home" || model.profileLaunchOverlay) {
         await rerender();
       }
+    });
+    unlistenProfileLaunchProgress = await listen("profile-launch-progress", async (event) => {
+      if (isPanicFrameOverlay()) return;
+      const payload = event.payload ?? {};
+      model.profileLaunchOverlay = {
+        profileId: payload.profileId,
+        stageKey: payload.stageKey ?? null,
+        messageKey: payload.messageKey ?? "profile.launchProgress.starting",
+        done: Boolean(payload.done)
+      };
+      if (payload.done) {
+        window.setTimeout(async () => {
+          if (model.profileLaunchOverlay?.profileId === payload.profileId) {
+            model.profileLaunchOverlay = null;
+            await rerender();
+          }
+        }, 900);
+      }
+      await rerender();
     });
     await listen("traffic-gateway-event", async (event) => {
       if (isPanicFrameOverlay()) return;
@@ -761,6 +811,7 @@ async function bootstrap() {
         model.homeMetricsRenderTimer = null;
       }
       unlistenProfileState?.();
+      unlistenProfileLaunchProgress?.();
     } catch {}
   }, { once: true });
   window.addEventListener("contextmenu", (event) => event.preventDefault());

@@ -17,7 +17,7 @@ use crate::{
     process_tracking::{
         clear_profile_process, terminate_process_tree, terminate_profile_processes,
     },
-    route_runtime::stop_profile_route_runtime,
+    network_sandbox_lifecycle::stop_profile_network_stack,
     state::{persist_link_routing_store_with_secret, AppState},
 };
 
@@ -420,7 +420,7 @@ pub fn panic_wipe_profile(
     if let Some(pid) = tracked_pid {
         terminate_process_tree(pid);
         let _ = revoke_launch_session(&state, profile_id, Some(pid));
-        stop_profile_route_runtime(&state.app_handle, profile_id);
+        stop_profile_network_stack(&state.app_handle, profile_id);
         clear_profile_process(&state.app_handle, profile_id, pid, false);
     }
 
@@ -1502,6 +1502,14 @@ mod tests {
         std::env::temp_dir().join(format!("cerbena-{label}-{unique}.json"))
     }
 
+    fn temp_dir_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("cerbena-{label}-{unique}"))
+    }
+
     #[test]
     fn extract_blocklist_title_reads_comment_title_marker() {
         let content = r#"
@@ -1543,9 +1551,11 @@ mod tests {
     fn global_security_store_encrypts_startup_page_and_certificate_paths() {
         let path = temp_path("global-security-store");
         let legacy = temp_path("global-security-legacy");
+        let app_data_dir = temp_dir_path("global-security-store-app-data");
+        let binary_path = app_data_dir.join("cerbena.exe");
         let secret = derive_app_secret_material(
-            Path::new("C:/tmp/app-data"),
-            Path::new("C:/tmp/cerbena.exe"),
+            &app_data_dir,
+            &binary_path,
             "dev.cerbena.app",
         )
         .expect("derive secret");
@@ -1576,15 +1586,18 @@ mod tests {
         );
 
         let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(app_data_dir);
     }
 
     #[test]
     fn global_security_store_reads_legacy_plaintext_file() {
         let path = temp_path("global-security-store-new");
         let legacy = temp_path("global-security-legacy-old");
+        let app_data_dir = temp_dir_path("global-security-legacy-app-data");
+        let binary_path = app_data_dir.join("cerbena.exe");
         let secret = derive_app_secret_material(
-            Path::new("C:/tmp/app-data"),
-            Path::new("C:/tmp/cerbena.exe"),
+            &app_data_dir,
+            &binary_path,
             "dev.cerbena.app",
         )
         .expect("derive secret");
@@ -1603,6 +1616,7 @@ mod tests {
         );
 
         let _ = fs::remove_file(legacy);
+        let _ = fs::remove_dir_all(app_data_dir);
     }
 
     #[test]

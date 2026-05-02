@@ -19,6 +19,8 @@ sidebar_position: 90
 powershell -ExecutionPolicy Bypass -File .\scripts\local-ci-preflight.ps1 -CompactOutput
 ```
 
+Локальная предварительная проверка теперь за один проход прогоняет проверку контейнерной среды, проверки безопасности и проверки уязвимостей.
+
 ### Полная релизная упаковка
 
 ```powershell

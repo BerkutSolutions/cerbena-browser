@@ -21,6 +21,10 @@ use uuid::Uuid;
 
 use crate::device_posture::{load_device_posture_store, DevicePostureStore};
 use crate::launch_sessions::{load_launch_session_store, LaunchSessionStore};
+use crate::network_sandbox_lifecycle::NetworkSandboxLifecycleState;
+use crate::network_sandbox::{
+    load_network_sandbox_store, migrate_network_sandbox_store, NetworkSandboxStore,
+};
 use crate::route_runtime::RouteRuntimeState;
 use crate::sensitive_store::derive_app_secret_material;
 use crate::service_catalog_seed::build_service_catalog;
@@ -190,6 +194,8 @@ pub struct AppState {
     pub active_engine_downloads: Mutex<BTreeSet<String>>,
     pub cancelled_engine_downloads: Arc<Mutex<BTreeSet<String>>>,
     pub active_network_downloads: Mutex<BTreeSet<String>>,
+    pub network_sandbox_store: Mutex<NetworkSandboxStore>,
+    pub network_sandbox_lifecycle: Mutex<NetworkSandboxLifecycleState>,
     pub route_runtime: Mutex<RouteRuntimeState>,
     pub traffic_gateway: std::sync::Mutex<TrafficGatewayState>,
 }
@@ -220,6 +226,10 @@ impl AppState {
             load_extension_library_store(&app_data.join("extension_library.json"))?;
         let sync_store =
             load_sync_store(&app_data.join("sync_store.json"), &sensitive_store_secret)?;
+        let mut network_sandbox_store =
+            load_network_sandbox_store(&app_data.join("network_sandbox_store.json"))?;
+        let sandbox_changed =
+            migrate_network_sandbox_store(&mut network_sandbox_store, &network_store)?;
         let link_routing_store = load_link_routing_store(
             &app_data.join("link_routing_store.json"),
             &sensitive_store_secret,
@@ -234,6 +244,12 @@ impl AppState {
         let updater_launch_mode = UpdaterLaunchMode::from_args(std::env::args().skip(1));
         let traffic_rules = load_rules_store(&app_data.join("traffic_gateway_rules.json"))?;
         let traffic_log = load_traffic_log(&app_data.join("traffic_gateway_log.json"))?;
+        if sandbox_changed {
+            persist_network_sandbox_store(
+                &app_data.join("network_sandbox_store.json"),
+                &network_sandbox_store,
+            )?;
+        }
 
         Ok(Self {
             app_handle: app.clone(),
@@ -266,6 +282,8 @@ impl AppState {
             active_engine_downloads: Mutex::new(BTreeSet::new()),
             cancelled_engine_downloads: Arc::new(Mutex::new(BTreeSet::new())),
             active_network_downloads: Mutex::new(BTreeSet::new()),
+            network_sandbox_store: Mutex::new(network_sandbox_store),
+            network_sandbox_lifecycle: Mutex::new(NetworkSandboxLifecycleState::default()),
             route_runtime: Mutex::new(RouteRuntimeState::default()),
             traffic_gateway: Mutex::new(TrafficGatewayState {
                 listeners: BTreeMap::new(),
@@ -293,6 +311,11 @@ impl AppState {
     pub fn network_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
         let app_data = app_local_data_root(app)?;
         Ok(app_data.join("network_store.json"))
+    }
+
+    pub fn network_sandbox_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
+        let app_data = app_local_data_root(app)?;
+        Ok(app_data.join("network_sandbox_store.json"))
     }
 
     pub fn extension_library_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
@@ -498,6 +521,18 @@ pub fn persist_network_store(path: &PathBuf, store: &NetworkStore) -> Result<(),
     let bytes =
         serde_json::to_vec_pretty(store).map_err(|e| format!("serialize network store: {e}"))?;
     fs::write(path, bytes).map_err(|e| format!("write network store: {e}"))
+}
+
+pub fn persist_network_sandbox_store(
+    path: &PathBuf,
+    store: &NetworkSandboxStore,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create network sandbox dir: {e}"))?;
+    }
+    let bytes = serde_json::to_vec_pretty(store)
+        .map_err(|e| format!("serialize network sandbox store: {e}"))?;
+    fs::write(path, bytes).map_err(|e| format!("write network sandbox store: {e}"))
 }
 
 pub fn persist_extension_library_store(

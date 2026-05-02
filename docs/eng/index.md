@@ -4,7 +4,7 @@ title: English Wiki
 sidebar_position: 1
 ---
 
-Cerbena Browser is a standalone secure-browsing platform with isolated profiles, a strict network policy engine, and a desktop launcher built on `Tauri 2` + `Rust`.
+Cerbena Browser is a standalone secure-browsing platform with isolated profiles, explicit traffic-isolation strategies, a strict network policy engine, and a desktop launcher built on `Tauri 2` + `Rust`.
 
 This wiki documents the real repository surface rather than an abstract architecture only: `Profiles`, `Identity`, `Network`, `DNS`, `Extensions`, `Security`, `Traffic`, `Settings`, the release flow, and local integrations.
 
@@ -12,15 +12,16 @@ This wiki documents the real repository surface rather than an abstract architec
 
 - Engineers who configure profiles, routes, blocklists, and DNS policies.
 - Security teams that need zero-trust and profile isolation guarantees.
-- Developers who maintain the launcher, the docs site, and local integration surfaces.
+- Developers who maintain the launcher, container/runtime integrations, and the docs site.
 
 ## What matters immediately
 
 - The `UI` is not a trust boundary.
 - Profile data, keys, network state, cache, and extension state are isolated.
+- Route strategy is explicit: `isolated`, `compatibility-native`, `container`, or `blocked`.
 - `Kill-switch` blocks traffic when a required VPN/runtime route is unavailable.
+- Container-backed route isolation can keep compatible `proxy`, `V2Ray/XRay`, `OpenVPN`, `TOR`, and `Amnezia/WireGuard` templates inside a profile-scoped sandbox.
 - `Auto-update` is disabled by default.
-- `Settings` is now the shared home for `General`, `Links`, and `Sync`.
 - Documentation is maintained as synchronized `ru` and `eng` branches.
 
 ## Main wiki branches

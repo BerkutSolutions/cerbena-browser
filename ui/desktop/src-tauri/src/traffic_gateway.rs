@@ -4,6 +4,10 @@ use std::{
     io::{Read, Write},
     net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket},
     path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -14,6 +18,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::launcher_commands::load_global_security_record;
+use crate::network_sandbox::{
+    resolve_profile_network_sandbox_mode, resolve_profile_network_sandbox_view,
+    ResolvedNetworkSandboxMode,
+};
 use crate::route_runtime::{
     route_runtime_required_for_profile, runtime_proxy_endpoint, runtime_session_active,
 };
@@ -50,10 +58,16 @@ pub struct TrafficLogEntry {
 
 #[derive(Debug, Default)]
 pub struct TrafficGatewayState {
-    pub listeners: BTreeMap<String, u16>,
+    pub listeners: BTreeMap<String, GatewayListenerSession>,
     pub traffic_log: Vec<TrafficLogEntry>,
     pub rules: TrafficRulesStore,
     pub(crate) route_health_cache: BTreeMap<String, RouteHealthCacheEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GatewayListenerSession {
+    pub port: u16,
+    pub shutdown: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,8 +159,10 @@ pub fn ensure_profile_gateway(
             .traffic_gateway
             .lock()
             .map_err(|_| "traffic gateway lock poisoned".to_string())?;
-        if let Some(port) = gateway.listeners.get(&profile_id_string).copied() {
-            return Ok(GatewayLaunchConfig { port });
+        if let Some(session) = gateway.listeners.get(&profile_id_string) {
+            if !session.shutdown.load(Ordering::Relaxed) {
+                return Ok(GatewayLaunchConfig { port: session.port });
+            }
         }
     }
 
@@ -157,8 +173,9 @@ pub fn ensure_profile_gateway(
         .map_err(|e| format!("gateway local addr: {e}"))?
         .port();
     listener
-        .set_nonblocking(false)
-        .map_err(|e| format!("gateway blocking mode: {e}"))?;
+        .set_nonblocking(true)
+        .map_err(|e| format!("gateway nonblocking mode: {e}"))?;
+    let shutdown = Arc::new(AtomicBool::new(false));
 
     {
         let state = app_handle.state::<AppState>();
@@ -166,20 +183,29 @@ pub fn ensure_profile_gateway(
             .traffic_gateway
             .lock()
             .map_err(|_| "traffic gateway lock poisoned".to_string())?;
-        gateway.listeners.insert(profile_id_string.clone(), port);
+        gateway.listeners.insert(
+            profile_id_string.clone(),
+            GatewayListenerSession {
+                port,
+                shutdown: shutdown.clone(),
+            },
+        );
     }
 
     let app = app_handle.clone();
     thread::spawn(move || {
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
+        while !shutdown.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
                     let app = app.clone();
                     thread::spawn(move || {
                         if let Err(err) = handle_client(app, profile_id, stream) {
                             eprintln!("[traffic-gateway] client handling failed: {err}");
                         }
                     });
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(100));
                 }
                 Err(err) => {
                     eprintln!("[traffic-gateway] accept failed: {err}");
@@ -189,7 +215,48 @@ pub fn ensure_profile_gateway(
         }
     });
 
+    eprintln!(
+        "[traffic-gateway] profile={} listener started on 127.0.0.1:{}",
+        profile_id, port
+    );
+
     Ok(GatewayLaunchConfig { port })
+}
+
+pub fn stop_profile_gateway(app_handle: &AppHandle, profile_id: Uuid) {
+    let state = app_handle.state::<AppState>();
+    let session = {
+        let mut gateway = match state.traffic_gateway.lock() {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        gateway.listeners.remove(&profile_id.to_string())
+    };
+    if let Some(session) = session {
+        eprintln!(
+            "[traffic-gateway] profile={} listener stopping on 127.0.0.1:{}",
+            profile_id, session.port
+        );
+        session.shutdown.store(true, Ordering::Relaxed);
+    }
+}
+
+pub fn stop_all_profile_gateways(app_handle: &AppHandle) {
+    let profile_ids = {
+        let state = app_handle.state::<AppState>();
+        let gateway = match state.traffic_gateway.lock() {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        gateway
+            .listeners
+            .keys()
+            .filter_map(|value| Uuid::parse_str(value).ok())
+            .collect::<Vec<_>>()
+    };
+    for profile_id in profile_ids {
+        stop_profile_gateway(app_handle, profile_id);
+    }
 }
 
 pub fn list_traffic_log(state: &AppState) -> Result<Vec<TrafficLogEntry>, String> {
@@ -248,6 +315,9 @@ fn handle_client(
     profile_id: Uuid,
     mut client: TcpStream,
 ) -> Result<(), String> {
+    client
+        .set_nonblocking(false)
+        .map_err(|e| format!("client blocking mode: {e}"))?;
     client
         .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
@@ -415,10 +485,20 @@ fn handle_connect_request(
         let response_head = read_proxy_response_head(&mut upstream)?;
         client.write_all(&response_head)?;
         client.flush()?;
+        if !parsed.passthrough_bytes.is_empty() {
+            upstream.write_all(&parsed.passthrough_bytes)?;
+            upstream.flush()?;
+        }
     } else {
         client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
         client.flush()?;
+        if !parsed.passthrough_bytes.is_empty() {
+            upstream.write_all(&parsed.passthrough_bytes)?;
+            upstream.flush()?;
+        }
     }
+    clear_bridge_timeouts(client)?;
+    clear_bridge_timeouts(&upstream)?;
     bridge_streams(client, upstream)
 }
 
@@ -442,20 +522,32 @@ fn handle_http_request(
         upstream.write_all(&parsed.passthrough_bytes)?;
     }
     upstream.flush()?;
+    clear_bridge_timeouts(client)?;
+    clear_bridge_timeouts(&upstream)?;
     bridge_streams(client, upstream)
+}
+
+fn clear_bridge_timeouts(stream: &TcpStream) -> std::io::Result<()> {
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(None)?;
+    Ok(())
 }
 
 fn bridge_streams(client: &mut TcpStream, upstream: TcpStream) -> std::io::Result<()> {
     let mut upstream_reader = upstream.try_clone()?;
     let mut client_writer = client.try_clone()?;
     let upstream_to_client = thread::spawn(move || {
-        let _ = std::io::copy(&mut upstream_reader, &mut client_writer);
+        if let Err(error) = std::io::copy(&mut upstream_reader, &mut client_writer) {
+            eprintln!("[traffic-gateway] upstream->client bridge failed: {error}");
+        }
         let _ = client_writer.shutdown(Shutdown::Write);
     });
 
     let mut upstream_writer = upstream;
     let mut client_reader = client.try_clone()?;
-    let _ = std::io::copy(&mut client_reader, &mut upstream_writer);
+    if let Err(error) = std::io::copy(&mut client_reader, &mut upstream_writer) {
+        eprintln!("[traffic-gateway] client->upstream bridge failed: {error}");
+    }
     let _ = upstream_writer.shutdown(Shutdown::Write);
     let _ = upstream_to_client.join();
     Ok(())
@@ -523,6 +615,7 @@ fn connect_via_local_socks5_endpoint(
     target_port: u16,
 ) -> std::io::Result<TcpStream> {
     let mut stream = TcpStream::connect(format!("{runtime_host}:{runtime_port}"))?;
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     socks5_connect(&mut stream, target_host, target_port, None, None)?;
@@ -550,6 +643,7 @@ fn connect_via_socks_proxy(
     target_port: u16,
 ) -> std::io::Result<TcpStream> {
     let mut stream = TcpStream::connect(format!("{}:{}", proxy.host, proxy.port))?;
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     match proxy.protocol {
@@ -935,10 +1029,37 @@ fn compute_route_kill_switch_reason(
     profile_id: Uuid,
     policy: &VpnProxyTabPayload,
 ) -> Option<String> {
+    if let Some(strategy) = resolved_route_strategy(app_handle, profile_id) {
+        match strategy {
+            ResolvedNetworkSandboxMode::Blocked => {
+                let state = app_handle.state::<AppState>();
+                let reason = resolve_sandbox_strategy_reason(state.inner(), profile_id)
+                    .unwrap_or_else(|| "selected isolated route policy blocks this backend".to_string());
+                return Some(format!("Kill-switch: {reason}"));
+            }
+            ResolvedNetworkSandboxMode::Container => {
+                if !resolved_sandbox_adapter_available(app_handle, profile_id) {
+                    let state = app_handle.state::<AppState>();
+                    let reason = resolve_sandbox_adapter_reason(state.inner(), profile_id)
+                        .unwrap_or_else(|| {
+                            "container sandbox mode is selected, but the adapter is not available"
+                                .to_string()
+                        });
+                    return Some(format!("Kill-switch: {reason}"));
+                }
+            }
+            _ => {}
+        }
+    }
     let runtime_required = route_runtime_required_for_profile(app_handle, profile_id);
     let runtime_active = runtime_session_active(app_handle, profile_id);
     if runtime_required && !runtime_active {
-        return Some("Kill-switch: selected route runtime is unavailable".to_string());
+        let strategy_label = resolved_route_strategy(app_handle, profile_id)
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "runtime".to_string());
+        return Some(format!(
+            "Kill-switch: selected {strategy_label} route runtime is unavailable"
+        ));
     }
     if runtime_active {
         return None;
@@ -1191,12 +1312,77 @@ fn current_route_mode(
         .ok()
         .map(|store| store.global_route_settings.global_vpn_enabled)
         .unwrap_or(false);
-    if global_vpn_enabled {
-        return "vpn".to_string();
-    }
-    policy
+    let base_route = if global_vpn_enabled {
+        "vpn".to_string()
+    } else {
+        policy
         .map(|value| value.route_mode.clone())
         .unwrap_or_else(|| "direct".to_string())
+    };
+    match resolved_route_strategy(app_handle, profile_id) {
+        Some(ResolvedNetworkSandboxMode::CompatibilityNative) => {
+            format!("{base_route}:compatibility-native")
+        }
+        Some(ResolvedNetworkSandboxMode::Container) => format!("{base_route}:container"),
+        Some(ResolvedNetworkSandboxMode::Blocked) => format!("{base_route}:blocked"),
+        _ => base_route,
+    }
+}
+
+fn resolved_route_strategy(
+    app_handle: &AppHandle,
+    profile_id: Uuid,
+) -> Option<ResolvedNetworkSandboxMode> {
+    let state = app_handle.state::<AppState>();
+    let template = selected_route_template(state.inner(), profile_id)?;
+    resolve_profile_network_sandbox_mode(state.inner(), profile_id, Some(&template))
+        .ok()
+        .map(|value| value.mode)
+}
+
+fn resolve_sandbox_strategy_reason(state: &AppState, profile_id: Uuid) -> Option<String> {
+    let template = selected_route_template(state, profile_id)?;
+    resolve_profile_network_sandbox_mode(state, profile_id, Some(&template))
+        .ok()
+        .map(|value| value.reason)
+}
+
+fn resolve_sandbox_adapter_reason(state: &AppState, profile_id: Uuid) -> Option<String> {
+    resolve_profile_network_sandbox_view(state, profile_id)
+        .ok()
+        .map(|value| value.adapter.reason)
+}
+
+fn resolved_sandbox_adapter_available(app_handle: &AppHandle, profile_id: Uuid) -> bool {
+    let state = app_handle.state::<AppState>();
+    resolve_profile_network_sandbox_view(state.inner(), profile_id)
+        .ok()
+        .map(|value| value.adapter.available)
+        .unwrap_or(false)
+}
+
+fn selected_route_template(state: &AppState, profile_id: Uuid) -> Option<crate::state::ConnectionTemplate> {
+    let store = state.network_store.lock().ok()?;
+    let profile_key = profile_id.to_string();
+    let profile_route_mode = store
+        .vpn_proxy
+        .get(&profile_key)
+        .map(|value| value.route_mode.trim().to_lowercase())
+        .unwrap_or_else(|| "direct".to_string());
+    if profile_route_mode == "direct" {
+        return None;
+    }
+    let template_id = if store.global_route_settings.global_vpn_enabled {
+        store
+            .global_route_settings
+            .default_template_id
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    } else {
+        store.profile_template_selection.get(&profile_key).cloned()
+    };
+    template_id.and_then(|id| store.connection_templates.get(&id).cloned())
 }
 
 fn profile_route_mode(state: &AppState, profile_id: Uuid) -> String {

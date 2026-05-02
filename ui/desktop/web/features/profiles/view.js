@@ -28,7 +28,14 @@ import {
   normalizeTemplatePlatform,
   normalizeAutoPlatform
 } from "../identity/shared.js";
-import { getNetworkState, getServiceCatalog, saveDnsPolicy, saveVpnProxyPolicy } from "../network/api.js";
+import {
+  getNetworkState,
+  getServiceCatalog,
+  previewNetworkSandboxSettings,
+  saveDnsPolicy,
+  saveNetworkSandboxProfileSettings,
+  saveVpnProxyPolicy
+} from "../network/api.js";
 import { getGlobalSecuritySettings } from "../security/api.js";
 import { getSyncOverview, saveSyncControls } from "../sync/api.js";
 import { blockedServicesToPairs, loadDnsTemplates, loadProfileDnsDraft, saveProfileDnsDraft } from "../dns/store.js";
@@ -189,9 +196,14 @@ function rowHtml(profile, isSelected, t) {
         <div class="profiles-tags">
           ${firstTag ? `<span class="profiles-tag">${escapeHtml(firstTag)}</span>` : `<span class="profiles-muted">${t("profile.emptyTags")}</span>`}
           ${extraTags.length ? `
-            <span class="profiles-tag-overflow">
-              <button type="button" class="profiles-tag profiles-tag-more" tabindex="-1">+${extraTags.length}</button>
-              <span class="profiles-tag-tooltip">${extraTags.map((tag) => `<span class="profiles-tag">${escapeHtml(tag)}</span>`).join("")}</span>
+            <span class="profiles-tag-overflow" data-tag-overflow>
+              <button
+                type="button"
+                class="profiles-tag profiles-tag-more"
+                data-tag-tooltip-trigger
+                data-tag-tooltip-tags="${escapeHtml(extraTags.join("\n"))}"
+                aria-label="${escapeHtml(extraTags.join(", "))}"
+              >+${extraTags.length}</button>
             </span>
           ` : ""}
         </div>
@@ -508,6 +520,67 @@ function buildRoutePolicyPayload(routeMode, selectedTemplate, killSwitchEnabled,
   return base;
 }
 
+function sandboxModeLabel(mode, t) {
+  return t(`network.sandbox.mode.${mode}`) || mode;
+}
+
+function sandboxAdapterLabel(kind, t) {
+  return t(`network.sandbox.adapter.${kind}`) || kind;
+}
+
+function profileRouteSummary(template, t) {
+  if (!template) return t("network.sandbox.routeUnknown");
+  const chain = normalizeRouteTemplateNodes(template)
+    .map((node) => `${t(`network.node.${node.connectionType}`)}:${node.protocol}`)
+    .join(" -> ");
+  return `${template.name} (${chain})`;
+}
+
+function compatibleSandboxModeOptions(modes, selectedMode, t) {
+  return (modes ?? [])
+    .map((mode) => `<option value="${mode}" ${mode === selectedMode ? "selected" : ""}>${sandboxModeLabel(mode, t)}</option>`)
+    .join("");
+}
+
+function renderProfileSandboxFrame(preview, selectedTemplate, t) {
+  if (!selectedTemplate || !preview?.sandbox || !(preview.compatibleModes ?? []).length) {
+    return "";
+  }
+  const sandbox = preview.sandbox;
+  const adapter = sandbox.adapter ?? {};
+  const selectedMode = (sandbox.preferredMode && (preview.compatibleModes ?? []).includes(sandbox.preferredMode))
+    ? sandbox.preferredMode
+    : (preview.compatibleModes?.includes(sandbox.effectiveMode) ? sandbox.effectiveMode : preview.compatibleModes?.[0] ?? "isolated");
+  return `
+    <div class="security-frame" id="profile-sandbox-frame">
+      <h4>${t("network.sandbox.title")}</h4>
+      <div class="grid-two">
+        <div>
+          <strong>${t("network.sandbox.activeRoute")}</strong>
+          <p>${escapeHtml(profileRouteSummary(selectedTemplate, t))}</p>
+        </div>
+        <div>
+          <strong>${t("network.sandbox.adapterLabel")}</strong>
+          <p>${escapeHtml(sandboxAdapterLabel(adapter.adapterKind || "unknown", t))}</p>
+        </div>
+        <div>
+          <strong>${t("network.sandbox.runtimeLabel")}</strong>
+          <p>${escapeHtml(adapter.runtimeKind || "unknown")}</p>
+        </div>
+        <div>
+          <strong>${t("network.sandbox.effectiveMode")}</strong>
+          <p>${escapeHtml(sandboxModeLabel(sandbox.effectiveMode, t))}</p>
+        </div>
+      </div>
+      <label style="margin-top:12px;">${t("network.sandbox.chooseMode")}
+        <select id="profile-sandbox-mode">
+          ${compatibleSandboxModeOptions(preview.compatibleModes, selectedMode, t)}
+        </select>
+      </label>
+    </div>
+  `;
+}
+
 function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, syncOverview, identityPreset) {
   const isRunning = profile?.state === "running";
   const searchDefault = profile?.default_search_provider ?? "duckduckgo";
@@ -648,6 +721,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
                 <span>${t("network.killSwitch")}</span>
               </label>
             </div>
+            <div id="profile-sandbox-frame-slot"></div>
           </div>
 
           <div class="tab-pane hidden profile-pane-plain" data-pane="dns">
@@ -919,6 +993,60 @@ export function wireProfiles(root, model, rerender, t) {
   if (!(model.profileActionPendingIds instanceof Set)) {
     model.profileActionPendingIds = new Set();
   }
+  let floatingTagTooltip = document.body.querySelector("#profiles-floating-tag-tooltip");
+  if (!floatingTagTooltip) {
+    floatingTagTooltip = document.createElement("div");
+    floatingTagTooltip.id = "profiles-floating-tag-tooltip";
+    floatingTagTooltip.className = "profiles-floating-tooltip hidden";
+    document.body.appendChild(floatingTagTooltip);
+  }
+  const hideFloatingTagTooltip = () => {
+    floatingTagTooltip._activeTrigger = null;
+    floatingTagTooltip.classList.add("hidden");
+    floatingTagTooltip.innerHTML = "";
+  };
+  const positionFloatingTagTooltip = (trigger) => {
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    floatingTagTooltip.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - floatingTagTooltip.offsetWidth - 12))}px`;
+    let top = rect.bottom + margin;
+    if (top + floatingTagTooltip.offsetHeight > window.innerHeight - 12) {
+      top = Math.max(12, rect.top - floatingTagTooltip.offsetHeight - margin);
+    }
+    floatingTagTooltip.style.top = `${top}px`;
+  };
+  const showFloatingTagTooltip = (trigger) => {
+    const raw = trigger.getAttribute("data-tag-tooltip-tags") || "";
+    const tags = raw.split("\n").map((value) => value.trim()).filter(Boolean);
+    if (!tags.length) {
+      hideFloatingTagTooltip();
+      return;
+    }
+    floatingTagTooltip.innerHTML = tags
+      .map((tag) => `<span class="profiles-tag">${escapeHtml(tag)}</span>`)
+      .join("");
+    floatingTagTooltip.classList.remove("hidden");
+    floatingTagTooltip._activeTrigger = trigger;
+    positionFloatingTagTooltip(trigger);
+  };
+  if (!floatingTagTooltip.dataset.bound) {
+    window.addEventListener("scroll", () => {
+      if (floatingTagTooltip._activeTrigger) positionFloatingTagTooltip(floatingTagTooltip._activeTrigger);
+    }, { passive: true });
+    window.addEventListener("resize", () => {
+      if (floatingTagTooltip._activeTrigger) positionFloatingTagTooltip(floatingTagTooltip._activeTrigger);
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (
+        floatingTagTooltip._activeTrigger
+        && !event.target?.closest?.("[data-tag-tooltip-trigger]")
+        && !event.target?.closest?.("#profiles-floating-tag-tooltip")
+      ) {
+        hideFloatingTagTooltip();
+      }
+    });
+    floatingTagTooltip.dataset.bound = "true";
+  }
   root.querySelector("#profile-create")?.addEventListener("click", () => openProfileModal(root, model, rerender, t, null));
   root.querySelector("#profile-import")?.addEventListener("click", async () => {
     const archiveJson = await askInput(root, t, t("profile.import.title"), t("profile.import.archive"));
@@ -949,6 +1077,17 @@ export function wireProfiles(root, model, rerender, t) {
     });
   }
 
+  for (const trigger of root.querySelectorAll("[data-tag-tooltip-trigger]")) {
+    trigger.addEventListener("mouseenter", () => showFloatingTagTooltip(trigger));
+    trigger.addEventListener("focus", () => showFloatingTagTooltip(trigger));
+    trigger.addEventListener("mouseleave", () => {
+      if (floatingTagTooltip._activeTrigger === trigger) hideFloatingTagTooltip();
+    });
+    trigger.addEventListener("blur", () => {
+      if (floatingTagTooltip._activeTrigger === trigger) hideFloatingTagTooltip();
+    });
+  }
+
   for (const row of root.querySelectorAll(".profiles-row")) {
     row.addEventListener("click", async (event) => {
       const action = event.target?.closest?.("[data-action]")?.getAttribute?.("data-action");
@@ -960,9 +1099,17 @@ export function wireProfiles(root, model, rerender, t) {
 
       if (action === "launch") {
         model.profileActionPendingIds.add(profileId);
+        model.profileLaunchOverlay = {
+          profileId,
+          stageKey: "starting",
+          messageKey: "profile.launchProgress.starting",
+          done: false
+        };
+        rerender();
         try {
           const launchResult = await launchProfile(profileId);
           if (!launchResult.ok) {
+            model.profileLaunchOverlay = null;
             const errorText = String(launchResult.data.error);
             const postureAction = resolveDevicePostureAction(errorText);
             if (postureAction) {
@@ -1139,7 +1286,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
   const dnsDraftKey = existing?.id ?? "create-profile";
   const dnsDraft = loadProfileDnsDraft(dnsDraftKey, model.serviceCatalog);
   let profileNetworkState = { payload: null, selectedTemplateId: null, connectionTemplates: [] };
-  const networkStateResult = await getNetworkState(existing?.id ?? model.selectedProfileId ?? "");
+  const networkStateResult = await getNetworkState(existing?.id ?? "");
   if (networkStateResult.ok) {
     try {
       profileNetworkState = JSON.parse(networkStateResult.data || "{}");
@@ -1175,6 +1322,54 @@ async function openProfileModal(root, model, rerender, t, existing) {
   const profileRouteTemplateRow = overlay.querySelector("#profile-route-template-row");
   const profileKillSwitchRow = overlay.querySelector("#profile-kill-switch-row");
   const profileKillSwitchInput = overlay.querySelector("[name='profileKillSwitch']");
+  const profileSandboxSlot = overlay.querySelector("#profile-sandbox-frame-slot");
+  let profileSandboxPreview = null;
+  let initialSandboxMode = null;
+  const selectedRouteTemplateFromForm = () => {
+    const routeTemplateId = profileRouteTemplate?.value || "";
+    return (profileNetworkState.connectionTemplates ?? []).find((item) => item.id === routeTemplateId) ?? null;
+  };
+  const bindProfileSandboxSelect = () => {
+    const select = overlay.querySelector("#profile-sandbox-mode");
+    select?.addEventListener("change", () => {
+      dirty = true;
+    });
+  };
+  const refreshProfileSandboxFrame = async () => {
+    if (!profileSandboxSlot || !profileRouteMode || !profileRouteTemplate) return;
+    const routeMode = normalizeProfileRouteMode(profileRouteMode.value || "direct");
+    const selectedTemplate = selectedRouteTemplateFromForm();
+    if (routeMode === "direct" || !selectedTemplate) {
+      profileSandboxPreview = null;
+      initialSandboxMode = null;
+      profileSandboxSlot.innerHTML = "";
+      return;
+    }
+    const preferredMode =
+      overlay.querySelector("#profile-sandbox-mode")?.value
+      || profileNetworkState.sandbox?.preferredMode
+      || null;
+    const previewResult = await previewNetworkSandboxSettings({
+      profileId: existing?.id ?? null,
+      routeMode,
+      templateId: selectedTemplate.id,
+      preferredMode
+    });
+    if (!previewResult.ok) {
+      profileSandboxPreview = null;
+      profileSandboxSlot.innerHTML = "";
+      return;
+    }
+    profileSandboxPreview = previewResult.data;
+    if (!initialSandboxMode) {
+      initialSandboxMode = profileSandboxPreview.sandbox.preferredMode
+        || profileSandboxPreview.sandbox.effectiveMode
+        || profileSandboxPreview.compatibleModes?.[0]
+        || null;
+    }
+    profileSandboxSlot.innerHTML = renderProfileSandboxFrame(profileSandboxPreview, selectedTemplate, t);
+    bindProfileSandboxSelect();
+  };
   const refreshRouteTemplateOptions = () => {
     if (!profileRouteTemplate || !profileRouteMode) return;
     const routeMode = normalizeProfileRouteMode(profileRouteMode.value || "direct");
@@ -1205,9 +1400,17 @@ async function openProfileModal(root, model, rerender, t, existing) {
     }
   };
   refreshRouteTemplateOptions();
-  profileRouteMode?.addEventListener("change", () => {
+  refreshProfileSandboxFrame().catch(() => {});
+  profileRouteMode?.addEventListener("change", async () => {
     dirty = true;
+    initialSandboxMode = null;
     refreshRouteTemplateOptions();
+    await refreshProfileSandboxFrame();
+  });
+  profileRouteTemplate?.addEventListener("change", async () => {
+    dirty = true;
+    initialSandboxMode = null;
+    await refreshProfileSandboxFrame();
   });
   const profileDnsModeField = overlay.querySelector("#profile-dns-mode");
   const profileDnsServersRow = overlay.querySelector("#profile-dns-servers-row");
@@ -2028,6 +2231,16 @@ async function openProfileModal(root, model, rerender, t, existing) {
     const saveRoutePolicy = async (profileId) => {
       return saveVpnProxyPolicy(profileId, routePayload, routeMode === "direct" ? null : routeTemplateId);
     };
+    const saveSandboxPolicy = async (profileId) => {
+      if (routeMode === "direct" || !routeTemplateId) {
+        return { ok: true };
+      }
+      const selectedMode = overlay.querySelector("#profile-sandbox-mode")?.value || null;
+      if (!selectedMode || selectedMode === initialSandboxMode) {
+        return { ok: true };
+      }
+      return saveNetworkSandboxProfileSettings(profileId, selectedMode);
+    };
     const saveSyncPolicy = async (profileId) => {
       const serverUrl = form.syncServer.value.trim();
       const keyId = form.syncKey.value.trim();
@@ -2058,9 +2271,10 @@ async function openProfileModal(root, model, rerender, t, existing) {
       }
       return setProfilePassword(profileId, form.profilePassword.value);
     };
-    const resolveSaveError = (dnsResult, routeResult, syncResult, identityResult) => {
+    const resolveSaveError = (dnsResult, routeResult, sandboxResult, syncResult, identityResult) => {
       if (!dnsResult.ok) return String(dnsResult.data.error);
       if (!routeResult.ok) return String(routeResult.data.error);
+      if (!sandboxResult.ok) return String(sandboxResult.data.error);
       if (!syncResult.ok) return String(syncResult.data.error);
       if (!identityResult.ok) return String(identityResult.data.error);
       return t("profile.modal.validationError");
@@ -2095,13 +2309,14 @@ async function openProfileModal(root, model, rerender, t, existing) {
         });
         const dnsResult = await saveDnsPolicy(existing.id, dnsPayload);
         const routeResult = await saveRoutePolicy(existing.id);
+        const sandboxResult = await saveSandboxPolicy(existing.id);
         const syncResult = await saveSyncPolicy(existing.id);
         const identityResult = await saveIdentityPolicy(existing.id);
         const passwordResult = await saveProfilePassword(existing.id);
-        if (dnsResult.ok && routeResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
+        if (dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
           setNotice(model, "success", t("profile.runtime.appliedNow"));
         } else {
-          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(dnsResult, routeResult, syncResult, identityResult));
+          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(dnsResult, routeResult, sandboxResult, syncResult, identityResult));
         }
       } else {
         setNotice(model, "error", String(updateResult.data.error));
@@ -2121,13 +2336,14 @@ async function openProfileModal(root, model, rerender, t, existing) {
         });
         const dnsResult = await saveDnsPolicy(createResult.data.id, dnsPayload);
         const routeResult = await saveRoutePolicy(createResult.data.id);
+        const sandboxResult = await saveSandboxPolicy(createResult.data.id);
         const syncResult = await saveSyncPolicy(createResult.data.id);
         const identityResult = await saveIdentityPolicy(createResult.data.id);
         const passwordResult = await saveProfilePassword(createResult.data.id);
-        if (dnsResult.ok && routeResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
+        if (dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
           setNotice(model, "success", t("profile.create.success"));
         } else {
-          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(dnsResult, routeResult, syncResult, identityResult));
+          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(dnsResult, routeResult, sandboxResult, syncResult, identityResult));
         }
       } else {
         setNotice(model, "error", String(createResult.data.error));

@@ -9,7 +9,7 @@
 [GitHub](https://github.com/BerkutSolutions/cerbena-browser)
 [Wiki](https://berkutsolutions.github.io/cerbena-browser/)
 
-`Cerbena Browser` is a secure desktop browsing platform built around zero-trust enforcement, full profile isolation, deterministic routing and DNS policy control, and a managed launcher/runtime boundary for `Wayfern` and `Camoufox`.
+`Cerbena Browser` is a secure desktop browsing platform built around zero-trust enforcement, strong profile isolation, explicit traffic-isolation strategies, and a launcher-managed runtime boundary for `Wayfern` and `Camoufox`.
 
 ## Product Overview
 
@@ -17,6 +17,7 @@ Cerbena Browser is not a thin profile manager layered on top of a regular browse
 
 - isolated profiles for `Wayfern` and `Camoufox`;
 - per-profile route modes: `direct`, `proxy`, `vpn`, `tor`, and `hybrid`;
+- explicit isolation strategies: `isolated`, `compatibility-native`, `container`, and `blocked`;
 - DNS policies, blocklists, service restrictions, and domain blacklists;
 - extension library assignment, install policy, and engine-aware auto-installation;
 - identity templates and a full manual fingerprint editor;
@@ -26,23 +27,24 @@ Cerbena Browser is not a thin profile manager layered on top of a regular browse
 The project provides:
 
 - profile isolation across data, keys, extensions, cache, and network policy;
+- a fail-closed kill-switch whenever a required VPN/runtime route is unavailable;
+- container-backed routing for compatible templates so traffic can stay inside a profile-scoped sandbox instead of modifying host-wide networking;
 - encrypted storage for sensitive launcher and desktop-shell state, including migration of legacy plaintext material into protected formats;
 - end-to-end protection for sync payloads while preserving backward compatibility for previously created data;
-- a trusted update path with a separate `cerbena-updater.exe`, `checksums.sig` signature validation, `SHA-256` verification, and safe installation handoff;
-- fail-closed handling for curated DNS blocklists and safe extraction checks for managed runtime archives.
+- a trusted update path with a separate `cerbena-updater.exe`, `checksums.sig` signature validation, `SHA-256` verification, and safe installation handoff.
 
 ## Core Capabilities
 
 - Full profile isolation across data, cache, keys, extensions, and network policy.
 - Zero-trust backend enforcement: the UI is never a trust boundary.
+- Explicit routing strategies with a container-backed route sandbox.
 - Kill-switch behavior when a required VPN route is unavailable.
 - Global and per-profile DNS filtering with editable policy levels.
 - Realistic identity templates for Windows, macOS, Linux, iOS, and Android.
 - Panic frame and emergency cleanup with managed retention controls.
 - Extension library with profile assignment and engine-specific auto-install.
 - Local release/preflight scripts plus security and vulnerability gates.
-- Windows installer wizard with shortcuts, uninstall registration, and uninstaller flow.
-- A standalone updater with a dry-run preview mode and a localized step-by-step verification screen.
+- Windows installer wizard with shortcuts, uninstall registration, and uninstaller flow that also removes launcher-managed network/container residue.
 
 ## Screenshots
 
@@ -77,7 +79,7 @@ The project provides:
 - Workspace: `Cargo` multi-crate
 - Documentation: `Docusaurus`
 - Browser engines: `Wayfern`, `Camoufox`
-- Managed runtime: `sing-box`, `openvpn`, `amneziawg`, `tor`
+- Managed runtime: `sing-box`, `openvpn`, `amneziawg`, `tor`, Docker-managed container helpers
 
 ## Quick Start
 
@@ -86,6 +88,7 @@ The project provides:
 - `Rust` toolchain
 - `Node.js` LTS + `npm`
 - Windows as the primary desktop target
+- `Docker Desktop` if you want to use container-backed traffic isolation
 
 ### Verification
 
@@ -119,6 +122,8 @@ npm run dev
 powershell -ExecutionPolicy Bypass -File .\scripts\local-ci-preflight.ps1 -CompactOutput
 ```
 
+This preflight now includes the Docker runtime gate, security gate, and vulnerability gate by default.
+
 ### Release validation and packaging
 
 ```powershell
@@ -140,7 +145,7 @@ GitHub Releases should typically include:
 - `cerbena-updater.exe` as the standalone updater executable;
 - `checksums.txt`, `checksums.sig`, and `release-manifest.json` as trusted release metadata artifacts.
 
-The installer `.exe` is produced locally by `scripts/build-installer.ps1` and is intended to be the main installation asset attached to releases.
+The installer `.exe` is produced locally by `scripts/build-installer.ps1` and is intended to be the main installation asset attached to releases. The same pipeline is expected to clean launcher-managed containers, Docker networks, helper images, managed runtimes, and legacy route-service residue during uninstall.
 
 ## Documentation
 

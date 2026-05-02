@@ -516,7 +516,7 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
 
 fn run_preview_updater_flow(state: &AppState) -> Result<(), String> {
     update_updater_overview(state, |overview| {
-        overview.target_version = Some("1.0.3-preview".to_string());
+        overview.target_version = Some("1.0.4-preview".to_string());
         overview.release_url = Some(REPOSITORY_URL.to_string());
         overview.summary_key = "updater.summary.preview_running".to_string();
         overview.summary_detail = "i18n:updater.detail.preview_running".to_string();
