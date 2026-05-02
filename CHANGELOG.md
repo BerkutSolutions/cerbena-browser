@@ -8,6 +8,7 @@
 - `scripts/local-ci-preflight.ps1` теперь выносит проверку traffic isolation в отдельный шаг `Traffic isolation regression tests`, а GitHub workflow `security-regression-gate.yml` запускает тот же фильтр `cargo test traffic_isolation`.
 - Локальный Docker vulnerability sandbox больше не обрывает `trivy` слишком рано: для файлового сканирования увеличен внешний таймаут и добавлен внутренний `--timeout 10m`, чтобы release `check` стабильно доходил до конца на прогретом кеше.
 - Installer cleanup доведен до полного удаления launcher-owned state: uninstall теперь явно вычищает профили, engine/network runtimes, updater staging, extension packages, DPAPI secret envelope, сохранённые JSON stores и Docker-артефакты контейнерной изоляции, а контрактные тесты проверяют это покрытие для обоих installer-путей.
+- `scripts/release.ps1` теперь при `publish` и `full` не только пушит git-тег, но и создает или обновляет GitHub Release через `gh`, прикладывая `checksums.txt`, `checksums.sig`, `release-manifest.json`, portable bundle, standalone updater и installer, чтобы trusted updater не ломался на пустых release assets.
 
 ### UI
 

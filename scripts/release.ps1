@@ -13,6 +13,7 @@ $ErrorActionPreference = "Stop"
 
 $defaultRemoteName = "origin"
 $defaultRemoteUrl = "https://github.com/BerkutSolutions/cerbena-browser.git"
+$defaultRepoSlug = "BerkutSolutions/cerbena-browser"
 
 function Write-Title([string]$Text) {
     Write-Host ""
@@ -211,6 +212,110 @@ function Assert-ReleaseContracts([string]$Root) {
     }
 }
 
+function Assert-GitHubCliAvailable() {
+    if (-not (Get-Command "gh" -ErrorAction SilentlyContinue)) {
+        throw "gh is required for GitHub Release publication. Install GitHub CLI and authenticate with 'gh auth login'."
+    }
+}
+
+function Resolve-InstallerArtifactPath([string]$Root, [string]$Version) {
+    $installerRoot = Join-Path $Root ("build\installer\" + $Version)
+    $innoPath = Join-Path $installerRoot ("output\cerbena-browser-setup-" + $Version + ".exe")
+    if (Test-Path $innoPath) {
+        return $innoPath
+    }
+    $fallbackPath = Join-Path $installerRoot ("cerbena-browser-setup-" + $Version + ".exe")
+    if (Test-Path $fallbackPath) {
+        return $fallbackPath
+    }
+    return ""
+}
+
+function Resolve-ReleaseUploadAssetPaths([string]$Root, [string]$Version) {
+    $releaseRoot = Join-Path $Root ("build\release\" + $Version)
+    $bundleRoot = Join-Path $releaseRoot "staging\cerbena-windows-x64"
+    $installerPath = Resolve-InstallerArtifactPath $Root $Version
+
+    $paths = @(
+        (Join-Path $releaseRoot "cerbena-windows-x64.zip"),
+        (Join-Path $releaseRoot "checksums.txt"),
+        (Join-Path $releaseRoot "checksums.sig"),
+        (Join-Path $releaseRoot "release-manifest.json"),
+        (Join-Path $bundleRoot "cerbena-updater.exe")
+    )
+    if (-not [string]::IsNullOrWhiteSpace($installerPath)) {
+        $paths += $installerPath
+    }
+    return $paths
+}
+
+function Ensure-ReleaseUploadAssets([string]$Root, [string]$Version) {
+    $releaseRoot = Join-Path $Root ("build\release\" + $Version)
+    $requiredReleaseFiles = @(
+        (Join-Path $releaseRoot "cerbena-windows-x64.zip"),
+        (Join-Path $releaseRoot "checksums.txt"),
+        (Join-Path $releaseRoot "checksums.sig"),
+        (Join-Path $releaseRoot "release-manifest.json"),
+        (Join-Path $releaseRoot "staging\cerbena-windows-x64\cerbena-updater.exe")
+    )
+    $missingReleaseFiles = $requiredReleaseFiles | Where-Object { -not (Test-Path $_) }
+    if ($missingReleaseFiles.Count -gt 0) {
+        Generate-Artifacts $Root $Version
+    }
+
+    $installerPath = Resolve-InstallerArtifactPath $Root $Version
+    if ([string]::IsNullOrWhiteSpace($installerPath)) {
+        Build-Installer $Root
+    }
+
+    $resolvedAssets = Resolve-ReleaseUploadAssetPaths $Root $Version
+    foreach ($path in $resolvedAssets) {
+        if (-not (Test-Path $path)) {
+            throw "required GitHub Release asset is missing: $path"
+        }
+    }
+}
+
+function Test-GitHubReleaseExists([string]$Tag) {
+    $prevErrorAction = $ErrorActionPreference
+    $hasNativePref = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
+    if ($hasNativePref) {
+        $prevNativePref = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+    $ErrorActionPreference = "Continue"
+    try {
+        & gh release view $Tag --repo $defaultRepoSlug *> $null
+    } finally {
+        $ErrorActionPreference = $prevErrorAction
+        if ($hasNativePref) {
+            $PSNativeCommandUseErrorActionPreference = $prevNativePref
+        }
+    }
+    $exitCode = if (Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue) { $LASTEXITCODE } else { 0 }
+    return $exitCode -eq 0
+}
+
+function Publish-GitHubReleaseAssets([string]$Root, [string]$Version) {
+    Assert-GitHubCliAvailable
+    Ensure-ReleaseUploadAssets $Root $Version
+
+    $tag = "v$Version"
+    if (-not (Test-GitHubReleaseExists $tag)) {
+        Invoke-Native "gh" @(
+            "release", "create", $tag,
+            "--repo", $defaultRepoSlug,
+            "--title", ("Cerbena Browser " + $Version),
+            "--notes", ("Release " + $Version)
+        )
+    }
+
+    # Publish trust assets with `gh release upload --clobber` so secure updater metadata is always attached.
+    $uploadArgs = @("release", "upload", $tag, "--repo", $defaultRepoSlug, "--clobber")
+    $uploadArgs += Resolve-ReleaseUploadAssetPaths $Root $Version
+    Invoke-Native "gh" $uploadArgs
+}
+
 function Run-Checks([string]$Root) {
     Write-Title "Preflight"
     $args = @(
@@ -293,6 +398,7 @@ function Publish-Release([string]$Root, [string]$Version) {
         Invoke-Native "git" @("-C", $Root, "tag", "-a", $tag, "-m", "Release $Version")
     }
     Invoke-Native "git" @("-C", $Root, "push", $defaultRemoteName, $tag)
+    Publish-GitHubReleaseAssets $Root $Version
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -337,8 +443,8 @@ switch ($Mode) {
         Run-Checks $repoRoot
         Run-VulnerabilityGates $repoRoot
         Generate-Artifacts $repoRoot $version
-        Publish-Release $repoRoot $version
         Build-Installer $repoRoot
+        Publish-Release $repoRoot $version
     }
 }
 
