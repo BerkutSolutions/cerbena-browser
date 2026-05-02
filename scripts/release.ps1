@@ -258,7 +258,7 @@ function Ensure-ReleaseUploadAssets([string]$Root, [string]$Version) {
         (Join-Path $releaseRoot "release-manifest.json"),
         (Join-Path $releaseRoot "staging\cerbena-windows-x64\cerbena-updater.exe")
     )
-    $missingReleaseFiles = $requiredReleaseFiles | Where-Object { -not (Test-Path $_) }
+    $missingReleaseFiles = @($requiredReleaseFiles | Where-Object { -not (Test-Path $_) })
     if ($missingReleaseFiles.Count -gt 0) {
         Generate-Artifacts $Root $Version
     }
