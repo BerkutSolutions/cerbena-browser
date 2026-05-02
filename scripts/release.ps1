@@ -37,7 +37,7 @@ function Invoke-Native([string]$FilePath, [string[]]$Arguments = @(), [switch]$Q
                 $tail = ($output | Select-Object -Last 40) -join [Environment]::NewLine
                 throw "command failed ($exitCode): $FilePath $argsText`n$tail"
             }
-            return
+            return $output
         }
         & $FilePath @Arguments
         $exitCode = if (Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue) { $LASTEXITCODE } else { 0 }

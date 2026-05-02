@@ -11,7 +11,7 @@
 ### Release и quality gates
 
 - `scripts/local-ci-preflight.ps1` теперь дополнительно поднимает `ui/desktop/npm run dev` как короткий smoke-check: если dev-сборка падает на compile/runtime ошибке в первые секунды, release preflight тоже падает до публикации.
-- Локальный release pipeline по-прежнему требует полный набор signed assets (`setup`, `updater`, `zip`, `checksums`, `manifest`) и после публикации сверяет их фактическое наличие на GitHub Release, чтобы updater не ломался из-за неполного релизного набора.
+- Локальный release pipeline по-прежнему требует полный набор signed assets (`setup`, `updater`, `zip`, `checksums`, `manifest`) и после публикации сверяет их фактическое наличие на GitHub Release, причём quiet-вызов `gh release view` теперь корректно возвращает список assets вместо ложного `missing assets` после уже успешной загрузки.
 
 ## 1.0.8 — фикс нативной совместимости Amnezia и выравнивание VPN UI
 
