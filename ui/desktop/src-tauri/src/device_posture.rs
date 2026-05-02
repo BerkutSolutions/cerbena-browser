@@ -238,8 +238,11 @@ fn suspicious_processes(process_names: &[String]) -> Vec<String> {
 fn enumerate_process_names() -> Result<Vec<String>, String> {
     #[cfg(target_os = "windows")]
     {
-        let output = std::process::Command::new("tasklist")
-            .args(["/fo", "csv", "/nh"])
+        let mut command = std::process::Command::new("tasklist");
+        command.args(["/fo", "csv", "/nh"]);
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+        let output = command
             .output()
             .map_err(|e| format!("tasklist failed: {e}"))?;
         if !output.status.success() {

@@ -1087,13 +1087,22 @@ internal static class CerbenaInstallerProgram
     private static System.Collections.Generic.List<Process> FindRunningProductProcesses(string installRoot)
     {
         var matches = new System.Collections.Generic.List<Process>();
+        var currentProcessId = Process.GetCurrentProcess().Id;
         foreach (var process in Process.GetProcesses())
         {
             try
             {
+                if (process.Id == currentProcessId)
+                {
+                    continue;
+                }
                 var module = process.MainModule;
                 var path = module != null ? module.FileName : null;
                 if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+                if (string.Equals(path, Application.ExecutablePath, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }

@@ -17,6 +17,20 @@ use zip::ZipArchive;
 
 use crate::state::AppState;
 
+fn hidden_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+}
+
+fn escape_powershell_single_quoted(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
 const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Cerbena/",
     env!("CARGO_PKG_VERSION"),
@@ -900,14 +914,22 @@ fn safe_archive_join(target_dir: &Path, relative: &Path) -> Result<PathBuf, Stri
 fn extract_msi(msi_path: &Path, target_dir: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let mut command = Command::new("msiexec.exe");
-        command.arg("/a");
-        command.arg(msi_path);
-        command.arg("/qn");
-        command.arg(format!("TARGETDIR={}", target_dir.display()));
+        let msi = escape_powershell_single_quoted(&msi_path.to_string_lossy());
+        let target = escape_powershell_single_quoted(&target_dir.to_string_lossy());
+        let script = format!(
+            "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/a', '{msi}', 'TARGETDIR={target}', '/quiet', '/norestart') -WindowStyle Hidden -PassThru -Wait; exit $p.ExitCode"
+        );
+        let mut command = hidden_command("powershell.exe");
+        command
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-Command")
+            .arg(script);
         let output = command
             .output()
-            .map_err(|e| format!("start msiexec administrative extract: {e}"))?;
+            .map_err(|e| format!("start hidden msiexec administrative extract: {e}"))?;
         if output.status.success() {
             return Ok(());
         }
@@ -980,7 +1002,7 @@ fn find_file_recursive(root: &Path, file_name: &str) -> Option<PathBuf> {
 }
 
 fn can_spawn(binary: &str, probe_arg: &str) -> bool {
-    Command::new(binary)
+    hidden_command(binary)
         .arg(probe_arg)
         .output()
         .map(|output| {

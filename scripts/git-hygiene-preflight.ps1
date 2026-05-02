@@ -152,7 +152,6 @@ try {
             "scripts/generate-release-artifacts.ps1",
             "scripts/git-hygiene-preflight.ps1",
             "scripts/local-ci-preflight.ps1",
-            "scripts/release.ps1",
             "scripts/security-gates-preflight.ps1",
             "scripts/vulnerability-gates-preflight.ps1"
         )) {

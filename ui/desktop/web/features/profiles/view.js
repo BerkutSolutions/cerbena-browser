@@ -390,14 +390,6 @@ function buildDomainEntries(allowDomains, denyDomains) {
   ];
 }
 
-function selectedBlocklistSummary(selectedIds, globalSecurity, t) {
-  if (!selectedIds.length) return t("dns.blocklistsNone");
-  const options = globalBlocklistOptions(globalSecurity);
-  return selectedIds
-    .map((id) => options.find((item) => item.id === id)?.label ?? id)
-    .join(", ");
-}
-
 function normalizeRouteTemplateNodes(template) {
   if (Array.isArray(template?.nodes) && template.nodes.length) {
     return template.nodes.map((node, index) => ({
@@ -542,15 +534,73 @@ function compatibleSandboxModeOptions(modes, selectedMode, t) {
     .join("");
 }
 
-function renderProfileSandboxFrame(preview, selectedTemplate, t) {
+function formatProfileSandboxReason(reason, sandbox, adapter, selectedTemplate, t) {
+  const value = String(reason || "").trim();
+  if (!value) {
+    return t("network.sandbox.unknown");
+  }
+  const activeRoute = profileRouteSummary(selectedTemplate, t);
+  const exactMap = {
+    "Template is compatible with isolated userspace runtime": "network.sandbox.reason.userspaceCompatible",
+    "Profile is pinned to compatibility-native mode": "network.sandbox.reason.compatibilityPinned",
+    "Legacy profile was auto-adapted to compatibility-native mode": "network.sandbox.reason.legacyMigrated",
+    "Global sandbox policy allows compatibility-native fallback": "network.sandbox.reason.globalCompatibilityFallback",
+    "This Amnezia profile requires a machine-wide compatibility backend; isolated mode forbids that path": "network.sandbox.reason.isolatedBlockedByNative",
+    "Container sandbox mode is selected; launcher will validate the host runtime and per-profile sandbox capacity during launch": "network.sandbox.reason.containerSelected",
+    "Docker Desktop container runtime is available and can build a profile-scoped isolated route helper on first launch": "network.sandbox.reason.containerReady",
+    "Selected route is not compatible with container isolation yet": "network.sandbox.reason.containerUnsupported"
+  };
+  if (exactMap[value]) {
+    return t(exactMap[value])
+      .replace("{route}", activeRoute)
+      .replace("{mode}", sandboxModeLabel(sandbox?.requestedMode || "auto", t));
+  }
+  const capacityMatch = value.match(/Container sandbox capacity is exhausted \((\d+)\/(\d+) active\)/i);
+  if (capacityMatch) {
+    return t("network.sandbox.reason.containerCapacity")
+      .replace("{active}", capacityMatch[1])
+      .replace("{max}", capacityMatch[2]);
+  }
+  if (value.startsWith("container runtime probe failed:")) {
+    return t("network.sandbox.reason.containerProbeFailed");
+  }
+  if (value.startsWith("docker runtime is not installed or not reachable:")) {
+    return t("network.sandbox.reason.containerRuntimeMissing");
+  }
+  if (value === "No resolved strategy yet") {
+    return t("network.sandbox.unknown");
+  }
+  if (sandbox?.effectiveMode === "container" && !adapter?.available) {
+    return t("network.sandbox.reason.containerProbeFailed");
+  }
+  return value;
+}
+
+function renderProfileSandboxFrame(preview, selectedTemplate, selectedModeOverride, t) {
   if (!selectedTemplate || !preview?.sandbox || !(preview.compatibleModes ?? []).length) {
     return "";
   }
   const sandbox = preview.sandbox;
   const adapter = sandbox.adapter ?? {};
-  const selectedMode = (sandbox.preferredMode && (preview.compatibleModes ?? []).includes(sandbox.preferredMode))
+  const selectedMode = (selectedModeOverride && (preview.compatibleModes ?? []).includes(selectedModeOverride))
+    ? selectedModeOverride
+    : (sandbox.preferredMode && (preview.compatibleModes ?? []).includes(sandbox.preferredMode))
     ? sandbox.preferredMode
     : (preview.compatibleModes?.includes(sandbox.effectiveMode) ? sandbox.effectiveMode : preview.compatibleModes?.[0] ?? "isolated");
+  const sandboxReason = formatProfileSandboxReason(
+    adapter.reason || sandbox.lastResolutionReason,
+    sandbox,
+    adapter,
+    selectedTemplate,
+    t
+  );
+  const nativeWarning = sandbox.effectiveMode === "blocked"
+    ? ""
+    : adapter.requiresSystemNetworkAccess
+      ? `<p class="notice error">${t("network.sandbox.nativeWarning")}</p>`
+      : sandbox.requiresNativeBackend && sandbox.effectiveMode === "container"
+        ? `<p class="notice success">${t("network.sandbox.containerNativeIsolated")}</p>`
+        : `<p class="meta">${t("network.sandbox.isolatedHint")}</p>`;
   return `
     <div class="security-frame" id="profile-sandbox-frame">
       <h4>${t("network.sandbox.title")}</h4>
@@ -577,6 +627,11 @@ function renderProfileSandboxFrame(preview, selectedTemplate, t) {
           ${compatibleSandboxModeOptions(preview.compatibleModes, selectedMode, t)}
         </select>
       </label>
+      <p class="meta" style="margin-top:8px;">${escapeHtml(sandboxReason)}</p>
+      ${nativeWarning}
+      ${adapter.requiresSystemNetworkAccess ? `<p class="notice error">${t("network.sandbox.systemWideWarning")}</p>` : ""}
+      ${sandbox.effectiveMode === "container" ? `<p class="notice">${t("network.sandbox.containerMvp")}</p>` : ""}
+      ${sandbox.effectiveMode === "blocked" ? `<p class="notice error">${t("network.sandbox.blockedHint").replace("{route}", profileRouteSummary(selectedTemplate, t))}</p>` : ""}
     </div>
   `;
 }
@@ -742,8 +797,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
               <h4>${t("profile.dns.blocklists")}</h4>
               <div class="dns-dropdown profile-blocklist-dropdown">
                 <button type="button" class="dns-dropdown-toggle" id="profile-blocklists-toggle">
-                  <input type="checkbox" tabindex="-1" ${selectedBlocklists.length ? "checked" : ""} />
-                  <span id="profile-blocklists-summary">${escapeHtml(selectedBlocklistSummary(selectedBlocklists, globalSecurity, t))}</span>
+                  <span id="profile-blocklists-summary">${t("profile.dns.selectBlocklists")}</span>
                 </button>
                 <div class="dns-dropdown-menu hidden profile-blocklists-menu" id="profile-blocklists-menu">
                   <input id="profile-blocklists-search" placeholder="${t("dns.searchPlaceholder")}" />
@@ -1325,14 +1379,17 @@ async function openProfileModal(root, model, rerender, t, existing) {
   const profileSandboxSlot = overlay.querySelector("#profile-sandbox-frame-slot");
   let profileSandboxPreview = null;
   let initialSandboxMode = null;
+  let draftSandboxMode = null;
   const selectedRouteTemplateFromForm = () => {
     const routeTemplateId = profileRouteTemplate?.value || "";
     return (profileNetworkState.connectionTemplates ?? []).find((item) => item.id === routeTemplateId) ?? null;
   };
   const bindProfileSandboxSelect = () => {
     const select = overlay.querySelector("#profile-sandbox-mode");
-    select?.addEventListener("change", () => {
+    select?.addEventListener("change", async () => {
       dirty = true;
+      draftSandboxMode = select.value || null;
+      await refreshProfileSandboxFrame();
     });
   };
   const refreshProfileSandboxFrame = async () => {
@@ -1346,7 +1403,8 @@ async function openProfileModal(root, model, rerender, t, existing) {
       return;
     }
     const preferredMode =
-      overlay.querySelector("#profile-sandbox-mode")?.value
+      draftSandboxMode
+      || overlay.querySelector("#profile-sandbox-mode")?.value
       || profileNetworkState.sandbox?.preferredMode
       || null;
     const previewResult = await previewNetworkSandboxSettings({
@@ -1367,7 +1425,15 @@ async function openProfileModal(root, model, rerender, t, existing) {
         || profileSandboxPreview.compatibleModes?.[0]
         || null;
     }
-    profileSandboxSlot.innerHTML = renderProfileSandboxFrame(profileSandboxPreview, selectedTemplate, t);
+    if (!draftSandboxMode) {
+      draftSandboxMode = preferredMode || initialSandboxMode;
+    }
+    profileSandboxSlot.innerHTML = renderProfileSandboxFrame(
+      profileSandboxPreview,
+      selectedTemplate,
+      draftSandboxMode,
+      t
+    );
     bindProfileSandboxSelect();
   };
   const refreshRouteTemplateOptions = () => {
@@ -1404,12 +1470,14 @@ async function openProfileModal(root, model, rerender, t, existing) {
   profileRouteMode?.addEventListener("change", async () => {
     dirty = true;
     initialSandboxMode = null;
+    draftSandboxMode = null;
     refreshRouteTemplateOptions();
     await refreshProfileSandboxFrame();
   });
   profileRouteTemplate?.addEventListener("change", async () => {
     dirty = true;
     initialSandboxMode = null;
+    draftSandboxMode = null;
     await refreshProfileSandboxFrame();
   });
   const profileDnsModeField = overlay.querySelector("#profile-dns-mode");
@@ -1800,14 +1868,6 @@ async function openProfileModal(root, model, rerender, t, existing) {
     }
   };
   const renderBlocklistSummary = () => {
-    const summaryEl = overlay.querySelector("#profile-blocklists-summary");
-    if (summaryEl) {
-      summaryEl.textContent = selectedBlocklistSummary([...blocklistState], globalSecurity, t);
-    }
-    const toggleCheckbox = overlay.querySelector("#profile-blocklists-toggle input[type='checkbox']");
-    if (toggleCheckbox) {
-      toggleCheckbox.checked = blocklistState.size > 0;
-    }
     for (const checkbox of overlay.querySelectorAll("[data-profile-blocklist-id]")) {
       const id = checkbox.getAttribute("data-profile-blocklist-id");
       checkbox.checked = blocklistState.has(id) || globalActiveBlocklistIds.has(id);

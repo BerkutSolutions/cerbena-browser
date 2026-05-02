@@ -93,7 +93,16 @@ try {
             $networkName = "cerbena-preflight-" + [Guid]::NewGuid().ToString("N")
             $networkCreated = $false
             try {
-                Invoke-Native "docker" @("network", "create", $networkName) -Quiet:$CompactOutput | Out-Null
+                try {
+                    Invoke-Native "docker" @("network", "create", $networkName) -Quiet:$CompactOutput | Out-Null
+                } catch {
+                    $message = $_.Exception.Message
+                    if ($message -match "could not find plugin bridge" -or $message -match "plugin not found") {
+                        Write-Warning "Skipping managed Docker network probe because the current Docker runner does not expose the bridge network plugin."
+                        return
+                    }
+                    throw
+                }
                 $networkCreated = $true
                 $networks = Invoke-Native "docker" @("network", "ls", "--format", "{{.Name}}") -Quiet:$CompactOutput
                 if (-not ($networks -split "`r?`n" | Where-Object { $_ -eq $networkName })) {

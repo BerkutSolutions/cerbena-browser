@@ -143,9 +143,11 @@ pub fn stop_all_profile_processes(app_handle: &AppHandle) {
 pub fn terminate_process_tree(pid: u32) {
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status();
+        let mut command = Command::new("taskkill");
+        command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+        let _ = command.status();
     }
 
     #[cfg(not(target_os = "windows"))]

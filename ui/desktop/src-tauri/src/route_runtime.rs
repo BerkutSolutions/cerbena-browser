@@ -34,6 +34,16 @@ use crate::{
     state::AppState,
 };
 
+fn hidden_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+}
+
 #[derive(Debug, Default)]
 pub struct RouteRuntimeState {
     pub sessions: BTreeMap<String, RouteRuntimeSession>,
@@ -591,13 +601,8 @@ pub fn ensure_profile_route_runtime(
         .to_string_lossy()
         .to_string();
     run_sing_box_check(&binary, &config_path, &sing_box_log_path)?;
-    let mut command = Command::new(&binary);
+    let mut command = hidden_command(&binary);
     command.arg("run").arg("-c").arg(&config_path);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
     let mut child = command
         .spawn()
         .map_err(|e| format!("spawn sing-box route runtime failed: {e}"))?;
@@ -1089,7 +1094,7 @@ fn start_amnezia_tunnel_service(tunnel_name: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let service_name = format!("AmneziaWGTunnel${tunnel_name}");
-        let output = Command::new("sc.exe")
+        let output = hidden_command("sc.exe")
             .arg("start")
             .arg(&service_name)
             .output()
@@ -1123,7 +1128,7 @@ fn stop_amnezia_tunnel_service(tunnel_name: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let service_name = format!("AmneziaWGTunnel${tunnel_name}");
-        let output = Command::new("sc.exe")
+        let output = hidden_command("sc.exe")
             .arg("stop")
             .arg(&service_name)
             .output()
@@ -1159,7 +1164,7 @@ fn delete_amnezia_tunnel_service(tunnel_name: &str) -> Result<(), String> {
     {
         let service_name = amnezia_service_name(tunnel_name);
         let args = vec!["delete".to_string(), service_name.clone()];
-        let output = Command::new("sc")
+        let output = hidden_command("sc")
             .arg("delete")
             .arg(&service_name)
             .output()
@@ -1362,7 +1367,7 @@ fn query_amnezia_tunnel_service(tunnel_name: &str) -> AmneziaServiceSnapshot {
     #[cfg(target_os = "windows")]
     {
         let service_name = amnezia_service_name(tunnel_name);
-        let output = Command::new("sc.exe")
+        let output = hidden_command("sc.exe")
             .arg("query")
             .arg(&service_name)
             .output();
@@ -1480,7 +1485,7 @@ fn launch_openvpn_runtime(
     fs::write(&config_path, config_text).map_err(|e| format!("write openvpn config: {e}"))?;
     let _ = fs::remove_file(&log_path);
 
-    let mut command = Command::new(binary);
+    let mut command = hidden_command(binary);
     command
         .arg("--config")
         .arg(&config_path)
@@ -1489,11 +1494,6 @@ fn launch_openvpn_runtime(
         .arg("--log")
         .arg(&log_path)
         .arg("--suppress-timestamps");
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
     let mut child = command
         .spawn()
         .map_err(|e| format!("spawn openvpn runtime failed: {e}"))?;
@@ -1733,7 +1733,7 @@ fn run_sing_box_check(
     config_path: &PathBuf,
     log_path: &PathBuf,
 ) -> Result<(), String> {
-    let output = Command::new(binary)
+    let output = hidden_command(binary)
         .arg("check")
         .arg("-c")
         .arg(config_path)
@@ -2525,7 +2525,7 @@ fn is_amnezia_native_only_key(key: &str) -> bool {
 fn terminate_pid(pid: u32) {
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("taskkill")
+        let _ = hidden_command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .status();
     }
@@ -2538,7 +2538,7 @@ fn terminate_pid(pid: u32) {
 }
 
 fn is_container_runtime_active(container_name: &str) -> bool {
-    Command::new("docker")
+    hidden_command("docker")
         .args([
             "inspect",
             "--format",

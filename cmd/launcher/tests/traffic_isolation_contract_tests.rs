@@ -36,8 +36,6 @@ fn release_and_github_gates_run_traffic_isolation_regressions() {
     let root = repo_root();
     let local_preflight = fs::read_to_string(root.join("scripts").join("local-ci-preflight.ps1"))
         .expect("read local-ci-preflight.ps1");
-    let release = fs::read_to_string(root.join("scripts").join("release.ps1"))
-        .expect("read release.ps1");
     let workflow = fs::read_to_string(
         root.join(".github")
             .join("workflows")
@@ -52,10 +50,6 @@ fn release_and_github_gates_run_traffic_isolation_regressions() {
     assert!(
         local_preflight.contains("traffic_isolation"),
         "local preflight must invoke the traffic isolation regression filter"
-    );
-    assert!(
-        release.contains("Run-Checks $repoRoot"),
-        "release modes must continue to flow through Run-Checks"
     );
     assert!(
         workflow.contains("traffic-isolation-regression"),

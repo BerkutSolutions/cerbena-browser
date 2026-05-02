@@ -11,6 +11,16 @@ use crate::state::AppState;
 
 const CONTAINER_NETWORK_PREFIX: &str = "cerbena-profile-";
 
+fn docker_command() -> Command {
+    let mut command = Command::new("docker");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerSandboxRuntimeProbe {
@@ -78,7 +88,7 @@ pub fn ensure_profile_container_environment(
         ));
     }
     let network_name = container_network_name(profile_id);
-    let inspect = Command::new("docker")
+    let inspect = docker_command()
         .args(["network", "inspect", &network_name])
         .output()
         .map_err(|e| format!("inspect container sandbox network: {e}"))?;
@@ -86,7 +96,7 @@ pub fn ensure_profile_container_environment(
         return Ok(network_name);
     }
     let profile_label = format!("cerbena.profile_id={profile_id}");
-    let create = Command::new("docker")
+    let create = docker_command()
         .args([
             "network",
             "create",
@@ -112,7 +122,7 @@ pub fn ensure_profile_container_environment(
 
 pub fn remove_profile_container_environment(_app_handle: &AppHandle, profile_id: Uuid) {
     let network_name = container_network_name(profile_id);
-    let remove = Command::new("docker")
+    let remove = docker_command()
         .args(["network", "rm", &network_name])
         .output();
     if let Ok(output) = remove {
@@ -132,7 +142,7 @@ pub fn cleanup_stale_container_environments(
     app_handle: &AppHandle,
     active_profiles: &BTreeSet<Uuid>,
 ) {
-    let output = match Command::new("docker")
+    let output = match docker_command()
         .args(["network", "ls", "--format", "{{.Name}}"])
         .output()
     {
@@ -205,7 +215,7 @@ struct DockerVersionDetails {
 }
 
 fn docker_version_details() -> Result<DockerVersionDetails, String> {
-    let output = Command::new("docker")
+    let output = docker_command()
         .arg("version")
         .output()
         .map_err(|e| format!("docker runtime is not installed or not reachable: {e}"))?;

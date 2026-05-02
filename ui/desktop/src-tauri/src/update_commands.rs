@@ -39,7 +39,7 @@ const UPDATER_STEP_CHECKSUM: &str = "checksum";
 const UPDATER_STEP_INSTALL: &str = "install";
 const UPDATER_STEP_RELAUNCH: &str = "relaunch";
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUpdateStore {
     #[serde(default)]
@@ -68,6 +68,26 @@ pub struct AppUpdateStore {
     pub pending_apply_on_exit: bool,
     #[serde(default)]
     pub updater_handoff_version: Option<String>,
+}
+
+impl Default for AppUpdateStore {
+    fn default() -> Self {
+        Self {
+            auto_update_enabled: true,
+            last_checked_at: None,
+            last_checked_epoch_ms: None,
+            latest_version: None,
+            release_url: None,
+            has_update: false,
+            status: String::new(),
+            last_error: None,
+            staged_version: None,
+            staged_asset_name: None,
+            staged_asset_path: None,
+            pending_apply_on_exit: false,
+            updater_handoff_version: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

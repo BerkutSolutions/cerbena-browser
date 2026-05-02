@@ -32,7 +32,7 @@ const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.7-2";
+const APP_VERSION = "1.0.8";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";
@@ -384,6 +384,35 @@ function renderProfileLaunchOverlay(i18n, model) {
   `;
 }
 
+function renderAppLifecycleOverlay(i18n, model) {
+  const overlay = model.appLifecycleOverlay;
+  if (!overlay) return "";
+  const title = i18n.t(overlay.titleKey);
+  const subtitle = overlay.subtitleKey ? i18n.t(overlay.subtitleKey) : "";
+  const stageText = overlay.messageKey ? i18n.t(overlay.messageKey) : "";
+  return `
+    <div class="profile-launch-overlay app-lifecycle-overlay" aria-live="polite">
+      <div class="profile-launch-card app-lifecycle-card">
+        <div class="profile-launch-spinner" aria-hidden="true"></div>
+        <div class="profile-launch-copy">
+          <strong>${title}</strong>
+          <span>${subtitle}</span>
+          <p>${stageText}</p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderStandaloneLifecycleOverlay(i18n, overlay) {
+  const model = { appLifecycleOverlay: overlay };
+  return `
+    <div class="app-lifecycle-shell">
+      ${renderAppLifecycleOverlay(i18n, model)}
+    </div>
+  `;
+}
+
 function renderApp(root, state, i18n, model) {
   if (isPanicFrameOverlay()) {
     document.body.classList.add("panic-overlay-mode");
@@ -437,6 +466,7 @@ function renderApp(root, state, i18n, model) {
     ${renderLinkLaunchModal(i18n.t, model)}
     ${renderPanicModal(i18n, model)}
     ${renderProfileLaunchOverlay(i18n, model)}
+    ${renderAppLifecycleOverlay(i18n, model)}
   `;
 
   document.body.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
@@ -674,7 +704,8 @@ async function bootstrap() {
     settingsProvider: "duckduckgo",
     linkRoutingOverview: null,
     linkLaunchModal: null,
-    panicUi: null
+    panicUi: null,
+    appLifecycleOverlay: null
   };
 
   state.locale = i18n.getLocale();
@@ -742,6 +773,7 @@ async function bootstrap() {
   const listen = getListen();
   let unlistenProfileState = null;
   let unlistenProfileLaunchProgress = null;
+  let unlistenAppLifecycleProgress = null;
   if (listen) {
     unlistenProfileState = await listen("profile-state-changed", async (event) => {
       const payload = event.payload ?? {};
@@ -780,6 +812,29 @@ async function bootstrap() {
       }
       await rerender();
     });
+    unlistenAppLifecycleProgress = await listen("app-lifecycle-progress", async (event) => {
+      if (isPanicFrameOverlay()) return;
+      const payload = event.payload ?? {};
+      const phase = payload.phase === "shutdown" ? "shutdown" : "startup";
+      if (phase !== "shutdown") {
+        return;
+      }
+      model.appLifecycleOverlay = {
+        phase,
+        titleKey:
+          phase === "shutdown"
+            ? "app.lifecycle.shutdown.title"
+            : "app.lifecycle.startup.title",
+        subtitleKey:
+          phase === "shutdown"
+            ? "app.lifecycle.shutdown.subtitle"
+            : "app.lifecycle.startup.subtitle",
+        messageKey:
+          payload.messageKey ??
+          "app.lifecycle.shutdown.handoff"
+      };
+      await rerender({ refreshProfiles: false, refreshFeature: false });
+    });
     await listen("traffic-gateway-event", async (event) => {
       if (isPanicFrameOverlay()) return;
       if (!applyHomeMetricEntry(model, event.payload ?? {})) return;
@@ -802,9 +857,10 @@ async function bootstrap() {
   window.addEventListener("resize", () => bus.emit("window:resized"));
   window.addEventListener("beforeunload", () => {
     teardownEngineDownloads?.();
-    teardownDnsBlocklists?.();
-    try {
-      if (model.networkPingPoller) {
+      teardownDnsBlocklists?.();
+      unlistenAppLifecycleProgress?.();
+      try {
+        if (model.networkPingPoller) {
         clearInterval(model.networkPingPoller);
         model.networkPingPoller = null;
       }
@@ -857,6 +913,14 @@ function wire(root, bus, state, model, rerender, i18n) {
   });
   root.querySelector("#window-close")?.addEventListener("click", async () => {
     try {
+      model.appLifecycleOverlay = {
+        phase: "shutdown",
+        titleKey: "app.lifecycle.shutdown.title",
+        subtitleKey: "app.lifecycle.shutdown.subtitle",
+        messageKey: "app.lifecycle.shutdown.handoff"
+      };
+      renderApp(root, state, i18n, model);
+      wire(root, bus, state, model, rerender, i18n);
       await closeWindow();
     } catch (error) {
       log.error("window close failed", String(error));

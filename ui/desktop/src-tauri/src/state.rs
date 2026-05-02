@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::AtomicBool,
+        Arc, Mutex,
+    },
 };
 
 use browser_api_local::{
@@ -194,6 +197,7 @@ pub struct AppState {
     pub active_engine_downloads: Mutex<BTreeSet<String>>,
     pub cancelled_engine_downloads: Arc<Mutex<BTreeSet<String>>>,
     pub active_network_downloads: Mutex<BTreeSet<String>>,
+    pub shutdown_cleanup_started: AtomicBool,
     pub network_sandbox_store: Mutex<NetworkSandboxStore>,
     pub network_sandbox_lifecycle: Mutex<NetworkSandboxLifecycleState>,
     pub route_runtime: Mutex<RouteRuntimeState>,
@@ -282,6 +286,7 @@ impl AppState {
             active_engine_downloads: Mutex::new(BTreeSet::new()),
             cancelled_engine_downloads: Arc::new(Mutex::new(BTreeSet::new())),
             active_network_downloads: Mutex::new(BTreeSet::new()),
+            shutdown_cleanup_started: AtomicBool::new(false),
             network_sandbox_store: Mutex::new(network_sandbox_store),
             network_sandbox_lifecycle: Mutex::new(NetworkSandboxLifecycleState::default()),
             route_runtime: Mutex::new(RouteRuntimeState::default()),

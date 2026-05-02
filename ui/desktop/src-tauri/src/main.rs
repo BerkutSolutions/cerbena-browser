@@ -4,6 +4,7 @@ mod device_posture;
 mod envelope;
 mod extensions_commands;
 mod identity_commands;
+mod install_registration;
 mod keepassxc_bridge;
 mod launch_sessions;
 mod launcher_commands;
@@ -48,13 +49,11 @@ fn main() {
                 return;
             }
             if let WindowEvent::CloseRequested { .. } = event {
-                update_commands::launch_pending_update_on_exit(&window.app_handle());
                 if update_commands::active_updater_launch_mode().is_active() {
+                    update_commands::launch_pending_update_on_exit(&window.app_handle());
                     return;
                 }
-                process_tracking::stop_all_profile_processes(&window.app_handle());
-                network_sandbox_lifecycle::stop_all_profile_network_stacks(&window.app_handle());
-                network_sandbox_lifecycle::cleanup_network_sandbox_janitor(&window.app_handle());
+                window_commands::perform_shutdown_cleanup(&window.app_handle());
             }
         })
         .on_page_load(|window, payload| {
@@ -104,7 +103,27 @@ fn main() {
                 }
             }
             app.manage(state);
-            network_sandbox_lifecycle::cleanup_network_sandbox_janitor(app.handle());
+            install_registration::reconcile_install_registration(app.handle());
+            {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    window_commands::emit_app_lifecycle_progress(
+                        &app_handle,
+                        "startup",
+                        "janitor",
+                        "app.lifecycle.startup.janitor",
+                        false,
+                    );
+                    network_sandbox_lifecycle::cleanup_network_sandbox_janitor(&app_handle);
+                    window_commands::emit_app_lifecycle_progress(
+                        &app_handle,
+                        "startup",
+                        "janitor",
+                        "app.lifecycle.startup.ready",
+                        true,
+                    );
+                });
+            }
             if updater_launch_mode.is_active() {
                 let state = app.state::<AppState>();
                 let _ = update_commands::ensure_updater_flow_started(&state);

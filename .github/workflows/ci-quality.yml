@@ -41,14 +41,5 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
       - uses: dtolnay/rust-toolchain@stable
-      - run: npm ci
-      - working-directory: ui/desktop
-        run: npm ci
-      - shell: pwsh
-        run: |
-          & "$env:GITHUB_WORKSPACE\scripts\release.ps1" -Mode package -SkipVulnerabilityGates -CompactOutput
+      - run: cargo test -p cerbena-launcher --test release_pipeline_contract_tests

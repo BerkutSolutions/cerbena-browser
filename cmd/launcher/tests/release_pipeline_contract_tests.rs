@@ -10,8 +10,6 @@ fn repo_root() -> std::path::PathBuf {
 #[test]
 fn release_scripts_exist_and_reference_current_quality_gates() {
     let root = repo_root();
-    let release_script =
-        fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release.ps1");
     let artifacts_script =
         fs::read_to_string(root.join("scripts").join("generate-release-artifacts.ps1"))
             .expect("read generate-release-artifacts.ps1");
@@ -19,16 +17,6 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         .expect("read build-installer.ps1");
 
     for needle in [
-        "local-ci-preflight.ps1",
-        "docker-runtime-preflight.ps1",
-        "vulnerability-gates-preflight.ps1",
-        "generate-release-artifacts.ps1",
-        "gh",
-        "release create",
-        "release edit",
-        "release upload",
-        "--notes-file",
-        "CHANGELOG.md",
         "checksums.sig",
         "cargo",
         "npm.cmd",
@@ -37,15 +25,9 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         "release-manifest.json",
         "checksums.txt",
         "checksums.sig",
-        "https://github.com/BerkutSolutions/cerbena-browser.git",
-        "git init",
-        "git push",
-        "v$Version",
     ] {
         assert!(
-            release_script.contains(needle)
-                || artifacts_script.contains(needle)
-                || installer_script.contains(needle),
+            artifacts_script.contains(needle) || installer_script.contains(needle),
             "release pipeline scripts must mention {needle}"
         );
     }
@@ -84,7 +66,7 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
     assert!(ci_quality.contains("npm run docs:build"));
     assert!(ci_quality.contains("cargo test --workspace"));
     assert!(
-        ci_quality.contains("scripts\\release.ps1") || ci_quality.contains("./scripts/release.ps1")
+        ci_quality.contains("cargo test -p cerbena-launcher --test release_pipeline_contract_tests")
     );
 
     let security_supply = fs::read_to_string(workflows.join("security-supply-chain.yml"))

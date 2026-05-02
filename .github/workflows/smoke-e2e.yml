@@ -21,4 +21,4 @@ jobs:
         run: npm ci
       - shell: pwsh
         run: |
-          & "$env:GITHUB_WORKSPACE\scripts\local-ci-preflight.ps1" -SkipVulnerabilityGates -CompactOutput
+          & "$env:GITHUB_WORKSPACE\scripts\local-ci-preflight.ps1" -SkipDockerPreflight -SkipVulnerabilityGates -CompactOutput

@@ -21,6 +21,16 @@ const CONTAINER_MEMORY_LIMIT: &str = "192m";
 const CONTAINER_CPU_LIMIT: &str = "1.0";
 const CONTAINER_PIDS_LIMIT: &str = "128";
 
+fn docker_command() -> Command {
+    let mut command = Command::new("docker");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+}
+
 const CONTAINER_DOCKERFILE: &str =
     include_str!("../runtime/network-sandbox-container/Dockerfile");
 const CONTAINER_ENTRYPOINT: &str =
@@ -92,7 +102,7 @@ pub fn launch_sing_box_container_runtime(
     let _ = fs::remove_file(&log_path);
     fs::File::create(&log_path).map_err(|e| format!("create container sing-box log file: {e}"))?;
 
-    let run_output = Command::new("docker")
+    let run_output = docker_command()
         .args([
             "run",
             "--detach",
@@ -188,7 +198,7 @@ pub fn launch_openvpn_container_runtime(
     let _ = fs::remove_file(&log_path);
     fs::File::create(&log_path).map_err(|e| format!("create container openvpn log file: {e}"))?;
 
-    let run_output = Command::new("docker")
+    let run_output = docker_command()
         .args([
             "run",
             "--detach",
@@ -298,7 +308,7 @@ pub fn launch_amnezia_container_runtime(
     let config_mount = format!("{}:/work/amnezia.conf:ro", config_path.display());
     let log_mount = format!("{}:/work/route.log", log_path.display());
     let publish = format!("127.0.0.1:{host_proxy_port}:{CONTAINER_PROXY_PORT}");
-    let run_output = Command::new("docker")
+    let run_output = docker_command()
         .args([
             "run",
             "--detach",
@@ -368,7 +378,7 @@ pub fn launch_amnezia_container_runtime(
 }
 
 pub fn stop_container_runtime(container_name: &str) {
-    let _ = Command::new("docker")
+    let _ = docker_command()
         .args(["rm", "-f", container_name])
         .output();
 }
@@ -377,7 +387,7 @@ pub fn cleanup_stale_container_route_runtimes(
     _app_handle: &AppHandle,
     active_profile_ids: &std::collections::BTreeSet<Uuid>,
 ) {
-    let output = match Command::new("docker")
+    let output = match docker_command()
         .args([
             "ps",
             "-a",
@@ -422,7 +432,7 @@ fn ensure_container_helper_image(app_handle: &AppHandle) -> Result<String, Strin
         .join("container-sandbox")
         .join(CONTAINER_IMAGE_REVISION);
     write_container_build_context(&context_dir)?;
-    let build_output = Command::new("docker")
+    let build_output = docker_command()
         .args([
             "build",
             "--tag",
@@ -441,7 +451,7 @@ fn ensure_container_helper_image(app_handle: &AppHandle) -> Result<String, Strin
 }
 
 fn docker_image_exists(tag: &str) -> bool {
-    Command::new("docker")
+    docker_command()
         .args(["image", "inspect", tag])
         .output()
         .map(|output| output.status.success())
@@ -531,7 +541,7 @@ fn wait_for_container_proxy(
 }
 
 fn is_container_running(container_name: &str) -> bool {
-    Command::new("docker")
+    docker_command()
         .args([
             "inspect",
             "--format",
@@ -547,7 +557,7 @@ fn is_container_running(container_name: &str) -> bool {
 }
 
 fn container_logs(container_name: &str) -> String {
-    Command::new("docker")
+    docker_command()
         .args(["logs", "--tail", "50", container_name])
         .output()
         .ok()
