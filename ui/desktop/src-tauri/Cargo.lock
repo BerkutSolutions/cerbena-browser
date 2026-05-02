@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "browser-api-local"
-version = "1.0.6-2"
+version = "1.0.7"
 dependencies = [
  "browser-network-policy",
  "browser-profile",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "browser-desktop-ui"
-version = "1.0.6-2"
+version = "1.0.7"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "browser-engine"
-version = "1.0.6-2"
+version = "1.0.7"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "browser-extensions"
-version = "1.0.6-2"
+version = "1.0.7"
 dependencies = [
  "browser-network-policy",
  "serde",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "browser-fingerprint"
-version = "1.0.6-2"
+version = "1.0.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "browser-import-export"
-version = "1.0.6-2"
+version = "1.0.7"
 dependencies = [
  "base64 0.22.1",
  "browser-profile",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "browser-network-policy"
-version = "1.0.6-2"
+version = "1.0.7"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "browser-profile"
-version = "1.0.6-2"
+version = "1.0.7"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "browser-sync-client"
-version = "1.0.6-2"
+version = "1.0.7"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
