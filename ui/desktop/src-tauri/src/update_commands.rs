@@ -332,15 +332,7 @@ pub fn start_update_scheduler(app: AppHandle) {
             continue;
         }
         let should_run = match state.app_update_store.lock() {
-            Ok(store) => {
-                store.auto_update_enabled
-                    && store
-                        .last_checked_epoch_ms
-                        .map(|value| {
-                            now_epoch_ms().saturating_sub(value) >= UPDATE_CHECK_INTERVAL_MS
-                        })
-                        .unwrap_or(true)
-            }
+            Ok(store) => should_run_auto_update_check(&store),
             Err(_) => false,
         };
         if should_run {
@@ -422,6 +414,14 @@ fn run_updater_flow(state: &AppState, launch_mode: UpdaterLaunchMode) -> Result<
 
 fn should_launch_external_updater(store: &AppUpdateStore, candidate: &ReleaseCandidate) -> bool {
     store.updater_handoff_version.as_deref() != Some(candidate.version.as_str())
+}
+
+fn should_run_auto_update_check(store: &AppUpdateStore) -> bool {
+    store.auto_update_enabled
+        && store
+            .last_checked_epoch_ms
+            .map(|value| now_epoch_ms().saturating_sub(value) >= UPDATE_CHECK_INTERVAL_MS)
+            .unwrap_or(true)
 }
 
 fn spawn_updater_process(app: &AppHandle, mode: UpdaterLaunchMode) -> Result<(), String> {
@@ -1434,8 +1434,8 @@ fn powershell_quote(path: &Path) -> String {
 mod tests {
     use super::{
         asset_rank, can_auto_apply_asset, extract_checksum_for_asset, is_version_newer,
-        normalize_version, pick_release_asset, sha256_hex, signature_verification_variants,
-        GithubReleaseAsset, UpdaterLaunchMode,
+        normalize_version, pick_release_asset, sha256_hex, should_run_auto_update_check,
+        signature_verification_variants, AppUpdateStore, GithubReleaseAsset, UpdaterLaunchMode,
     };
 
     #[test]
@@ -1514,6 +1514,15 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         assert_eq!(variants.len(), 2);
         assert_eq!(variants[0], b"alpha\r\nbeta\r\n");
         assert_eq!(variants[1], b"alpha\nbeta\n");
+    }
+
+    #[test]
+    fn auto_update_scheduler_runs_without_prior_check_when_enabled() {
+        let store = AppUpdateStore {
+            auto_update_enabled: true,
+            ..AppUpdateStore::default()
+        };
+        assert!(should_run_auto_update_check(&store));
     }
 
     #[test]

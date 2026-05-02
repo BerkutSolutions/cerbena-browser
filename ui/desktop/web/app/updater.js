@@ -56,7 +56,7 @@ function render(root, i18n, overview) {
         <div class="updater-version-grid">
           <div class="updater-version-card">
             <span class="meta">${escapeHtml(t("updater.currentVersion"))}</span>
-            <strong>${escapeHtml(overview?.currentVersion || "1.0.4-1")}</strong>
+            <strong>${escapeHtml(overview?.currentVersion || "1.0.5")}</strong>
           </div>
           <div class="updater-version-card">
             <span class="meta">${escapeHtml(t("updater.targetVersion"))}</span>
