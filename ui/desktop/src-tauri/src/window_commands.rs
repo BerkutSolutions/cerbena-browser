@@ -1,6 +1,7 @@
 use tauri::{AppHandle, Manager};
 
 use crate::envelope::{ok, UiEnvelope};
+use crate::update_commands;
 use crate::process_tracking::stop_all_profile_processes;
 use crate::network_sandbox_lifecycle::{
     cleanup_network_sandbox_janitor, stop_all_profile_network_stacks,
@@ -34,6 +35,7 @@ pub fn window_toggle_maximize(
 
 #[tauri::command]
 pub fn window_close(app: AppHandle, correlation_id: String) -> Result<UiEnvelope<bool>, String> {
+    update_commands::launch_pending_update_on_exit(&app);
     stop_all_profile_processes(&app);
     stop_all_profile_network_stacks(&app);
     cleanup_network_sandbox_janitor(&app);

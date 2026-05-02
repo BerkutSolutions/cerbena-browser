@@ -47,11 +47,11 @@ fn main() {
             if window.label() != "main" {
                 return;
             }
-            if update_commands::active_updater_launch_mode().is_active() {
-                return;
-            }
             if let WindowEvent::CloseRequested { .. } = event {
                 update_commands::launch_pending_update_on_exit(&window.app_handle());
+                if update_commands::active_updater_launch_mode().is_active() {
+                    return;
+                }
                 process_tracking::stop_all_profile_processes(&window.app_handle());
                 network_sandbox_lifecycle::stop_all_profile_network_stacks(&window.app_handle());
                 network_sandbox_lifecycle::cleanup_network_sandbox_janitor(&window.app_handle());

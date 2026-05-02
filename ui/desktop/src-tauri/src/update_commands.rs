@@ -144,6 +144,7 @@ pub struct UpdaterOverview {
     pub summary_key: String,
     pub summary_detail: String,
     pub can_close: bool,
+    pub close_label_key: String,
     pub steps: Vec<UpdaterStepView>,
 }
 
@@ -266,6 +267,7 @@ fn updater_overview_template(mode: UpdaterLaunchMode) -> UpdaterOverview {
         },
         summary_detail: String::new(),
         can_close: false,
+        close_label_key: "updater.running".to_string(),
         steps: vec![
             updater_step(UPDATER_STEP_DISCOVER, "updater.steps.discover", "idle"),
             updater_step(UPDATER_STEP_COMPARE, "updater.steps.compare", "idle"),
@@ -393,6 +395,7 @@ pub fn ensure_updater_flow_started(state: &AppState) -> Result<(), String> {
         guard.overview.started_at = Some(now_iso());
         guard.overview.finished_at = None;
         guard.overview.can_close = false;
+        guard.overview.close_label_key = "updater.running".to_string();
         guard.launch_mode
     };
 
@@ -498,9 +501,10 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
         Some(value) => value.to_path_buf(),
         None => return,
     };
+    let relaunch_executable = resolve_relaunch_executable_path(&install_root);
 
     let launched = match extension.as_str() {
-        "zip" => launch_zip_apply_helper(current_pid, &asset_path, &install_root).is_ok(),
+        "zip" => launch_zip_apply_helper(current_pid, &asset_path, &install_root, relaunch_executable.as_deref()).is_ok(),
         "msi" => launch_msi_installer(&asset_path).is_ok(),
         _ => false,
     };
@@ -605,6 +609,7 @@ fn run_preview_updater_flow(state: &AppState) -> Result<(), String> {
         "completed",
         "updater.summary.preview_complete",
         "i18n:updater.detail.preview_complete",
+        "action.close",
     )
 }
 
@@ -652,6 +657,7 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
             "up_to_date",
             "updater.summary.up_to_date",
             "i18n:updater.detail.live_up_to_date",
+            "action.close",
         );
     }
     progress_updater_step(
@@ -731,11 +737,21 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         "done",
         "i18n:updater.detail.live_relaunch_done",
     )?;
+    if can_auto_apply_asset(&asset_name) {
+        return finalize_updater_success(
+            state,
+            "ready_to_restart",
+            "updater.summary.ready_to_restart",
+            "i18n:updater.detail.live_ready_to_restart",
+            "updater.action.reboot",
+        );
+    }
     finalize_updater_success(
         state,
         "completed",
         "updater.summary.complete",
         "i18n:updater.detail.live_complete",
+        "action.close",
     )
 }
 
@@ -974,6 +990,7 @@ fn finalize_updater_success(
     status: &str,
     summary_key: &str,
     summary_detail: &str,
+    close_label_key: &str,
 ) -> Result<(), String> {
     update_updater_overview(state, |overview| {
         overview.status = status.to_string();
@@ -981,6 +998,7 @@ fn finalize_updater_success(
         overview.summary_detail = summary_detail.to_string();
         overview.finished_at = Some(now_iso());
         overview.can_close = true;
+        overview.close_label_key = close_label_key.to_string();
     })?;
     let mut runtime = state
         .updater_runtime
@@ -997,6 +1015,7 @@ fn finalize_updater_failure(state: &AppState, error: &str) -> Result<(), String>
         overview.summary_detail = error.to_string();
         overview.finished_at = Some(now_iso());
         overview.can_close = true;
+        overview.close_label_key = "action.close".to_string();
     })?;
     let mut runtime = state
         .updater_runtime
@@ -1281,11 +1300,16 @@ fn launch_zip_apply_helper(
     pid: u32,
     archive_path: &Path,
     install_root: &Path,
+    relaunch_executable: Option<&Path>,
 ) -> Result<(), String> {
+    let relaunch = relaunch_executable
+        .map(powershell_quote)
+        .unwrap_or_else(|| "$null".to_string());
     let helper = format!(
         "$pidValue={pid};\
         $archive={archive};\
         $installRoot={install};\
+        $relaunchExe={relaunch};\
         while (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 500 }};\
         $temp=Join-Path ([System.IO.Path]::GetTempPath()) ('cerbena-update-' + [guid]::NewGuid().ToString('N'));\
         New-Item -ItemType Directory -Path $temp -Force | Out-Null;\
@@ -1293,10 +1317,12 @@ fn launch_zip_apply_helper(
         $source=$temp;\
         $entries=Get-ChildItem -LiteralPath $temp;\
         if ($entries.Count -eq 1 -and $entries[0].PSIsContainer) {{ $source=$entries[0].FullName }};\
-        Get-ChildItem -LiteralPath $source | ForEach-Object {{ Copy-Item -LiteralPath $_.FullName -Destination $installRoot -Recurse -Force }}",
+        Get-ChildItem -LiteralPath $source | ForEach-Object {{ Copy-Item -LiteralPath $_.FullName -Destination $installRoot -Recurse -Force }};\
+        if ($relaunchExe -and (Test-Path -LiteralPath $relaunchExe)) {{ Start-Process -FilePath $relaunchExe }}",
         pid = pid,
         archive = powershell_quote(archive_path),
-        install = powershell_quote(install_root)
+        install = powershell_quote(install_root),
+        relaunch = relaunch
     );
     Command::new("powershell")
         .args([
@@ -1321,6 +1347,14 @@ fn launch_msi_installer(msi_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn resolve_relaunch_executable_path(install_root: &Path) -> Option<PathBuf> {
+    let candidates = [
+        install_root.join("cerbena.exe"),
+        install_root.join("browser-desktop-ui.exe"),
+    ];
+    candidates.into_iter().find(|path| path.is_file())
+}
+
 fn persist_update_store_from_state(state: &AppState, store: &AppUpdateStore) -> Result<(), String> {
     let path = state
         .app_update_store_path(&state.app_handle)
@@ -1339,12 +1373,31 @@ fn refresh_update_store_snapshot(state: &AppState) -> Result<AppUpdateStore, Str
     } else {
         AppUpdateStore::default()
     };
+    let mut disk_store = disk_store;
+    reconcile_update_store_with_current_version(&mut disk_store);
     let mut guard = state
         .app_update_store
         .lock()
         .map_err(|e| format!("lock app update store: {e}"))?;
     *guard = disk_store.clone();
     Ok(disk_store)
+}
+
+fn reconcile_update_store_with_current_version(store: &mut AppUpdateStore) {
+    let staged_is_current_or_older = store
+        .staged_version
+        .as_deref()
+        .map(|version| !is_version_newer(version, CURRENT_VERSION))
+        .unwrap_or(false);
+    if staged_is_current_or_older {
+        clear_staged_update(store);
+        store.updater_handoff_version = None;
+        if store.status == "applying" || store.status == "downloaded" {
+            store.status = "up_to_date".to_string();
+        }
+        store.last_error = None;
+        store.latest_version = Some(CURRENT_VERSION.to_string());
+    }
 }
 
 fn write_update_store_snapshot(state: &AppState, store: &AppUpdateStore) -> Result<(), String> {
@@ -1443,11 +1496,12 @@ fn powershell_quote(path: &Path) -> String {
 mod tests {
     use super::{
         asset_rank, can_auto_apply_asset, extract_checksum_for_asset, is_version_newer,
-        normalize_version, pick_release_asset, sha256_hex, should_run_auto_update_check,
-        signature_verification_variants, AppUpdateStore, GithubReleaseAsset,
+        normalize_version, pick_release_asset, reconcile_update_store_with_current_version,
+        resolve_relaunch_executable_path, sha256_hex, should_run_auto_update_check,
+        signature_verification_variants, AppUpdateStore, GithubReleaseAsset, CURRENT_VERSION,
         RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV, UpdaterLaunchMode,
     };
-    use std::process::Command;
+    use std::{process::Command, path::PathBuf};
 
     #[test]
     fn version_normalization_drops_leading_v() {
@@ -1565,6 +1619,40 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             "powershell env transport must succeed: stdout={}, stderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn reconcile_update_store_clears_staged_update_once_current_version_is_installed() {
+        let mut store = AppUpdateStore {
+            latest_version: Some("1.0.6-1".to_string()),
+            staged_version: Some(CURRENT_VERSION.to_string()),
+            staged_asset_name: Some("cerbena-windows-x64.zip".to_string()),
+            staged_asset_path: Some("C:/tmp/update.zip".to_string()),
+            pending_apply_on_exit: true,
+            updater_handoff_version: Some(CURRENT_VERSION.to_string()),
+            status: "applying".to_string(),
+            ..AppUpdateStore::default()
+        };
+        reconcile_update_store_with_current_version(&mut store);
+        assert_eq!(store.staged_version, None);
+        assert_eq!(store.staged_asset_name, None);
+        assert_eq!(store.staged_asset_path, None);
+        assert!(!store.pending_apply_on_exit);
+        assert_eq!(store.status, "up_to_date");
+        assert_eq!(store.latest_version.as_deref(), Some(CURRENT_VERSION));
+    }
+
+    #[test]
+    fn relaunch_executable_prefers_cerbena_binary() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cerbena = temp.path().join("cerbena.exe");
+        std::fs::write(&cerbena, b"stub").expect("write cerbena");
+        let legacy = temp.path().join("browser-desktop-ui.exe");
+        std::fs::write(&legacy, b"stub").expect("write legacy");
+        assert_eq!(
+            resolve_relaunch_executable_path(temp.path()),
+            Some(PathBuf::from(cerbena))
         );
     }
 

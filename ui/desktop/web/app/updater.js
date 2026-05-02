@@ -39,7 +39,9 @@ function stepMarkup(step, t) {
 function render(root, i18n, overview) {
   const t = i18n.t;
   const badge = overview?.dryRun ? t("updater.previewBadge") : t("updater.autoBadge");
-  const closeLabel = overview?.canClose ? t("action.close") : t("updater.running");
+  const closeLabel = overview?.canClose
+    ? t(overview?.closeLabelKey || "action.close")
+    : t("updater.running");
   root.innerHTML = `
     <div class="healthcheck-container updater-shell">
       <div class="panel updater-hero">
@@ -56,7 +58,7 @@ function render(root, i18n, overview) {
         <div class="updater-version-grid">
           <div class="updater-version-card">
             <span class="meta">${escapeHtml(t("updater.currentVersion"))}</span>
-            <strong>${escapeHtml(overview?.currentVersion || "1.0.6-1")}</strong>
+            <strong>${escapeHtml(overview?.currentVersion || "1.0.6-2")}</strong>
           </div>
           <div class="updater-version-card">
             <span class="meta">${escapeHtml(t("updater.targetVersion"))}</span>
