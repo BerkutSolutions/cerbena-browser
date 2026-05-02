@@ -1,5 +1,18 @@
 # Журнал изменений
 
+## 1.0.4-1 — hotfix апдейтера и публикации релиза
+
+### Тесты и release gates
+
+- `scripts/release.ps1` теперь автоматически собирает тело GitHub Release из соответствующей секции `CHANGELOG.md`, создает `v{версия}` при первом publish и обновляет описание релиза при повторной публикации вместе с trust-assets.
+- `cmd/launcher/tests/release_pipeline_contract_tests.rs` дополнительно фиксирует контракт на `gh release create/edit`, `--notes-file` и публикацию release assets из changelog-driven потока.
+
+### Апдейтер
+
+- Ручная кнопка `Проверить сейчас` теперь не ограничивается обновлением локального status-store: при наличии нового релиза она сразу запускает standalone secure updater flow, чтобы пользователь видел полноценное окно проверки и handoff-пайплайн.
+- Сравнение версий в updater теперь считает hotfix-сборки вида `1.0.4-1` новее `1.0.4`, поэтому установленная `1.0.4` корректно предлагает обновление на этот релиз.
+- Проверка `checksums.sig` стала устойчивее к вариантам переводов строк в `checksums.txt`, а release artifacts теперь подписывают canonical LF-представление checksum-манифеста, чтобы trusted update не ломался на newline-разночтениях между publish и verify.
+
 ## 1.0.4 — Изоляция трафика, контейнерный runtime и polish UI
 
 ### Тесты и release gates

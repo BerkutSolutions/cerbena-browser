@@ -218,7 +218,7 @@ $manifest = @{
 }
 
 $manifestJson = $manifest | ConvertTo-Json -Depth 6
-$checksumsText = [string]::Join([Environment]::NewLine, $checksumLines)
+$checksumsText = [string]::Join("`n", $checksumLines)
 $checksumsBytes = [System.Text.Encoding]::UTF8.GetBytes($checksumsText)
 $checksumsSignature = New-ReleaseChecksumSignature $checksumsBytes
 

@@ -60,6 +60,11 @@ function Read-JsonFile([string]$Path) {
     return Get-Content $Path -Raw | ConvertFrom-Json
 }
 
+function Write-Utf8NoBomFile([string]$Path, [string]$Content) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
 function Test-GitRepository([string]$Root) {
     $prevErrorAction = $ErrorActionPreference
     $hasNativePref = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
@@ -276,6 +281,45 @@ function Ensure-ReleaseUploadAssets([string]$Root, [string]$Version) {
     }
 }
 
+function Get-ChangelogReleaseNotes([string]$Root, [string]$Version) {
+    $changelogPath = Join-Path $Root "CHANGELOG.md"
+    if (-not (Test-Path $changelogPath)) {
+        throw "missing changelog: $changelogPath"
+    }
+
+    $lines = [System.IO.File]::ReadAllLines($changelogPath)
+    $headingPattern = "^##\s+" + [regex]::Escape($Version) + "(?:\s|$)"
+    $start = -1
+    for ($index = 0; $index -lt $lines.Length; $index++) {
+        if ($lines[$index] -match $headingPattern) {
+            $start = $index
+            break
+        }
+    }
+    if ($start -lt 0) {
+        throw "CHANGELOG.md is missing a release section for $Version"
+    }
+
+    $end = $lines.Length
+    for ($index = $start + 1; $index -lt $lines.Length; $index++) {
+        if ($lines[$index] -match "^##\s+") {
+            $end = $index
+            break
+        }
+    }
+
+    return (($lines[$start..($end - 1)]) -join "`n").Trim()
+}
+
+function New-GitHubReleaseNotesFile([string]$Root, [string]$Version) {
+    $notesRoot = Join-Path $Root ("build\release\" + $Version)
+    New-Item -ItemType Directory -Path $notesRoot -Force | Out-Null
+    $notesPath = Join-Path $notesRoot "github-release-notes.md"
+    $notes = Get-ChangelogReleaseNotes $Root $Version
+    Write-Utf8NoBomFile $notesPath ($notes + "`n")
+    return $notesPath
+}
+
 function Test-GitHubReleaseExists([string]$Tag) {
     $prevErrorAction = $ErrorActionPreference
     $hasNativePref = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
@@ -300,13 +344,23 @@ function Publish-GitHubReleaseAssets([string]$Root, [string]$Version) {
     Assert-GitHubCliAvailable
     Ensure-ReleaseUploadAssets $Root $Version
 
+    # The publish path intentionally drives `gh release create`, `gh release edit`, and
+    # `gh release upload --clobber` so the GitHub Release page and trust assets stay in sync.
     $tag = "v$Version"
+    $notesPath = New-GitHubReleaseNotesFile $Root $Version
     if (-not (Test-GitHubReleaseExists $tag)) {
         Invoke-Native "gh" @(
             "release", "create", $tag,
             "--repo", $defaultRepoSlug,
             "--title", ("Cerbena Browser " + $Version),
-            "--notes", ("Release " + $Version)
+            "--notes-file", $notesPath
+        )
+    } else {
+        Invoke-Native "gh" @(
+            "release", "edit", $tag,
+            "--repo", $defaultRepoSlug,
+            "--title", ("Cerbena Browser " + $Version),
+            "--notes-file", $notesPath
         )
     }
 

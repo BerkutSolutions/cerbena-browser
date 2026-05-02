@@ -516,7 +516,7 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
 
 fn run_preview_updater_flow(state: &AppState) -> Result<(), String> {
     update_updater_overview(state, |overview| {
-        overview.target_version = Some("1.0.4-preview".to_string());
+        overview.target_version = Some(format!("{CURRENT_VERSION}-preview"));
         overview.release_url = Some(REPOSITORY_URL.to_string());
         overview.summary_key = "updater.summary.preview_running".to_string();
         overview.summary_detail = "i18n:updater.detail.preview_running".to_string();
@@ -737,7 +737,7 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
     )
 }
 
-fn run_update_cycle(state: &AppState, _manual: bool) -> Result<AppUpdateView, String> {
+fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
@@ -757,7 +757,18 @@ fn run_update_cycle(state: &AppState, _manual: bool) -> Result<AppUpdateView, St
             store.last_error = None;
             if store.has_update {
                 store.status = "available".to_string();
-                if store.auto_update_enabled {
+                if manual {
+                    match spawn_updater_process(&state.app_handle, UpdaterLaunchMode::Auto) {
+                        Ok(()) => {
+                            store.updater_handoff_version = Some(candidate.version.clone());
+                            store.status = "handoff".to_string();
+                        }
+                        Err(error) => {
+                            store.status = "error".to_string();
+                            store.last_error = Some(error);
+                        }
+                    }
+                } else if store.auto_update_enabled {
                     if should_launch_external_updater(&store, &candidate) {
                         match spawn_updater_process(&state.app_handle, UpdaterLaunchMode::Auto) {
                             Ok(()) => {
@@ -1127,6 +1138,22 @@ fn verify_release_checksums_signature(
 ) -> Result<(), String> {
     let signature_b64 = String::from_utf8(signature_bytes.to_vec())
         .map_err(|e| format!("decode release signature as utf8: {e}"))?;
+    let raw_signature = signature_b64.trim();
+    let variants = signature_verification_variants(checksums_bytes);
+    let mut last_error = String::new();
+    for variant in variants {
+        match verify_release_checksums_signature_variant(&variant, raw_signature) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+fn verify_release_checksums_signature_variant(
+    checksums_bytes: &[u8],
+    signature_b64: &str,
+) -> Result<(), String> {
     let script = r#"
 $publicXml = @'
 __PUBLIC_KEY_XML__
@@ -1152,7 +1179,7 @@ if (-not $rsa.VerifyData($checksums, $sha, $signature)) {
         "-Command",
         &script,
         &B64.encode(checksums_bytes),
-        signature_b64.trim(),
+        signature_b64,
     ]);
     #[cfg(target_os = "windows")]
     {
@@ -1181,6 +1208,25 @@ if (-not $rsa.VerifyData($checksums, $sha, $signature)) {
             format!(" stdout: {stdout}")
         }
     ))
+}
+
+fn signature_verification_variants(checksums_bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut variants = vec![checksums_bytes.to_vec()];
+    let Ok(text) = String::from_utf8(checksums_bytes.to_vec()) else {
+        return variants;
+    };
+
+    let normalized_lf = text.replace("\r\n", "\n").replace('\r', "\n");
+    for candidate in [
+        normalized_lf.clone(),
+        normalized_lf.replace('\n', "\r\n"),
+    ] {
+        let candidate_bytes = candidate.into_bytes();
+        if variants.iter().all(|existing| existing != &candidate_bytes) {
+            variants.push(candidate_bytes);
+        }
+    }
+    variants
 }
 
 fn extract_checksum_for_asset<'a>(checksums_text: &'a str, asset_name: &str) -> Option<&'a str> {
@@ -1354,16 +1400,24 @@ fn is_version_newer(candidate: &str, current: &str) -> bool {
 }
 
 fn parse_version_parts(value: &str) -> Vec<u64> {
-    normalize_version(value)
+    let normalized = normalize_version(value);
+    let mut parts = normalized.splitn(2, '-');
+    let base = parts.next().unwrap_or_default();
+    let hotfix_suffix = parts.next().filter(|suffix| {
+        !suffix.is_empty()
+            && suffix
+                .split('.')
+                .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
+    });
+
+    let mut parsed = base
         .split('.')
-        .map(|part| {
-            part.chars()
-                .take_while(|ch| ch.is_ascii_digit())
-                .collect::<String>()
-                .parse::<u64>()
-                .unwrap_or(0)
-        })
-        .collect()
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    if let Some(suffix) = hotfix_suffix {
+        parsed.extend(suffix.split('.').map(|part| part.parse::<u64>().unwrap_or(0)));
+    }
+    parsed
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1380,7 +1434,8 @@ fn powershell_quote(path: &Path) -> String {
 mod tests {
     use super::{
         asset_rank, can_auto_apply_asset, extract_checksum_for_asset, is_version_newer,
-        normalize_version, pick_release_asset, sha256_hex, GithubReleaseAsset, UpdaterLaunchMode,
+        normalize_version, pick_release_asset, sha256_hex, signature_verification_variants,
+        GithubReleaseAsset, UpdaterLaunchMode,
     };
 
     #[test]
@@ -1393,8 +1448,10 @@ mod tests {
     fn newer_version_detection_uses_semver_like_order() {
         assert!(is_version_newer("1.2.4", "1.2.3"));
         assert!(is_version_newer("2.0.0", "1.9.9"));
+        assert!(is_version_newer("1.0.4-1", "1.0.4"));
         assert!(!is_version_newer("1.2.3", "1.2.3"));
         assert!(!is_version_newer("1.2.2", "1.2.3"));
+        assert!(!is_version_newer("1.0.4-preview", "1.0.4"));
     }
 
     #[test]
@@ -1449,6 +1506,14 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn signature_verification_variants_add_newline_fallbacks_once() {
+        let variants = signature_verification_variants(b"alpha\r\nbeta\r\n");
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0], b"alpha\r\nbeta\r\n");
+        assert_eq!(variants[1], b"alpha\nbeta\n");
     }
 
     #[test]
