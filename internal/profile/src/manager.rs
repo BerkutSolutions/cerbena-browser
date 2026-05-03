@@ -106,7 +106,8 @@ impl ProfileManager {
         if profile.state == ProfileState::Running
             && (patch.ephemeral_mode.is_some()
                 || patch.password_lock_enabled.is_some()
-                || patch.panic_frame_enabled.is_some())
+                || patch.panic_frame_enabled.is_some()
+                || patch.engine.is_some())
         {
             return Err(ProfileError::Conflict(
                 "cannot change security flags while profile is running".to_string(),
@@ -123,6 +124,9 @@ impl ProfileManager {
         if let Some(tags) = patch.tags {
             validate_tags(&tags)?;
             profile.tags = tags;
+        }
+        if let Some(engine) = patch.engine {
+            profile.engine = engine;
         }
         if let Some(state) = patch.state {
             profile.state = state;

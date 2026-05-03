@@ -1034,7 +1034,9 @@ fn compute_route_kill_switch_reason(
             ResolvedNetworkSandboxMode::Blocked => {
                 let state = app_handle.state::<AppState>();
                 let reason = resolve_sandbox_strategy_reason(state.inner(), profile_id)
-                    .unwrap_or_else(|| "selected isolated route policy blocks this backend".to_string());
+                    .unwrap_or_else(|| {
+                        "selected isolated route policy blocks this backend".to_string()
+                    });
                 return Some(format!("Kill-switch: {reason}"));
             }
             ResolvedNetworkSandboxMode::Container => {
@@ -1316,8 +1318,8 @@ fn current_route_mode(
         "vpn".to_string()
     } else {
         policy
-        .map(|value| value.route_mode.clone())
-        .unwrap_or_else(|| "direct".to_string())
+            .map(|value| value.route_mode.clone())
+            .unwrap_or_else(|| "direct".to_string())
     };
     match resolved_route_strategy(app_handle, profile_id) {
         Some(ResolvedNetworkSandboxMode::CompatibilityNative) => {
@@ -1361,7 +1363,10 @@ fn resolved_sandbox_adapter_available(app_handle: &AppHandle, profile_id: Uuid) 
         .unwrap_or(false)
 }
 
-fn selected_route_template(state: &AppState, profile_id: Uuid) -> Option<crate::state::ConnectionTemplate> {
+fn selected_route_template(
+    state: &AppState,
+    profile_id: Uuid,
+) -> Option<crate::state::ConnectionTemplate> {
     let store = state.network_store.lock().ok()?;
     let profile_key = profile_id.to_string();
     let profile_route_mode = store

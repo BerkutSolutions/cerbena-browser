@@ -15,8 +15,8 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
             .expect("read generate-release-artifacts.ps1");
     let installer_script = fs::read_to_string(root.join("scripts").join("build-installer.ps1"))
         .expect("read build-installer.ps1");
-    let release_script = fs::read_to_string(root.join("scripts").join("release.ps1"))
-        .expect("read release.ps1");
+    let release_script =
+        fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release.ps1");
 
     for needle in [
         "checksums.sig",
@@ -71,13 +71,11 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
         fs::read_to_string(workflows.join("ci-quality.yml")).expect("read ci-quality workflow");
     assert!(ci_quality.contains("npm run docs:build"));
     assert!(ci_quality.contains("cargo test --workspace"));
-    assert!(
-        ci_quality.contains("cargo test -p cerbena-launcher --test release_pipeline_contract_tests")
-    );
+    assert!(ci_quality
+        .contains("cargo test -p cerbena-launcher --test release_pipeline_contract_tests"));
 
-    let local_preflight =
-        fs::read_to_string(root.join("scripts").join("local-ci-preflight.ps1"))
-            .expect("read local ci preflight");
+    let local_preflight = fs::read_to_string(root.join("scripts").join("local-ci-preflight.ps1"))
+        .expect("read local ci preflight");
     assert!(local_preflight.contains("Trusted updater regression tests"));
     assert!(local_preflight.contains("cargo"));
     assert!(local_preflight.contains("trusted_updater"));

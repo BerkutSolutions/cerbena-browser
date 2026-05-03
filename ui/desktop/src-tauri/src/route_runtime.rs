@@ -19,17 +19,16 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::{
+    network_runtime::{
+        ensure_network_runtime_tools, resolve_amneziawg_binary_path, resolve_openvpn_binary_path,
+        resolve_sing_box_binary_path, resolve_tor_binary_path, resolve_tor_pt_binary_path,
+        tool_is_resolved_without_download, NetworkRuntime, NetworkTool,
+    },
     network_sandbox::{resolve_profile_network_sandbox_mode, ResolvedNetworkSandboxMode},
     network_sandbox_container_runtime::{
         cleanup_stale_container_route_runtimes, launch_amnezia_container_runtime,
-        launch_openvpn_container_runtime, launch_sing_box_container_runtime, stop_container_runtime,
-        CONTAINER_PROXY_PORT,
-    },
-    network_runtime::{
-        ensure_network_runtime_tools, resolve_amneziawg_binary_path,
-        resolve_openvpn_binary_path, resolve_sing_box_binary_path, resolve_tor_binary_path,
-        resolve_tor_pt_binary_path, tool_is_resolved_without_download, NetworkRuntime,
-        NetworkTool,
+        launch_openvpn_container_runtime, launch_sing_box_container_runtime,
+        stop_container_runtime, CONTAINER_PROXY_PORT,
     },
     process_tracking::is_process_running,
     state::AppState,
@@ -355,9 +354,9 @@ pub fn ensure_profile_route_runtime(
         && nodes[0].connection_type == "vpn"
         && nodes[0].protocol == "amnezia"
         && amnezia_node_requires_native_backend(&nodes[0])?;
-    let uses_amnezia_native =
-        sandbox_strategy.mode == ResolvedNetworkSandboxMode::CompatibilityNative
-            && amnezia_native_required;
+    let uses_amnezia_native = sandbox_strategy.mode
+        == ResolvedNetworkSandboxMode::CompatibilityNative
+        && amnezia_native_required;
     let uses_container_runtime = sandbox_strategy.mode == ResolvedNetworkSandboxMode::Container;
     let uses_amnezia_container = uses_container_runtime && amnezia_native_required;
     if uses_openvpn
@@ -490,14 +489,23 @@ pub fn ensure_profile_route_runtime(
             let node = nodes
                 .first()
                 .ok_or_else(|| "openvpn container runtime requires one node".to_string())?;
+            let auth_path = build_openvpn_auth_file(node, &runtime_dir, profile_id)?;
             let container_log_path = PathBuf::from("/work/route.log");
-            let config_text = build_openvpn_config_text(node, None, &container_log_path)?;
+            let container_auth_path = auth_path
+                .as_ref()
+                .map(|_| PathBuf::from("/work/openvpn-auth.txt"));
+            let config_text = build_openvpn_config_text(
+                node,
+                container_auth_path.as_ref(),
+                &container_log_path,
+            )?;
             let launch = launch_openvpn_container_runtime(
                 app_handle,
                 profile_id,
                 &runtime_dir,
                 host_proxy_port,
                 &config_text,
+                auth_path.as_ref(),
             )?;
             let mut runtime = state
                 .route_runtime
@@ -811,8 +819,14 @@ fn cleanup_profile_runtime_artifacts(runtime_dir: PathBuf) {
 fn should_remove_runtime_artifact(file_name: &str) -> bool {
     matches!(
         file_name,
-        "sing-box-route.json" | "sing-box-route.log" | "openvpn-route.log" | "openvpn-route.ovpn"
+        "sing-box-route.json"
+            | "sing-box-route.log"
+            | "openvpn-route.log"
+            | "openvpn-route.ovpn"
+            | "container-openvpn.log"
+            | "container-openvpn.ovpn"
     ) || file_name.starts_with("awg-")
+        || file_name.starts_with("openvpn-auth-")
 }
 
 fn cleanup_legacy_amnezia_tunnel(app_handle: &AppHandle, tunnel_name: &str) {
@@ -1230,7 +1244,9 @@ fn delete_amnezia_tunnel_service(tunnel_name: &str) -> Result<(), String> {
                         );
                     }
                     let reason = describe_process_failure(&out, "amneziawg elevated delete");
-                    return Err(format!("unable to delete amneziawg tunnel service: {reason}"));
+                    return Err(format!(
+                        "unable to delete amneziawg tunnel service: {reason}"
+                    ));
                 }
                 Err(error) => {
                     return Err(format!(
@@ -1240,7 +1256,9 @@ fn delete_amnezia_tunnel_service(tunnel_name: &str) -> Result<(), String> {
             }
         }
         let reason = describe_process_failure(&output, "amneziawg delete");
-        Err(format!("unable to delete amneziawg tunnel service: {reason}"))
+        Err(format!(
+            "unable to delete amneziawg tunnel service: {reason}"
+        ))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1630,40 +1648,41 @@ fn build_openvpn_config_text(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let raw_lower = raw.to_ascii_lowercase();
-        if auth_path.is_none()
-            && (raw_lower.starts_with("auth-user-pass")
-                || raw_lower.contains("\nauth-user-pass")
-                || raw_lower.contains("\r\nauth-user-pass"))
-            && !raw_lower.contains("<auth-user-pass>")
-        {
+        let has_auth_user_pass = openvpn_config_has_directive(raw, "auth-user-pass");
+        if auth_path.is_none() && has_auth_user_pass && !raw.to_ascii_lowercase().contains("<auth-user-pass>") {
             return Err(
                 "openvpn profile requests auth-user-pass; set username/password fields".to_string(),
             );
         }
         let mut out = raw.replace('\r', "");
+        if let Some(path) = auth_path {
+            let auth_line = format!(
+                "auth-user-pass \"{}\"",
+                path.to_string_lossy().replace('\\', "\\\\")
+            );
+            if has_auth_user_pass {
+                out = rewrite_openvpn_auth_user_pass(&out, &auth_line);
+            } else {
+                append_openvpn_directive_if_missing(&mut out, &auth_line, "auth-user-pass");
+            }
+            append_openvpn_directive_if_missing(&mut out, "auth-retry nointeract", "auth-retry");
+        }
+        append_openvpn_directive_if_missing(&mut out, "script-security 2", "script-security");
+        append_openvpn_directive_if_missing(&mut out, "up /usr/local/bin/openvpn-dns-sync", "up");
+        append_openvpn_directive_if_missing(
+            &mut out,
+            "down /usr/local/bin/openvpn-dns-sync",
+            "down",
+        );
+        append_openvpn_directive_if_missing(
+            &mut out,
+            &format!("log \"{}\"", log_path.to_string_lossy().replace('\\', "\\\\")),
+            "log",
+        );
+        append_openvpn_directive_if_missing(&mut out, "verb 3", "verb");
         if !out.ends_with('\n') {
             out.push('\n');
         }
-        out.push_str("client\n");
-        out.push_str("nobind\n");
-        out.push_str("persist-key\n");
-        out.push_str("persist-tun\n");
-        out.push_str(&format!("proto {transport}\n"));
-        out.push_str(&format!("remote {host} {port}\n"));
-        out.push_str("auth-retry nointeract\n");
-        out.push_str("remote-cert-tls server\n");
-        if let Some(path) = auth_path {
-            out.push_str(&format!(
-                "auth-user-pass \"{}\"\n",
-                path.to_string_lossy().replace('\\', "\\\\")
-            ));
-        }
-        out.push_str(&format!(
-            "log \"{}\"\n",
-            log_path.to_string_lossy().replace('\\', "\\\\")
-        ));
-        out.push_str("verb 3\n");
         return Ok(out);
     }
 
@@ -1677,6 +1696,9 @@ fn build_openvpn_config_text(
         "persist-key".to_string(),
         "persist-tun".to_string(),
         "auth-retry nointeract".to_string(),
+        "script-security 2".to_string(),
+        "up /usr/local/bin/openvpn-dns-sync".to_string(),
+        "down /usr/local/bin/openvpn-dns-sync".to_string(),
         "remote-cert-tls server".to_string(),
         "verb 3".to_string(),
     ];
@@ -1711,6 +1733,54 @@ fn build_openvpn_config_text(
         log_path.to_string_lossy().replace('\\', "\\\\")
     ));
     Ok(lines.join("\n") + "\n")
+}
+
+fn append_openvpn_directive_if_missing(config: &mut String, directive: &str, key: &str) {
+    if openvpn_config_has_directive(config, key) {
+        return;
+    }
+    if !config.ends_with('\n') {
+        config.push('\n');
+    }
+    config.push_str(directive);
+    config.push('\n');
+}
+
+fn openvpn_config_has_directive(config: &str, key: &str) -> bool {
+    config.lines().any(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+            return false;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        lower == key || lower.starts_with(&format!("{key} "))
+    })
+}
+
+fn rewrite_openvpn_auth_user_pass(config: &str, directive: &str) -> String {
+    let mut replaced = false;
+    let mut lines = Vec::new();
+    for line in config.lines() {
+        let trimmed = line.trim();
+        let is_directive = if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+            false
+        } else {
+            let lower = trimmed.to_ascii_lowercase();
+            lower == "auth-user-pass" || lower.starts_with("auth-user-pass ")
+        };
+        if is_directive {
+            if !replaced {
+                lines.push(directive.to_string());
+                replaced = true;
+            }
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    if !replaced {
+        lines.push(directive.to_string());
+    }
+    lines.join("\n")
 }
 
 fn wait_openvpn_connected(pid: u32, log_path: &PathBuf, timeout_ms: u64) -> Result<(), String> {
@@ -2235,7 +2305,9 @@ fn vpn_runtime_entry(
     target: RuntimeExecutionTarget,
 ) -> Result<SingBoxRuntimeEntry, String> {
     if node.protocol == "wireguard" {
-        return Ok(SingBoxRuntimeEntry::Endpoint(wireguard_endpoint(node, tag)?));
+        return Ok(SingBoxRuntimeEntry::Endpoint(wireguard_endpoint(
+            node, tag,
+        )?));
     }
     if node.protocol == "amnezia" {
         return Ok(SingBoxRuntimeEntry::Endpoint(amnezia_endpoint(node, tag)?));
@@ -2539,8 +2611,8 @@ fn amnezia_conf_contains_native_fields(text: &str) -> bool {
 
 fn amnezia_json_contains_native_fields(value: &Value) -> bool {
     const KEYS: &[&str] = &[
-        "Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2",
-        "I3", "I4", "I5",
+        "Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3",
+        "I4", "I5",
     ];
     KEYS.iter()
         .any(|key| extract_string_case_insensitive(value, key).is_some())
@@ -2549,8 +2621,7 @@ fn amnezia_json_contains_native_fields(value: &Value) -> bool {
 fn is_amnezia_native_only_key(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
-        "jc"
-            | "jmin"
+        "jc" | "jmin"
             | "jmax"
             | "s1"
             | "s2"
@@ -2585,12 +2656,7 @@ fn terminate_pid(pid: u32) {
 
 fn is_container_runtime_active(container_name: &str) -> bool {
     hidden_command("docker")
-        .args([
-            "inspect",
-            "--format",
-            "{{.State.Running}}",
-            container_name,
-        ])
+        .args(["inspect", "--format", "{{.State.Running}}", container_name])
         .output()
         .map(|output| {
             output.status.success()
@@ -3226,7 +3292,9 @@ PersistentKeepalive = 25
             bridges: None,
             settings: BTreeMap::from([(
                 "amneziaKey".to_string(),
-                build_amnezia_key(r#"{"containers":[{"awg":{"last_config":"{\"client_priv_key\":\"PRIVATE\",\"server_pub_key\":\"PUBLIC\",\"client_ip\":\"10.0.0.2\",\"allowed_ips\":[\"0.0.0.0/0\"],\"port\":\"443\",\"hostName\":\"demo.example\"}"}}]}"#),
+                build_amnezia_key(
+                    r#"{"containers":[{"awg":{"last_config":"{\"client_priv_key\":\"PRIVATE\",\"server_pub_key\":\"PUBLIC\",\"client_ip\":\"10.0.0.2\",\"allowed_ips\":[\"0.0.0.0/0\"],\"port\":\"443\",\"hostName\":\"demo.example\"}"}}]}"#,
+                ),
             )]),
         }];
         let tools = required_runtime_tools(&nodes, false, false, false, false);
@@ -3292,8 +3360,45 @@ PersistentKeepalive = 25
     fn stale_runtime_cleanup_targets_known_launcher_artifacts_only() {
         assert!(should_remove_runtime_artifact("sing-box-route.json"));
         assert!(should_remove_runtime_artifact("openvpn-route.ovpn"));
+        assert!(should_remove_runtime_artifact("container-openvpn.ovpn"));
+        assert!(should_remove_runtime_artifact("openvpn-auth-demo.txt"));
         assert!(should_remove_runtime_artifact("awg-test.conf"));
         assert!(!should_remove_runtime_artifact("notes.txt"));
+    }
+
+    #[test]
+    fn openvpn_raw_config_requires_auth_file_when_profile_requests_auth_user_pass() {
+        let node = NormalizedNode {
+            connection_type: "vpn".to_string(),
+            protocol: "openvpn".to_string(),
+            host: Some("demo.example".to_string()),
+            port: Some(1194),
+            username: None,
+            password: None,
+            bridges: None,
+            settings: BTreeMap::from([(
+                "ovpnRaw".to_string(),
+                "client\nauth-user-pass\nremote demo.example 1194 udp4\n".to_string(),
+            )]),
+        };
+        let log_path = PathBuf::from("/tmp/openvpn.log");
+
+        let error =
+            build_openvpn_config_text(&node, None, &log_path).expect_err("auth-user-pass error");
+        assert_eq!(
+            error,
+            "openvpn profile requests auth-user-pass; set username/password fields"
+        );
+
+        let config = build_openvpn_config_text(
+            &node,
+            Some(&PathBuf::from("/work/openvpn-auth.txt")),
+            &PathBuf::from("/work/route.log"),
+        )
+        .expect("openvpn config with auth path");
+        assert!(config.contains("auth-user-pass \"/work/openvpn-auth.txt\""));
+        assert!(!config.contains("\nnobind\n"));
+        assert!(config.contains("\nremote demo.example 1194 udp4\n"));
     }
 
     #[test]

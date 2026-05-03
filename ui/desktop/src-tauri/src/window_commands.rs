@@ -3,10 +3,11 @@ use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::envelope::{ok, UiEnvelope};
-use crate::process_tracking::stop_all_profile_processes;
+use crate::instance_handoff;
 use crate::network_sandbox_lifecycle::{
     cleanup_network_sandbox_janitor, stop_all_profile_network_stacks,
 };
+use crate::process_tracking::stop_all_profile_processes;
 use crate::state::AppState;
 use crate::update_commands;
 
@@ -48,6 +49,7 @@ pub fn perform_shutdown_cleanup(app: &AppHandle) {
     if state.shutdown_cleanup_started.swap(true, Ordering::SeqCst) {
         return;
     }
+    instance_handoff::cleanup_primary_instance(app);
 
     emit_app_lifecycle_progress(
         app,
@@ -59,13 +61,7 @@ pub fn perform_shutdown_cleanup(app: &AppHandle) {
     update_commands::launch_pending_update_on_exit(app);
 
     if !has_active_session_state(app) {
-        emit_app_lifecycle_progress(
-            app,
-            "shutdown",
-            "done",
-            "app.lifecycle.shutdown.done",
-            true,
-        );
+        emit_app_lifecycle_progress(app, "shutdown", "done", "app.lifecycle.shutdown.done", true);
         return;
     }
 
@@ -96,13 +92,7 @@ pub fn perform_shutdown_cleanup(app: &AppHandle) {
     );
     cleanup_network_sandbox_janitor(app);
 
-    emit_app_lifecycle_progress(
-        app,
-        "shutdown",
-        "done",
-        "app.lifecycle.shutdown.done",
-        true,
-    );
+    emit_app_lifecycle_progress(app, "shutdown", "done", "app.lifecycle.shutdown.done", true);
 }
 
 #[tauri::command]

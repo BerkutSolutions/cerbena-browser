@@ -66,6 +66,7 @@ pub struct PatchProfileInput {
     pub name: Option<String>,
     pub description: Option<Option<String>>,
     pub tags: Option<Vec<String>>,
+    pub engine: Option<Engine>,
     pub state: Option<ProfileState>,
     pub default_start_page: Option<Option<String>>,
     pub default_search_provider: Option<Option<String>>,

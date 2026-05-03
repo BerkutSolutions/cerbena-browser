@@ -1,5 +1,6 @@
 import { SEARCH_PROVIDER_PRESETS } from "../../core/catalogs.js";
-import { launchProfile } from "../profiles/api.js";
+import { askConfirmModal } from "../../core/modal.js";
+import { acknowledgeWayfernTos, launchProfile } from "../profiles/api.js";
 import { saveGlobalSecuritySettings } from "../security/api.js";
 import {
   buildGlobalSecuritySaveRequest,
@@ -14,10 +15,13 @@ import {
   getDevicePostureReport,
   getLauncherUpdateState,
   getLinkRoutingOverview,
+  getShellPreferencesState,
   importSearchProviders,
   launchUpdaterPreview,
+  openDefaultAppsSettings,
   removeLinkTypeProfileBinding,
   refreshDevicePostureReport,
+  saveShellPreferences,
   saveLinkTypeProfileBinding,
   setLauncherAutoUpdate,
   setDefaultProfileForLinks,
@@ -96,8 +100,36 @@ function updateStatusLabel(updateState, t) {
   return t(`settings.updates.status.${updateState?.status ?? "idle"}`);
 }
 
+function pendingWayfernProfileIds(model) {
+  return new Set(model.wayfernTermsStatus?.pendingProfileIds ?? []);
+}
+
+async function ensureWayfernTermsAcceptedForProfile(model, profileId, rerender, t) {
+  if (!profileId || !pendingWayfernProfileIds(model).has(profileId)) {
+    return true;
+  }
+  const accepted = await askConfirmModal(t, {
+    title: t("profile.wayfernTerms.title"),
+    description: t("profile.wayfernTerms.description"),
+    submitLabel: t("action.confirm"),
+    cancelLabel: t("action.cancel")
+  });
+  if (!accepted) {
+    return false;
+  }
+  const ackResult = await acknowledgeWayfernTos(profileId);
+  if (!ackResult.ok) {
+    model.settingsNotice = { type: "error", text: String(ackResult.data.error) };
+    await rerender();
+    return false;
+  }
+  model.wayfernTermsStatus = { pendingProfileIds: [] };
+  return true;
+}
+
 function renderUpdateCard(t, model) {
   const updateState = model.launcherUpdateState ?? {};
+  const shellState = model.shellPreferencesState ?? {};
   return `
     <div class="security-frame">
       <div class="row-between">
@@ -112,7 +144,7 @@ function renderUpdateCard(t, model) {
       </div>
       <div class="grid-two">
         <label>${t("settings.updates.currentVersion")}
-          <input value="${escapeHtml(updateState.currentVersion ?? "1.0.1")}" disabled />
+          <input value="${escapeHtml(updateState.currentVersion ?? "1.0.10")}" disabled />
         </label>
         <label>${t("settings.updates.latestVersion")}
           <input value="${escapeHtml(updateState.latestVersion ?? t("settings.updates.notChecked"))}" disabled />
@@ -121,6 +153,10 @@ function renderUpdateCard(t, model) {
       <label class="checkbox-inline">
         <input id="settings-update-auto" type="checkbox" ${updateState.autoUpdateEnabled ? "checked" : ""} />
         <span>${t("settings.updates.enabled")}</span>
+      </label>
+      <label class="checkbox-inline">
+        <input id="settings-tray-minimize" type="checkbox" ${shellState.minimizeToTrayEnabled ? "checked" : ""} />
+        <span>${t("settings.tray.enabled")}</span>
       </label>
       <p class="meta">${t("settings.updates.lastChecked")}: ${escapeHtml(updateState.lastCheckedAt ?? t("settings.updates.notChecked"))}</p>
       <p class="meta">${t("settings.updates.statusLabel")}: ${escapeHtml(updateStatusLabel(updateState, t))}</p>
@@ -184,9 +220,25 @@ function renderGeneralTab(t, model) {
 function renderLinksTab(t, model) {
   const state = ensureSettingsModel(model);
   const overview = model.linkRoutingOverview ?? { globalProfileId: null, supportedTypes: [] };
+  const shellState = model.shellPreferencesState ?? {};
   const globalDraft = state.globalLinkProfileDraft || overview.globalProfileId || "";
   return `
     <section class="settings-tab-panel">
+      <div class="panel settings-card">
+        <div class="row-between">
+          <div>
+            <label class="checkbox-inline">
+              <input id="settings-default-browser-check" type="checkbox" ${shellState.checkDefaultBrowserOnStartup ? "checked" : ""} />
+              <span>${t("links.defaultBrowser.check")}</span>
+            </label>
+            <p class="meta">${t(shellState.isDefaultBrowser ? "links.defaultBrowser.status.enabled" : "links.defaultBrowser.status.disabled")}</p>
+          </div>
+          <div class="top-actions">
+            <button id="settings-default-browser-open">${t("links.defaultBrowser.open")}</button>
+          </div>
+        </div>
+      </div>
+
       <div class="panel settings-card">
         <div class="row-between">
           <div>
@@ -355,7 +407,7 @@ export function renderLinkLaunchModal(t, model) {
               ${(model.profiles ?? []).map((profile) => `<option value="${profile.id}" ${profile.id === modal.selectedProfileId ? "selected" : ""}>${escapeHtml(profile.name)}</option>`).join("")}
             </select>
           </label>
-          <div class="modal-actions">
+          <div class="modal-actions link-launch-modal-actions">
             <button type="button" id="link-launch-cancel">${t("action.cancel")}</button>
             <button type="button" id="link-launch-choose">${t("links.action.choose")}</button>
             <button type="button" id="link-launch-choose-global">${t("links.action.chooseDefault")}</button>
@@ -372,6 +424,8 @@ export async function hydrateSettingsModel(model) {
   await hydrateGlobalSecurityState(model);
   const links = await getLinkRoutingOverview();
   model.linkRoutingOverview = links.ok ? links.data : { globalProfileId: null, supportedTypes: [] };
+  const shellState = await getShellPreferencesState();
+  model.shellPreferencesState = shellState.ok ? shellState.data : null;
   const posture = await getDevicePostureReport();
   model.devicePostureReport = posture.ok ? posture.data : null;
   const updateState = await getLauncherUpdateState();
@@ -387,7 +441,10 @@ export async function hydrateSettingsModel(model) {
   }
 }
 
-async function launchResolvedLink(model, url, profileId, t) {
+async function launchResolvedLink(model, url, profileId, rerender, t) {
+  if (!(await ensureWayfernTermsAcceptedForProfile(model, profileId, rerender, t))) {
+    return;
+  }
   const result = await launchProfile(profileId, url);
   model.settingsNotice = {
     type: result.ok ? "success" : "error",
@@ -403,14 +460,14 @@ export async function handleExternalLinkRequest(model, url, rerender, t) {
     return;
   }
   if (resolution.data.status === "resolved" && resolution.data.targetProfileId) {
-    await launchResolvedLink(model, resolution.data.url, resolution.data.targetProfileId, t);
+    await launchResolvedLink(model, resolution.data.url, resolution.data.targetProfileId, rerender, t);
     await rerender();
     return;
   }
   model.linkLaunchModal = {
     url: resolution.data.url,
     linkType: resolution.data.linkType,
-    selectedProfileId: model.selectedProfileId ?? model.profiles?.[0]?.id ?? ""
+    selectedProfileId: resolution.data.targetProfileId ?? model.selectedProfileId ?? model.profiles?.[0]?.id ?? ""
   };
   await rerender();
 }
@@ -467,6 +524,20 @@ export function wireSettings(root, model, rerender, t) {
     await rerender();
   });
 
+  root.querySelector("#settings-tray-minimize")?.addEventListener("change", async (event) => {
+    const enabled = Boolean(event.target.checked);
+    const result = await saveShellPreferences({
+      minimizeToTrayEnabled: enabled,
+      closeToTrayPromptDeclined: enabled ? false : undefined
+    });
+    model.shellPreferencesState = result.ok ? result.data : model.shellPreferencesState;
+    model.settingsNotice = {
+      type: result.ok ? "success" : "error",
+      text: result.ok ? t("settings.tray.saved") : String(result.data.error)
+    };
+    await rerender();
+  });
+
   root.querySelector("#settings-update-check")?.addEventListener("click", async () => {
     const result = await checkLauncherUpdates(true);
     model.launcherUpdateState = result.ok ? result.data : model.launcherUpdateState;
@@ -492,6 +563,30 @@ export function wireSettings(root, model, rerender, t) {
 
   root.querySelector("#settings-links-global-profile")?.addEventListener("change", (event) => {
     state.globalLinkProfileDraft = event.target.value;
+  });
+
+  root.querySelector("#settings-default-browser-check")?.addEventListener("change", async (event) => {
+    const enabled = Boolean(event.target.checked);
+    const result = await saveShellPreferences({
+      checkDefaultBrowserOnStartup: enabled,
+      defaultBrowserPromptDecided: true
+    });
+    model.shellPreferencesState = result.ok ? result.data : model.shellPreferencesState;
+    model.settingsNotice = {
+      type: result.ok ? "success" : "error",
+      text: result.ok ? t("links.defaultBrowser.saved") : String(result.data.error)
+    };
+    await rerender();
+  });
+
+  root.querySelector("#settings-default-browser-open")?.addEventListener("click", async () => {
+    const result = await openDefaultAppsSettings();
+    model.settingsNotice = {
+      type: result.ok ? "success" : "error",
+      text: result.ok ? t("links.defaultBrowser.opened") : String(result.data.error)
+    };
+    await hydrateSettingsModel(model);
+    await rerender();
   });
 
   root.querySelector("#settings-links-global-apply")?.addEventListener("click", async () => {
@@ -676,13 +771,16 @@ export function wireLinkLaunchModal(root, model, rerender, t) {
       await rerender();
       return;
     }
+    if (!(await ensureWayfernTermsAcceptedForProfile(model, profileId, rerender, t))) {
+      return;
+    }
     if (mode === "global") {
       await setDefaultProfileForLinks({ profileId });
     }
     if (mode === "type") {
       await saveLinkTypeProfileBinding({ linkType: modal.linkType, profileId });
     }
-    await launchResolvedLink(model, modal.url, profileId, t);
+    await launchResolvedLink(model, modal.url, profileId, rerender, t);
     model.linkLaunchModal = null;
     await hydrateSettingsModel(model);
     await rerender();

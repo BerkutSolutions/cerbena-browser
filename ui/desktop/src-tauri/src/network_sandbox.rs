@@ -158,11 +158,7 @@ pub fn migrate_network_sandbox_store(
     normalize_global_settings(&mut store.global);
 
     let mut changed = false;
-    let mut profile_keys = network_store
-        .vpn_proxy
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut profile_keys = network_store.vpn_proxy.keys().cloned().collect::<Vec<_>>();
     for key in network_store.profile_template_selection.keys() {
         if !profile_keys.iter().any(|item| item == key) {
             profile_keys.push(key.clone());
@@ -171,7 +167,8 @@ pub fn migrate_network_sandbox_store(
 
     for profile_key in profile_keys {
         let entry = store.profiles.entry(profile_key.clone()).or_default();
-        let legacy_native = profile_requires_legacy_native_compatibility(network_store, &profile_key)?;
+        let legacy_native =
+            profile_requires_legacy_native_compatibility(network_store, &profile_key)?;
         if legacy_native && entry.preferred_mode.is_none() {
             entry.preferred_mode = Some(MODE_COMPAT_NATIVE.to_string());
             entry.migrated_legacy_native = true;
@@ -202,7 +199,11 @@ pub fn resolve_profile_network_sandbox_mode(
         .map_err(|_| "network sandbox store lock poisoned".to_string())?
         .clone();
     let profile_key = profile_id.to_string();
-    let profile_settings = sandbox_store.profiles.get(&profile_key).cloned().unwrap_or_default();
+    let profile_settings = sandbox_store
+        .profiles
+        .get(&profile_key)
+        .cloned()
+        .unwrap_or_default();
     let requires_native = template
         .map(template_requires_native_compatibility)
         .transpose()?
@@ -316,7 +317,10 @@ pub fn save_network_sandbox_profile_settings(
         .network_sandbox_store
         .lock()
         .map_err(|_| "network sandbox store lock poisoned".to_string())?;
-    let entry = store.profiles.entry(request.profile_id.clone()).or_default();
+    let entry = store
+        .profiles
+        .entry(request.profile_id.clone())
+        .or_default();
     entry.preferred_mode = normalize_mode(request.preferred_mode);
     let path = state.network_sandbox_store_path(&state.app_handle)?;
     persist_network_sandbox_store(&path, &store)?;
@@ -386,7 +390,14 @@ pub fn preview_network_sandbox_settings(
         .unwrap_or_else(|| "direct".to_string())
         .trim()
         .to_lowercase();
-    if route_mode == "direct" || request.template_id.as_deref().unwrap_or("").trim().is_empty() {
+    if route_mode == "direct"
+        || request
+            .template_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
         let store = state
             .network_sandbox_store
             .lock()
@@ -557,10 +568,7 @@ fn normalize_mode(value: Option<String>) -> Option<String> {
     })
 }
 
-fn compatible_modes_for_template(
-    requires_native: bool,
-    container_supported: bool,
-) -> Vec<String> {
+fn compatible_modes_for_template(requires_native: bool, container_supported: bool) -> Vec<String> {
     if requires_native {
         let mut modes = vec![MODE_COMPAT_NATIVE.to_string()];
         if container_supported {
@@ -629,9 +637,12 @@ fn sandbox_view_for_preview(
         .unwrap_or(true);
     let requested_mode = if global_scope {
         if sandbox_store.global.enabled {
-            normalize_mode(profile_settings.preferred_mode.clone().or_else(|| {
-                Some(sandbox_store.global.default_mode.clone())
-            }))
+            normalize_mode(
+                profile_settings
+                    .preferred_mode
+                    .clone()
+                    .or_else(|| Some(sandbox_store.global.default_mode.clone())),
+            )
             .unwrap_or_else(|| MODE_AUTO.to_string())
         } else {
             MODE_AUTO.to_string()
@@ -712,22 +723,22 @@ fn template_supports_container_mode(template: &ConnectionTemplate) -> Result<boo
         return Ok(false);
     }
     let single_node = nodes.len() == 1;
-    Ok(nodes.iter().all(|node| match (
-        node.connection_type.trim().to_ascii_lowercase().as_str(),
-        node.protocol.trim().to_ascii_lowercase().as_str(),
-    ) {
-        ("proxy", "http" | "socks4" | "socks5") => true,
-        ("v2ray", "vmess" | "vless" | "trojan" | "shadowsocks") => true,
-        ("vpn", "wireguard" | "amnezia") => true,
-        ("vpn", "openvpn") => single_node,
-        ("tor", "none" | "obfs4" | "snowflake" | "meek") => true,
-        _ => false,
+    Ok(nodes.iter().all(|node| {
+        match (
+            node.connection_type.trim().to_ascii_lowercase().as_str(),
+            node.protocol.trim().to_ascii_lowercase().as_str(),
+        ) {
+            ("proxy", "http" | "socks4" | "socks5") => true,
+            ("v2ray", "vmess" | "vless" | "trojan" | "shadowsocks") => true,
+            ("vpn", "wireguard" | "amnezia") => true,
+            ("vpn", "openvpn") => single_node,
+            ("tor", "none" | "obfs4" | "snowflake" | "meek") => true,
+            _ => false,
+        }
     }))
 }
 
-fn template_requires_native_compatibility(
-    template: &ConnectionTemplate,
-) -> Result<bool, String> {
+fn template_requires_native_compatibility(template: &ConnectionTemplate) -> Result<bool, String> {
     let nodes = if !template.nodes.is_empty() {
         template.nodes.clone()
     } else if template.connection_type.trim().eq_ignore_ascii_case("vpn")
@@ -814,10 +825,9 @@ mod tests {
                 kill_switch_enabled: true,
             },
         );
-        network_store.profile_template_selection.insert(
-            "profile-1".to_string(),
-            "tpl-amnezia".to_string(),
-        );
+        network_store
+            .profile_template_selection
+            .insert("profile-1".to_string(), "tpl-amnezia".to_string());
         network_store
             .connection_templates
             .insert("tpl-amnezia".to_string(), amnezia_template());
@@ -827,10 +837,7 @@ mod tests {
             migrate_network_sandbox_store(&mut sandbox_store, &network_store).expect("migrate");
         assert!(changed);
         let profile = sandbox_store.profiles.get("profile-1").expect("profile");
-        assert_eq!(
-            profile.preferred_mode.as_deref(),
-            Some(MODE_COMPAT_NATIVE)
-        );
+        assert_eq!(profile.preferred_mode.as_deref(), Some(MODE_COMPAT_NATIVE));
         assert!(profile.migrated_legacy_native);
     }
 
@@ -907,11 +914,9 @@ mod tests {
         assert_eq!(strategy.mode, ResolvedNetworkSandboxMode::Blocked);
         assert!(!strategy.available);
         assert!(strategy.requires_native_backend);
-        assert!(
-            strategy
-                .reason
-                .contains("requires a machine-wide compatibility backend")
-        );
+        assert!(strategy
+            .reason
+            .contains("requires a machine-wide compatibility backend"));
     }
 
     #[test]
@@ -944,7 +949,10 @@ mod tests {
             true,
         );
 
-        assert_eq!(strategy.mode, ResolvedNetworkSandboxMode::CompatibilityNative);
+        assert_eq!(
+            strategy.mode,
+            ResolvedNetworkSandboxMode::CompatibilityNative
+        );
         assert!(strategy.available);
         assert!(strategy.requires_native_backend);
         assert!(strategy.reason.contains("Global sandbox policy allows"));
@@ -962,6 +970,8 @@ mod tests {
 
         assert_eq!(strategy.mode, ResolvedNetworkSandboxMode::Blocked);
         assert!(!strategy.available);
-        assert!(strategy.reason.contains("not compatible with container isolation"));
+        assert!(strategy
+            .reason
+            .contains("not compatible with container isolation"));
     }
 }

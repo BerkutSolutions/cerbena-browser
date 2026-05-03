@@ -11,13 +11,14 @@ use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::{
+    certificate_runtime::{display_certificate_issuer, load_certificate_metadata},
     device_posture::{get_or_refresh_device_posture, refresh_device_posture, DevicePostureReport},
     envelope::{ok, UiEnvelope},
     launch_sessions::revoke_launch_session,
+    network_sandbox_lifecycle::stop_profile_network_stack,
     process_tracking::{
         clear_profile_process, terminate_process_tree, terminate_profile_processes,
     },
-    network_sandbox_lifecycle::stop_profile_network_stack,
     state::{persist_link_routing_store_with_secret, AppState},
 };
 
@@ -71,6 +72,7 @@ pub struct LinkTypeBindingView {
     pub label_key: String,
     pub profile_id: Option<String>,
     pub uses_global_default: bool,
+    pub allow_global_default: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,6 +155,10 @@ pub struct ManagedCertificateRecord {
     pub id: String,
     pub name: String,
     pub path: String,
+    #[serde(default)]
+    pub issuer_name: Option<String>,
+    #[serde(default)]
+    pub subject_name: Option<String>,
     pub apply_globally: bool,
     pub profile_ids: Vec<String>,
 }
@@ -345,16 +351,32 @@ const DEFAULT_DNS_BLOCKLISTS: &[(&str, &str)] = &[
     ),
 ];
 
-const SUPPORTED_LINK_TYPES: &[(&str, &str)] = &[
-    ("http", "links.type.http"),
-    ("https", "links.type.https"),
-    ("ftp", "links.type.ftp"),
-    ("mailto", "links.type.mailto"),
-    ("magnet", "links.type.magnet"),
-    ("tg", "links.type.tg"),
-    ("discord", "links.type.discord"),
-    ("slack", "links.type.slack"),
-    ("zoommtg", "links.type.zoommtg"),
+const SUPPORTED_LINK_TYPES: &[(&str, &str, bool)] = &[
+    ("http", "links.type.http", true),
+    ("https", "links.type.https", true),
+    ("ftp", "links.type.ftp", false),
+    ("mailto", "links.type.mailto", false),
+    ("irc", "links.type.irc", false),
+    ("mms", "links.type.mms", false),
+    ("news", "links.type.news", false),
+    ("nntp", "links.type.nntp", false),
+    ("sms", "links.type.sms", false),
+    ("smsto", "links.type.smsto", false),
+    ("snews", "links.type.snews", false),
+    ("tel", "links.type.tel", false),
+    ("urn", "links.type.urn", false),
+    ("webcal", "links.type.webcal", false),
+    ("magnet", "links.type.magnet", false),
+    ("tg", "links.type.tg", false),
+    ("discord", "links.type.discord", false),
+    ("slack", "links.type.slack", false),
+    ("zoommtg", "links.type.zoommtg", false),
+    ("file:mht", "links.type.fileMht", false),
+    ("file:mhtml", "links.type.fileMhtml", false),
+    ("file:pdf", "links.type.filePdf", false),
+    ("file:shtml", "links.type.fileShtml", false),
+    ("file:svg", "links.type.fileSvg", false),
+    ("file:xhtml", "links.type.fileXhtml", false),
 ];
 
 #[tauri::command]
@@ -509,8 +531,8 @@ fn extension_panic_retain_paths(state: &AppState, profile_id: Uuid) -> Result<Ve
 fn supported_link_type_label_key(link_type: &str) -> Option<&'static str> {
     SUPPORTED_LINK_TYPES
         .iter()
-        .find(|(key, _)| *key == link_type)
-        .map(|(_, label_key)| *label_key)
+        .find(|(key, _, _)| *key == link_type)
+        .map(|(_, label_key, _)| *label_key)
 }
 
 fn normalize_link_type(link_type: &str) -> Option<String> {
@@ -522,14 +544,41 @@ fn normalize_link_type(link_type: &str) -> Option<String> {
     }
 }
 
+fn normalize_file_extension(extension: &str) -> String {
+    match extension.trim().to_ascii_lowercase().as_str() {
+        "xht" | "xhy" => "xhtml".to_string(),
+        other => other.to_string(),
+    }
+}
+
 pub(crate) fn detect_link_type(raw_url: &str) -> Result<String, String> {
     let trimmed = raw_url.trim();
     if trimmed.is_empty() {
         return Err("link URL is required".to_string());
     }
     if let Ok(parsed) = reqwest::Url::parse(trimmed) {
+        if parsed.scheme().eq_ignore_ascii_case("file") {
+            let path = parsed.path().trim();
+            if let Some(extension) = std::path::Path::new(path)
+                .extension()
+                .and_then(|value| value.to_str())
+            {
+                let file_type = format!("file:{}", normalize_file_extension(extension));
+                return normalize_link_type(&file_type)
+                    .ok_or_else(|| format!("unsupported link type: .{}", extension));
+            }
+        }
         return normalize_link_type(parsed.scheme())
             .ok_or_else(|| format!("unsupported link type: {}", parsed.scheme()));
+    }
+    if let Some(extension) = std::path::Path::new(trimmed)
+        .extension()
+        .and_then(|value| value.to_str())
+    {
+        let file_type = format!("file:{}", normalize_file_extension(extension));
+        if let Some(normalized) = normalize_link_type(&file_type) {
+            return Ok(normalized);
+        }
     }
     if !trimmed.contains("://") {
         return Ok("https".to_string());
@@ -558,7 +607,7 @@ fn link_routing_overview(state: &AppState) -> Result<LinkRoutingOverview, String
         .filter(|profile_id| profile_ids.contains(profile_id));
     let supported_types = SUPPORTED_LINK_TYPES
         .iter()
-        .map(|(link_type, label_key)| {
+        .map(|(link_type, label_key, allow_global_default)| {
             let bound = store
                 .type_bindings
                 .get(*link_type)
@@ -567,7 +616,10 @@ fn link_routing_overview(state: &AppState) -> Result<LinkRoutingOverview, String
             LinkTypeBindingView {
                 link_type: (*link_type).to_string(),
                 label_key: (*label_key).to_string(),
-                uses_global_default: bound.is_none() && global_profile_id.is_some(),
+                uses_global_default: *allow_global_default
+                    && bound.is_none()
+                    && global_profile_id.is_some(),
+                allow_global_default: *allow_global_default,
                 profile_id: bound,
             }
         })
@@ -699,11 +751,21 @@ pub fn dispatch_external_link(
             Some(profile_id.clone()),
             Some("type".to_string()),
         )
+    } else if row.allow_global_default {
+        if let Some(profile_id) = &overview.global_profile_id {
+            (
+                "resolved".to_string(),
+                Some(profile_id.clone()),
+                Some("global".to_string()),
+            )
+        } else {
+            ("prompt".to_string(), None, None)
+        }
     } else if let Some(profile_id) = &overview.global_profile_id {
         (
-            "resolved".to_string(),
+            "prompt".to_string(),
             Some(profile_id.clone()),
-            Some("global".to_string()),
+            Some("global-disabled".to_string()),
         )
     } else {
         ("prompt".to_string(), None, None)
@@ -933,11 +995,12 @@ pub fn save_global_security_settings(
             .startup_page
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty()),
-        certificates: normalize_certificates(request.certificates),
+        certificates: normalize_certificates(&state, request.certificates, &existing.certificates)?,
         blocked_domain_suffixes: normalize_suffixes(request.blocked_domain_suffixes),
         blocklists: normalize_blocklists(&state, request.blocklists, &existing.blocklists)?,
     };
     persist_global_security_record(&state, &payload)?;
+    cleanup_unused_managed_certificates(&state, &existing.certificates, &payload.certificates);
 
     if let Some(start_page) = payload.startup_page.clone() {
         let manager = state
@@ -1000,7 +1063,7 @@ fn load_global_security_record_from_paths(
     Ok(record)
 }
 
-fn persist_global_security_record(
+pub(crate) fn persist_global_security_record(
     state: &AppState,
     payload: &GlobalSecuritySettingsRecord,
 ) -> Result<(), String> {
@@ -1049,6 +1112,8 @@ fn parse_global_security_record_from_value(parsed: &Value) -> GlobalSecuritySett
                         id: slugify(path),
                         name: certificate_name_from_path(path),
                         path: path.trim().to_string(),
+                        issuer_name: None,
+                        subject_name: None,
                         apply_globally: true,
                         profile_ids: Vec::new(),
                     })
@@ -1084,9 +1149,19 @@ fn parse_global_security_record_from_value(parsed: &Value) -> GlobalSecuritySett
     }
 }
 
-fn normalize_certificates(items: Vec<ManagedCertificateInput>) -> Vec<ManagedCertificateRecord> {
+fn normalize_certificates(
+    state: &AppState,
+    items: Vec<ManagedCertificateInput>,
+    existing: &[ManagedCertificateRecord],
+) -> Result<Vec<ManagedCertificateRecord>, String> {
+    let root = state.managed_certificates_root(&state.app_handle)?;
+    std::fs::create_dir_all(&root).map_err(|error| format!("create managed certificates dir: {error}"))?;
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
+    let existing_by_id = existing
+        .iter()
+        .map(|item| (item.id.clone(), item.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     for item in items {
         let path = item.path.trim().to_string();
         if path.is_empty() || !seen.insert(path.clone()) {
@@ -1105,19 +1180,128 @@ fn normalize_certificates(items: Vec<ManagedCertificateInput>) -> Vec<ManagedCer
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
+        let existing_record = existing_by_id.get(&id);
+        let managed_path = materialize_managed_certificate(
+            &root,
+            &path,
+            &id,
+            existing_record.map(|record| record.path.as_str()),
+        )?;
+        let (subject_name, issuer_name) = load_certificate_metadata(&managed_path).unwrap_or((None, None));
         out.push(ManagedCertificateRecord {
             id,
             name: if item.name.trim().is_empty() {
-                certificate_name_from_path(&path)
+                certificate_display_name(
+                    subject_name.clone(),
+                    &managed_path.to_string_lossy(),
+                )
             } else {
                 item.name.trim().to_string()
             },
-            path,
+            path: managed_path.to_string_lossy().to_string(),
+            issuer_name: display_certificate_issuer(issuer_name, subject_name.clone()),
+            subject_name,
             apply_globally: item.apply_globally,
             profile_ids,
         });
     }
-    out
+    Ok(out)
+}
+
+fn materialize_managed_certificate(
+    root: &Path,
+    source_path: &str,
+    id: &str,
+    existing_managed_path: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    let trimmed = source_path.trim();
+    if trimmed.is_empty() {
+        return Err("certificate path is required".to_string());
+    }
+    let source = Path::new(trimmed);
+    if !source.exists() {
+        return Err(format!("certificate file not found: {}", source.display()));
+    }
+
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.trim().trim_start_matches('.'))
+        .filter(|value| !value.is_empty())
+        .unwrap_or("crt");
+    let target = root.join(format!("{id}.{extension}"));
+    if source == target {
+        return Ok(target);
+    }
+
+    if let Some(existing_path) = existing_managed_path {
+        let existing = Path::new(existing_path);
+        if existing == source && existing.exists() {
+            return Ok(existing.to_path_buf());
+        }
+    }
+    std::fs::copy(source, &target)
+        .map_err(|error| format!("copy certificate {}: {error}", source.display()))?;
+    Ok(target)
+}
+
+fn cleanup_unused_managed_certificates(
+    state: &AppState,
+    previous: &[ManagedCertificateRecord],
+    next: &[ManagedCertificateRecord],
+) {
+    let Ok(root) = state.managed_certificates_root(&state.app_handle) else {
+        return;
+    };
+    let keep = next
+        .iter()
+        .map(|item| item.path.trim().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    for path in previous.iter().map(|item| item.path.trim()).filter(|value| !value.is_empty()) {
+        let candidate = Path::new(path);
+        if !candidate.starts_with(&root) {
+            continue;
+        }
+        if keep.contains(path) {
+            continue;
+        }
+        let _ = std::fs::remove_file(candidate);
+    }
+}
+
+fn certificate_display_name(subject_name: Option<String>, fallback_path: &str) -> String {
+    subject_name
+        .and_then(|subject| {
+            certificate_common_name(&subject)
+                .or_else(|| {
+                    let compact = subject.trim().to_string();
+                    if compact.is_empty() {
+                        None
+                    } else {
+                        Some(compact)
+                    }
+                })
+        })
+        .unwrap_or_else(|| certificate_name_from_path(fallback_path))
+}
+
+fn certificate_common_name(subject_name: &str) -> Option<String> {
+    subject_name
+        .split(',')
+        .map(str::trim)
+        .find_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            if key.trim().eq_ignore_ascii_case("CN") {
+                let clean = value.trim();
+                if clean.is_empty() {
+                    None
+                } else {
+                    Some(clean.to_string())
+                }
+            } else {
+                None
+            }
+        })
 }
 
 fn normalize_blocklists(
@@ -1553,18 +1737,16 @@ mod tests {
         let legacy = temp_path("global-security-legacy");
         let app_data_dir = temp_dir_path("global-security-store-app-data");
         let binary_path = app_data_dir.join("cerbena.exe");
-        let secret = derive_app_secret_material(
-            &app_data_dir,
-            &binary_path,
-            "dev.cerbena.app",
-        )
-        .expect("derive secret");
+        let secret = derive_app_secret_material(&app_data_dir, &binary_path, "dev.cerbena.app")
+            .expect("derive secret");
         let payload = GlobalSecuritySettingsRecord {
             startup_page: Some("https://duckduckgo.com".to_string()),
             certificates: vec![ManagedCertificateRecord {
                 id: "cert-a".to_string(),
                 name: "Cert A".to_string(),
                 path: "C:/secret/cert.pem".to_string(),
+                issuer_name: None,
+                subject_name: None,
                 apply_globally: true,
                 profile_ids: Vec::new(),
             }],
@@ -1595,12 +1777,8 @@ mod tests {
         let legacy = temp_path("global-security-legacy-old");
         let app_data_dir = temp_dir_path("global-security-legacy-app-data");
         let binary_path = app_data_dir.join("cerbena.exe");
-        let secret = derive_app_secret_material(
-            &app_data_dir,
-            &binary_path,
-            "dev.cerbena.app",
-        )
-        .expect("derive secret");
+        let secret = derive_app_secret_material(&app_data_dir, &binary_path, "dev.cerbena.app")
+            .expect("derive secret");
         fs::write(
             &legacy,
             r#"{"startup_page":"https://legacy.test","certificates":["C:/legacy/cert.pem"],"blocked_domain_suffixes":["legacy"]}"#,

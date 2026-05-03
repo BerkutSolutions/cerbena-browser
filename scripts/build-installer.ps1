@@ -135,8 +135,17 @@ internal static class CerbenaInstallerProgram
     private const string Publisher = "Berkut Solutions";
     private const string DisplayVersion = "$Version";
     private const string UninstallerFileName = "Cerbena Browser Uninstall.exe";
+    private const string BrowserDescription = "Isolated browser profiles with controlled link routing and network policies.";
     private static readonly string ShortcutIconFileName = "cerbena.ico";
     private static readonly string InstallerLogPath = Path.Combine(Path.GetTempPath(), "cerbena-installer.log");
+    private const string BrowserClientSubKey = @"Software\Clients\StartMenuInternet\Cerbena Browser";
+    private const string RegisteredApplicationsSubKey = @"Software\RegisteredApplications";
+    private const string BrowserUrlProgId = "CerbenaBrowser.URL";
+    private const string BrowserHtmlProgId = "CerbenaBrowser.HTML";
+    private const string BrowserMhtmlProgId = "CerbenaBrowser.MHTML";
+    private const string BrowserPdfProgId = "CerbenaBrowser.PDF";
+    private const string BrowserXhtmlProgId = "CerbenaBrowser.XHTML";
+    private const string BrowserSvgProgId = "CerbenaBrowser.SVG";
     private static readonly string DefaultInstallRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         @"Cerbena Browser");
@@ -222,6 +231,7 @@ internal static class CerbenaInstallerProgram
 
         RemoveShortcut(Path.Combine(GetKnownFolderPath(FolderIdPrograms), ShortcutFileName));
         RemoveShortcut(Path.Combine(GetKnownFolderPath(FolderIdDesktop), ShortcutFileName));
+        RemoveBrowserRegistration();
         RemoveUninstallRegistration();
         CleanupManagedNetworkArtifacts(installRoot);
         CleanupManagedContainerArtifacts();
@@ -806,6 +816,11 @@ internal static class CerbenaInstallerProgram
             await Task.Run(() =>
             {
                 ReportProgress(10, "Preparing installation folder...");
+                var running = FindRunningProductProcesses(targetRoot);
+                if (running.Count > 0 && !TryTerminateProcesses(running))
+                {
+                    throw new InvalidOperationException("Cerbena Browser is still running and could not be closed automatically before installation.");
+                }
                 var tempRoot = Path.Combine(Path.GetTempPath(), "CerbenaInstaller_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tempRoot);
                 Directory.CreateDirectory(targetRoot);
@@ -857,6 +872,7 @@ internal static class CerbenaInstallerProgram
                     var uninstallerPath = Path.Combine(targetRoot, UninstallerFileName);
                     File.Copy(Application.ExecutablePath, uninstallerPath, true);
                     RegisterUninstaller(targetRoot, shortcutIconPath, uninstallerPath);
+                    RegisterBrowserCapabilities(targetExe, shortcutIconPath);
 
                     ReportProgress(100, "Installation completed.");
                 }
@@ -1084,6 +1100,185 @@ internal static class CerbenaInstallerProgram
         Registry.CurrentUser.DeleteSubKeyTree(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Cerbena Browser", false);
     }
 
+    private static void RegisterBrowserCapabilities(string browserExePath, string displayIconPath)
+    {
+        var command = "\"" + browserExePath + "\" \"%1\"";
+        RegisterProgId(BrowserUrlProgId, ProductName, displayIconPath, command, true);
+        RegisterProgId(BrowserHtmlProgId, "Cerbena HTML Document", displayIconPath, command, false);
+        RegisterProgId(BrowserMhtmlProgId, "Cerbena MHTML Document", displayIconPath, command, false);
+        RegisterProgId(BrowserPdfProgId, "Cerbena PDF Document", displayIconPath, command, false);
+        RegisterProgId(BrowserXhtmlProgId, "Cerbena XHTML Document", displayIconPath, command, false);
+        RegisterProgId(BrowserSvgProgId, "Cerbena SVG Document", displayIconPath, command, false);
+
+        using (var clientKey = Registry.CurrentUser.CreateSubKey(BrowserClientSubKey))
+        {
+            if (clientKey != null)
+            {
+                clientKey.SetValue(null, ProductName);
+                clientKey.SetValue("LocalizedString", ProductName);
+                using (var iconKey = clientKey.CreateSubKey("DefaultIcon"))
+                {
+                    if (iconKey != null)
+                    {
+                        iconKey.SetValue(null, displayIconPath);
+                    }
+                }
+                using (var commandKey = clientKey.CreateSubKey(@"shell\open\command"))
+                {
+                    if (commandKey != null)
+                    {
+                        commandKey.SetValue(null, command);
+                    }
+                }
+                using (var capabilitiesKey = clientKey.CreateSubKey("Capabilities"))
+                {
+                    if (capabilitiesKey != null)
+                    {
+                        capabilitiesKey.SetValue("ApplicationName", ProductName);
+                        capabilitiesKey.SetValue("ApplicationDescription", BrowserDescription);
+                        using (var urlKey = capabilitiesKey.CreateSubKey("UrlAssociations"))
+                        {
+                            if (urlKey != null)
+                            {
+                                foreach (var scheme in new[] { "http", "https", "irc", "mailto", "mms", "news", "nntp", "sms", "smsto", "snews", "tel", "urn", "webcal" })
+                                {
+                                    urlKey.SetValue(scheme, BrowserUrlProgId);
+                                }
+                            }
+                        }
+                        using (var fileKey = capabilitiesKey.CreateSubKey("FileAssociations"))
+                        {
+                            if (fileKey != null)
+                            {
+                                fileKey.SetValue(".htm", BrowserHtmlProgId);
+                                fileKey.SetValue(".html", BrowserHtmlProgId);
+                                fileKey.SetValue(".shtml", BrowserHtmlProgId);
+                                fileKey.SetValue(".mht", BrowserMhtmlProgId);
+                                fileKey.SetValue(".mhtml", BrowserMhtmlProgId);
+                                fileKey.SetValue(".pdf", BrowserPdfProgId);
+                                fileKey.SetValue(".svg", BrowserSvgProgId);
+                                fileKey.SetValue(".xhy", BrowserXhtmlProgId);
+                                fileKey.SetValue(".xht", BrowserXhtmlProgId);
+                                fileKey.SetValue(".xhtml", BrowserXhtmlProgId);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        using (var registeredApps = Registry.CurrentUser.CreateSubKey(RegisteredApplicationsSubKey))
+        {
+            if (registeredApps != null)
+            {
+                registeredApps.SetValue(ProductName, BrowserClientSubKey + @"\Capabilities");
+            }
+        }
+
+        RegisterOpenWith(".htm", BrowserHtmlProgId);
+        RegisterOpenWith(".html", BrowserHtmlProgId);
+        RegisterOpenWith(".shtml", BrowserHtmlProgId);
+        RegisterOpenWith(".mht", BrowserMhtmlProgId);
+        RegisterOpenWith(".mhtml", BrowserMhtmlProgId);
+        RegisterOpenWith(".pdf", BrowserPdfProgId);
+        RegisterOpenWith(".svg", BrowserSvgProgId);
+        RegisterOpenWith(".xhy", BrowserXhtmlProgId);
+        RegisterOpenWith(".xht", BrowserXhtmlProgId);
+        RegisterOpenWith(".xhtml", BrowserXhtmlProgId);
+    }
+
+    private static void RegisterProgId(string progId, string displayName, string displayIconPath, string command, bool urlProtocol)
+    {
+        using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Classes\" + progId))
+        {
+            if (key == null)
+            {
+                return;
+            }
+            key.SetValue(null, displayName);
+            if (urlProtocol)
+            {
+                key.SetValue("URL Protocol", string.Empty);
+            }
+            using (var iconKey = key.CreateSubKey("DefaultIcon"))
+            {
+                if (iconKey != null)
+                {
+                    iconKey.SetValue(null, displayIconPath);
+                }
+            }
+            using (var commandKey = key.CreateSubKey(@"shell\open\command"))
+            {
+                if (commandKey != null)
+                {
+                    commandKey.SetValue(null, command);
+                }
+            }
+        }
+    }
+
+    private static void RegisterOpenWith(string extension, string progId)
+    {
+        using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Classes\" + extension + @"\OpenWithProgids"))
+        {
+            if (key != null)
+            {
+                key.SetValue(progId, new byte[0], RegistryValueKind.None);
+            }
+        }
+    }
+
+    private static void RemoveBrowserRegistration()
+    {
+        Registry.CurrentUser.DeleteSubKeyTree(BrowserClientSubKey, false);
+        Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\" + BrowserUrlProgId, false);
+        Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\" + BrowserHtmlProgId, false);
+        Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\" + BrowserMhtmlProgId, false);
+        Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\" + BrowserPdfProgId, false);
+        Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\" + BrowserXhtmlProgId, false);
+        Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\" + BrowserSvgProgId, false);
+        RemoveOpenWith(".htm", BrowserHtmlProgId);
+        RemoveOpenWith(".html", BrowserHtmlProgId);
+        RemoveOpenWith(".shtml", BrowserHtmlProgId);
+        RemoveOpenWith(".mht", BrowserMhtmlProgId);
+        RemoveOpenWith(".mhtml", BrowserMhtmlProgId);
+        RemoveOpenWith(".pdf", BrowserPdfProgId);
+        RemoveOpenWith(".xhy", BrowserXhtmlProgId);
+        RemoveOpenWith(".xht", BrowserXhtmlProgId);
+        RemoveOpenWith(".xhtml", BrowserXhtmlProgId);
+        RemoveOpenWith(".svg", BrowserSvgProgId);
+        using (var registeredApps = Registry.CurrentUser.OpenSubKey(RegisteredApplicationsSubKey, true))
+        {
+            if (registeredApps != null)
+            {
+                try
+                {
+                    registeredApps.DeleteValue(ProductName, false);
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
+    private static void RemoveOpenWith(string extension, string progId)
+    {
+        using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Classes\" + extension + @"\OpenWithProgids", true))
+        {
+            if (key != null)
+            {
+                try
+                {
+                    key.DeleteValue(progId, false);
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
     private static System.Collections.Generic.List<Process> FindRunningProductProcesses(string installRoot)
     {
         var matches = new System.Collections.Generic.List<Process>();
@@ -1238,7 +1433,7 @@ if ([string]::IsNullOrWhiteSpace($resolvedVersion)) {
 }
 
 $releaseBundleRoot = Join-Path $repoRoot ("build\release\" + $resolvedVersion + "\staging\cerbena-windows-x64")
-if ((-not $SkipReleasePackaging) -and (-not (Test-Path $releaseBundleRoot))) {
+if (-not $SkipReleasePackaging) {
     Invoke-Native "powershell" @(
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $repoRoot "scripts\generate-release-artifacts.ps1"),

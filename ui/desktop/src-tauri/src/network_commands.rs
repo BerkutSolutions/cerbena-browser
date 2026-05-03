@@ -22,11 +22,11 @@ use uuid::Uuid;
 use crate::{
     envelope::{ok, UiEnvelope},
     launcher_commands::load_global_security_record,
-    network_sandbox_lifecycle::{ensure_profile_network_stack, stop_profile_network_stack},
     network_sandbox::{
         resolve_global_network_sandbox_view, resolve_profile_network_sandbox_view,
         NetworkSandboxProfileView,
     },
+    network_sandbox_lifecycle::{ensure_profile_network_stack, stop_profile_network_stack},
     process_tracking::is_process_running as is_pid_running,
     state::{
         persist_network_store, AppState, ConnectionNode, ConnectionTemplate,

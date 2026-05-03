@@ -3,11 +3,37 @@ use std::path::Path;
 use tauri::AppHandle;
 
 const PRODUCT_NAME: &str = "Cerbena Browser";
+const BROWSER_DESCRIPTION: &str =
+    "Isolated browser profiles with controlled link routing and network policies.";
 const UNINSTALLER_FILE_NAME: &str = "Cerbena Browser Uninstall.exe";
 const PUBLISHER: &str = "Berkut Solutions";
 const UNINSTALL_SUBKEY: &str =
     r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Cerbena Browser";
+const START_MENU_INTERNET_SUBKEY: &str = r"Software\Clients\StartMenuInternet\Cerbena Browser";
+const REGISTERED_APPLICATIONS_SUBKEY: &str = r"Software\RegisteredApplications";
+const CERBENA_URL_PROG_ID: &str = "CerbenaBrowser.URL";
+const CERBENA_HTML_PROG_ID: &str = "CerbenaBrowser.HTML";
+const CERBENA_MHTML_PROG_ID: &str = "CerbenaBrowser.MHTML";
+const CERBENA_PDF_PROG_ID: &str = "CerbenaBrowser.PDF";
+const CERBENA_XHTML_PROG_ID: &str = "CerbenaBrowser.XHTML";
+const CERBENA_SVG_PROG_ID: &str = "CerbenaBrowser.SVG";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const URL_ASSOCIATIONS: &[&str] = &[
+    "http", "https", "irc", "mailto", "mms", "news", "nntp", "sms", "smsto", "snews", "tel", "urn",
+    "webcal",
+];
+const FILE_ASSOCIATIONS: &[(&str, &str, &str)] = &[
+    (".htm", CERBENA_HTML_PROG_ID, "Cerbena HTML Document"),
+    (".html", CERBENA_HTML_PROG_ID, "Cerbena HTML Document"),
+    (".shtml", CERBENA_HTML_PROG_ID, "Cerbena HTML Document"),
+    (".mht", CERBENA_MHTML_PROG_ID, "Cerbena MHTML Document"),
+    (".mhtml", CERBENA_MHTML_PROG_ID, "Cerbena MHTML Document"),
+    (".pdf", CERBENA_PDF_PROG_ID, "Cerbena PDF Document"),
+    (".svg", CERBENA_SVG_PROG_ID, "Cerbena SVG Document"),
+    (".xhy", CERBENA_XHTML_PROG_ID, "Cerbena XHTML Document"),
+    (".xht", CERBENA_XHTML_PROG_ID, "Cerbena XHTML Document"),
+    (".xhtml", CERBENA_XHTML_PROG_ID, "Cerbena XHTML Document"),
+];
 
 pub fn reconcile_install_registration(app: &AppHandle) {
     #[cfg(target_os = "windows")]
@@ -32,12 +58,36 @@ pub fn reconcile_install_registration(app: &AppHandle) {
             }
         };
         let _ = register_uninstall_metadata(&install_root, &icon_path, &uninstaller_path);
+        let _ = register_browser_capabilities(&current_exe, &icon_path);
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         let _ = app;
     }
+}
+
+#[cfg(target_os = "windows")]
+pub fn is_default_browser() -> bool {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    ["http", "https"].iter().all(|scheme| {
+        let user_choice = format!(
+            "Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\{}\\UserChoice",
+            scheme
+        );
+        hkcu.open_subkey(&user_choice)
+            .ok()
+            .and_then(|key| key.get_value::<String, _>("ProgId").ok())
+            .map(|prog_id| prog_id.eq_ignore_ascii_case(CERBENA_URL_PROG_ID))
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_default_browser() -> bool {
+    false
 }
 
 #[cfg(target_os = "windows")]
@@ -58,8 +108,11 @@ fn register_uninstall_metadata(
         .map_err(|e| format!("set DisplayVersion: {e}"))?;
     key.set_value("Publisher", &PUBLISHER)
         .map_err(|e| format!("set Publisher: {e}"))?;
-    key.set_value("InstallLocation", &install_root.to_string_lossy().to_string())
-        .map_err(|e| format!("set InstallLocation: {e}"))?;
+    key.set_value(
+        "InstallLocation",
+        &install_root.to_string_lossy().to_string(),
+    )
+    .map_err(|e| format!("set InstallLocation: {e}"))?;
     key.set_value("DisplayIcon", &icon_path.to_string_lossy().to_string())
         .map_err(|e| format!("set DisplayIcon: {e}"))?;
     key.set_value(
@@ -79,5 +132,183 @@ fn register_uninstall_metadata(
         .map_err(|e| format!("set NoModify: {e}"))?;
     key.set_value("NoRepair", &1u32)
         .map_err(|e| format!("set NoRepair: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn register_browser_capabilities(current_exe: &Path, icon_path: &Path) -> Result<(), String> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    let command = format!("\"{}\" \"%1\"", current_exe.to_string_lossy());
+    let icon = icon_path.to_string_lossy().to_string();
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+    register_prog_id(
+        &hkcu,
+        CERBENA_URL_PROG_ID,
+        PRODUCT_NAME,
+        &icon,
+        &command,
+        true,
+    )?;
+    register_prog_id(
+        &hkcu,
+        CERBENA_HTML_PROG_ID,
+        "Cerbena HTML Document",
+        &icon,
+        &command,
+        false,
+    )?;
+    register_prog_id(
+        &hkcu,
+        CERBENA_MHTML_PROG_ID,
+        "Cerbena MHTML Document",
+        &icon,
+        &command,
+        false,
+    )?;
+    register_prog_id(
+        &hkcu,
+        CERBENA_PDF_PROG_ID,
+        "Cerbena PDF Document",
+        &icon,
+        &command,
+        false,
+    )?;
+    register_prog_id(
+        &hkcu,
+        CERBENA_XHTML_PROG_ID,
+        "Cerbena XHTML Document",
+        &icon,
+        &command,
+        false,
+    )?;
+    register_prog_id(
+        &hkcu,
+        CERBENA_SVG_PROG_ID,
+        "Cerbena SVG Document",
+        &icon,
+        &command,
+        false,
+    )?;
+
+    let (client_key, _) = hkcu
+        .create_subkey(START_MENU_INTERNET_SUBKEY)
+        .map_err(|e| format!("create start menu client key: {e}"))?;
+    client_key
+        .set_value("", &PRODUCT_NAME)
+        .map_err(|e| format!("set start menu client name: {e}"))?;
+    client_key
+        .set_value("LocalizedString", &PRODUCT_NAME)
+        .map_err(|e| format!("set localized string: {e}"))?;
+    let (client_icon, _) = client_key
+        .create_subkey("DefaultIcon")
+        .map_err(|e| format!("create start menu icon key: {e}"))?;
+    client_icon
+        .set_value("", &icon)
+        .map_err(|e| format!("set start menu icon: {e}"))?;
+    let (client_command, _) = client_key
+        .create_subkey(r"shell\open\command")
+        .map_err(|e| format!("create start menu command key: {e}"))?;
+    client_command
+        .set_value("", &command)
+        .map_err(|e| format!("set start menu command: {e}"))?;
+
+    let (capabilities, _) = client_key
+        .create_subkey("Capabilities")
+        .map_err(|e| format!("create browser capabilities key: {e}"))?;
+    capabilities
+        .set_value("ApplicationName", &PRODUCT_NAME)
+        .map_err(|e| format!("set application name: {e}"))?;
+    capabilities
+        .set_value("ApplicationDescription", &BROWSER_DESCRIPTION)
+        .map_err(|e| format!("set application description: {e}"))?;
+    let (url_associations, _) = capabilities
+        .create_subkey("UrlAssociations")
+        .map_err(|e| format!("create url associations key: {e}"))?;
+    for scheme in URL_ASSOCIATIONS {
+        url_associations
+            .set_value(*scheme, &CERBENA_URL_PROG_ID)
+            .map_err(|e| format!("set {scheme} association: {e}"))?;
+    }
+    let (file_associations, _) = capabilities
+        .create_subkey("FileAssociations")
+        .map_err(|e| format!("create file associations key: {e}"))?;
+    for (extension, prog_id, _) in FILE_ASSOCIATIONS {
+        file_associations
+            .set_value(*extension, prog_id)
+            .map_err(|e| format!("set {extension} association: {e}"))?;
+    }
+
+    let (registered, _) = hkcu
+        .create_subkey(REGISTERED_APPLICATIONS_SUBKEY)
+        .map_err(|e| format!("create registered applications key: {e}"))?;
+    registered
+        .set_value(
+            PRODUCT_NAME,
+            &format!(r"{}\Capabilities", START_MENU_INTERNET_SUBKEY),
+        )
+        .map_err(|e| format!("set registered application path: {e}"))?;
+    for (extension, prog_id, _) in FILE_ASSOCIATIONS {
+        register_extension_open_with(&hkcu, extension, prog_id)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn register_prog_id(
+    hkcu: &winreg::RegKey,
+    prog_id: &str,
+    display_name: &str,
+    icon: &str,
+    command: &str,
+    is_url_protocol: bool,
+) -> Result<(), String> {
+    let (prog_key, _) = hkcu
+        .create_subkey(format!(r"Software\Classes\{prog_id}"))
+        .map_err(|e| format!("create {prog_id} key: {e}"))?;
+    prog_key
+        .set_value("", &display_name)
+        .map_err(|e| format!("set {prog_id} display name: {e}"))?;
+    if is_url_protocol {
+        prog_key
+            .set_value("URL Protocol", &"")
+            .map_err(|e| format!("set {prog_id} url protocol marker: {e}"))?;
+    }
+    let (default_icon, _) = prog_key
+        .create_subkey("DefaultIcon")
+        .map_err(|e| format!("create {prog_id} icon key: {e}"))?;
+    default_icon
+        .set_value("", &icon)
+        .map_err(|e| format!("set {prog_id} icon: {e}"))?;
+    let (open_command, _) = prog_key
+        .create_subkey(r"shell\open\command")
+        .map_err(|e| format!("create {prog_id} command key: {e}"))?;
+    open_command
+        .set_value("", &command)
+        .map_err(|e| format!("set {prog_id} command: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn register_extension_open_with(
+    hkcu: &winreg::RegKey,
+    extension: &str,
+    prog_id: &str,
+) -> Result<(), String> {
+    use winreg::{enums::RegType, RegValue};
+
+    let (key, _) = hkcu
+        .create_subkey(format!(r"Software\Classes\{}\OpenWithProgids", extension))
+        .map_err(|e| format!("create {extension} OpenWithProgids key: {e}"))?;
+    key.set_raw_value(
+        prog_id,
+        &RegValue {
+            bytes: Vec::new(),
+            vtype: RegType::REG_NONE,
+        },
+    )
+    .map_err(|e| format!("set {extension} OpenWithProgids value: {e}"))?;
     Ok(())
 }

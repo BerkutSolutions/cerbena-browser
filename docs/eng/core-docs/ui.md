@@ -17,6 +17,14 @@ The Cerbena Browser desktop UI is a local shell on top of `Tauri` backend comman
 - `Settings`: global shell settings with `General`, `Links`, `Sync`, and update controls.
 - `Updater`: a separate `cerbena-updater.exe` window for trusted update flow, preview checks, and safe installation handoff.
 
+## Built-in defaults and links
+
+- `Home` starts with six built-in profiles: `Chromium Default`, `Firefox Default`, `Chromium Private Memory`, `Firefox Private Memory`, `Discord`, and `Telegram`.
+- `Discord` and `Telegram` are strict `Wayfern` app-window profiles with fixed allowlists and without a free address bar.
+- The profile modal `General` tab also supports a `Single-page` checkbox for custom strict `Wayfern` app-window profiles. When enabled, the start page stays mandatory and the default search-provider selector is hidden.
+- `Settings > Links` supports routing for `HTTP`, `HTTPS`, `FTP`, `MAILTO`, `IRC`, `MMS`, `NEWS`, `NNTP`, `SMS`, `SMSTO`, `SNEWS`, `TEL`, `URN`, `WEBCAL`, `TG`, `Discord`, `Slack`, `Zoom`, plus file associations for `.htm`, `.html`, `.shtml`, `.mht`, `.mhtml`, `.pdf`, `.svg`, `.xht`, `.xhtml`, and `.xhy`.
+- Only `HTTP` and `HTTPS` inherit the global default profile automatically. Other supported types require an explicit binding.
+
 ## Key UX principles
 
 - Every sensitive action is backed by backend validation.

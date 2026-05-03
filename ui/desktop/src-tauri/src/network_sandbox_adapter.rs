@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::network_sandbox::{
-    ResolvedNetworkSandboxMode, ResolvedNetworkSandboxStrategy,
-};
+use crate::network_sandbox::{ResolvedNetworkSandboxMode, ResolvedNetworkSandboxStrategy};
 use crate::network_sandbox_container::{probe_container_runtime, ContainerSandboxRuntimeProbe};
 use crate::state::AppState;
 
@@ -69,16 +67,18 @@ pub fn resolve_adapter_plan(
             reason: strategy.reason.clone(),
         },
         ResolvedNetworkSandboxMode::Container => {
-            let probe = container_probe.cloned().unwrap_or(ContainerSandboxRuntimeProbe {
-                available: false,
-                runtime_kind: "docker-desktop".to_string(),
-                runtime_version: None,
-                runtime_platform: None,
-                active_sandboxes: 0,
-                max_active_sandboxes,
-                supports_native_isolation: true,
-                reason: "Container sandbox runtime has not been probed yet".to_string(),
-            });
+            let probe = container_probe
+                .cloned()
+                .unwrap_or(ContainerSandboxRuntimeProbe {
+                    available: false,
+                    runtime_kind: "docker-desktop".to_string(),
+                    runtime_version: None,
+                    runtime_platform: None,
+                    active_sandboxes: 0,
+                    max_active_sandboxes,
+                    supports_native_isolation: true,
+                    reason: "Container sandbox runtime has not been probed yet".to_string(),
+                });
             let available = strategy.available && probe.available;
             let reason = if !strategy.available {
                 strategy.reason.clone()
@@ -118,7 +118,10 @@ mod tests {
     use super::*;
     use crate::network_sandbox::{ResolvedNetworkSandboxMode, ResolvedNetworkSandboxStrategy};
 
-    fn strategy(mode: ResolvedNetworkSandboxMode, available: bool) -> ResolvedNetworkSandboxStrategy {
+    fn strategy(
+        mode: ResolvedNetworkSandboxMode,
+        available: bool,
+    ) -> ResolvedNetworkSandboxStrategy {
         ResolvedNetworkSandboxStrategy {
             mode,
             requested_mode: "auto".to_string(),
@@ -130,10 +133,11 @@ mod tests {
 
     #[test]
     fn userspace_adapter_budget_is_lightweight() {
-        let plan = resolve_adapter_plan(&strategy(
-            ResolvedNetworkSandboxMode::IsolatedUserspace,
-            true,
-        ), None, 2);
+        let plan = resolve_adapter_plan(
+            &strategy(ResolvedNetworkSandboxMode::IsolatedUserspace, true),
+            None,
+            2,
+        );
         assert_eq!(plan.adapter_kind, "userspace");
         assert!(plan.available);
         assert!(!plan.requires_system_network_access);

@@ -527,12 +527,8 @@ mod tests {
         let path = temp_path("sensitive-roundtrip");
         let app_data_dir = temp_dir_path("sensitive-roundtrip-app-data");
         let binary_path = app_data_dir.join("cerbena.exe");
-        let secret = derive_app_secret_material(
-            &app_data_dir,
-            &binary_path,
-            "dev.cerbena.app",
-        )
-        .expect("derive secret");
+        let secret = derive_app_secret_material(&app_data_dir, &binary_path, "dev.cerbena.app")
+            .expect("derive secret");
         let value = ExampleStore {
             value: "secret-value".to_string(),
             enabled: true,
@@ -556,12 +552,8 @@ mod tests {
         fs::write(&path, r#"{"value":"legacy","enabled":true}"#).expect("write");
         let app_data_dir = temp_dir_path("sensitive-legacy-app-data");
         let binary_path = app_data_dir.join("cerbena.exe");
-        let secret = derive_app_secret_material(
-            &app_data_dir,
-            &binary_path,
-            "dev.cerbena.app",
-        )
-        .expect("derive secret");
+        let secret = derive_app_secret_material(&app_data_dir, &binary_path, "dev.cerbena.app")
+            .expect("derive secret");
         let loaded = load_sensitive_json_or_default::<ExampleStore>(&path, "scope-b", &secret)
             .expect("load");
         assert_eq!(

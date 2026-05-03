@@ -20,16 +20,17 @@ use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::{
+    certificate_runtime::clear_wayfern_profile_certificates,
     device_posture::enforce_launch_posture,
     envelope::ok,
     envelope::UiEnvelope,
     keepassxc_bridge::ensure_keepassxc_bridge_for_profile,
-    network_sandbox_lifecycle::{ensure_profile_network_stack, stop_profile_network_stack},
     launch_sessions::{
         issue_launch_session, revoke_launch_session, trusted_session_for_profile,
         trusted_session_pid,
     },
-    launcher_commands::load_global_security_record,
+    launcher_commands::{load_global_security_record, persist_global_security_record},
+    network_sandbox_lifecycle::{ensure_profile_network_stack, stop_profile_network_stack},
     panic_frame::maybe_start_panic_frame,
     process_tracking::{
         clear_profile_process, find_profile_main_window_pid_for_dir,
@@ -44,6 +45,9 @@ use crate::{
     service_domains::service_domain_seeds,
     state::{ensure_default_profiles, AppState, ExtensionLibraryItem},
 };
+
+const ERR_WAYFERN_PROFILE_CERTIFICATES_UNSUPPORTED: &str =
+    "profile.security.wayfern_certificates_not_supported";
 
 fn emit_profile_launch_progress(
     app_handle: &tauri::AppHandle,
@@ -93,6 +97,7 @@ pub struct UpdateProfileRequest {
     pub name: Option<String>,
     pub description: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub engine: Option<String>,
     pub state: Option<String>,
     pub default_start_page: Option<String>,
     pub default_search_provider: Option<String>,
@@ -152,7 +157,13 @@ pub struct ImportProfileRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcknowledgeWayfernTosRequest {
-    pub profile_id: String,
+    pub profile_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WayfernTermsStatus {
+    pub pending_profile_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -165,6 +176,13 @@ pub struct ExportProfileResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ImportProfileResponse {
     pub profile: ProfileMetadata,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LockedAppPolicyRecord {
+    start_url: String,
+    allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +219,7 @@ pub fn create_profile(
     request: CreateProfileRequest,
     correlation_id: String,
 ) -> Result<UiEnvelope<ProfileMetadata>, String> {
+    let engine = parse_engine(&request.engine)?;
     let manager = state
         .manager
         .lock()
@@ -210,7 +229,7 @@ pub fn create_profile(
             name: request.name,
             description: request.description,
             tags: request.tags,
-            engine: parse_engine(&request.engine)?,
+            engine,
             default_start_page: request
                 .default_start_page
                 .or_else(|| global_startup_page(&state)),
@@ -232,16 +251,30 @@ pub fn update_profile(
     request: UpdateProfileRequest,
     correlation_id: String,
 ) -> Result<UiEnvelope<ProfileMetadata>, String> {
+    let profile_id =
+        Uuid::parse_str(&request.profile_id).map_err(|e| format!("profile id: {e}"))?;
+    let current = {
+        let manager = state
+            .manager
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        manager.get_profile(profile_id).map_err(|e| e.to_string())?
+    };
+    let next_engine = request
+        .engine
+        .as_deref()
+        .map(parse_engine)
+        .transpose()?
+        .unwrap_or_else(|| current.engine.clone());
     let manager = state
         .manager
         .lock()
         .map_err(|_| "lock poisoned".to_string())?;
-    let profile_id =
-        Uuid::parse_str(&request.profile_id).map_err(|e| format!("profile id: {e}"))?;
     let patch = PatchProfileInput {
         name: request.name,
         description: request.description.map(Some),
         tags: request.tags,
+        engine: request.engine.as_deref().map(parse_engine).transpose()?,
         state: request.state.map(|v| parse_state(&v)).transpose()?,
         default_start_page: request.default_start_page.map(Some),
         default_search_provider: request.default_search_provider.map(Some),
@@ -260,6 +293,10 @@ pub fn update_profile(
             "ui",
         )
         .map_err(|e| e.to_string())?;
+    drop(manager);
+    if current.engine != next_engine {
+        reset_profile_runtime_workspace(&state, profile_id)?;
+    }
     Ok(ok(correlation_id, profile))
 }
 
@@ -269,12 +306,13 @@ pub fn delete_profile(
     request: ActionProfileRequest,
     correlation_id: String,
 ) -> Result<UiEnvelope<bool>, String> {
+    let profile_id =
+        Uuid::parse_str(&request.profile_id).map_err(|e| format!("profile id: {e}"))?;
+    purge_profile_related_state(&state, profile_id)?;
     let manager = state
         .manager
         .lock()
         .map_err(|_| "lock poisoned".to_string())?;
-    let profile_id =
-        Uuid::parse_str(&request.profile_id).map_err(|e| format!("profile id: {e}"))?;
     manager
         .delete_profile_with_actor(profile_id, "ui")
         .map_err(|e| e.to_string())?;
@@ -345,6 +383,12 @@ pub async fn launch_profile(
     if let Some(code) = first_launch_blocker(&profile) {
         return Err(code.to_string());
     }
+    ensure_engine_supports_isolated_certificates(
+        &state,
+        Some(profile.id),
+        &profile.engine,
+        &profile.tags,
+    )?;
     let assessment = assess_profile(&profile);
     let active_extensions = collect_active_profile_extensions(
         &state,
@@ -386,6 +430,22 @@ pub async fn launch_profile(
             if trusted.is_some() && is_pid_running(existing_pid) && !launch_url_requested {
                 return Ok(ok(correlation_id, profile.clone()));
             }
+            if trusted.is_some() && is_pid_running(existing_pid) && launch_url_requested {
+                open_url_in_running_profile(
+                    state.inner(),
+                    &profile,
+                    &profile_root,
+                    request.launch_url.as_deref().unwrap_or_default(),
+                )?;
+                let _ = app_handle.emit(
+                    "profile-state-changed",
+                    serde_json::json!({
+                        "profileId": profile_id.to_string(),
+                        "state": "running"
+                    }),
+                );
+                return patch_state(&state, &request, correlation_id, ProfileState::Running);
+            }
             if trusted.is_none() && !launch_url_requested && is_pid_running(existing_pid) {
                 terminate_process_tree(existing_pid);
                 let _ = revoke_launch_session(&state, profile_id, Some(existing_pid));
@@ -411,8 +471,28 @@ pub async fn launch_profile(
         if trusted.is_some() {
             if launch_url_requested {
                 eprintln!(
-                    "[profile-launch] trusted running session retained for url-targeted launch pid={existing_pid}"
+                    "[profile-launch] forwarding url to trusted running session pid={existing_pid}"
                 );
+                open_url_in_running_profile(
+                    state.inner(),
+                    &profile,
+                    &profile_root,
+                    request.launch_url.as_deref().unwrap_or_default(),
+                )?;
+                let mut launched = state
+                    .launched_processes
+                    .lock()
+                    .map_err(|_| "launch map lock poisoned".to_string())?;
+                launched.insert(profile_id, existing_pid);
+                drop(launched);
+                let _ = app_handle.emit(
+                    "profile-state-changed",
+                    serde_json::json!({
+                        "profileId": profile_id.to_string(),
+                        "state": "running"
+                    }),
+                );
+                return patch_state(&state, &request, correlation_id, ProfileState::Running);
             } else {
                 let mut launched = state
                     .launched_processes
@@ -452,6 +532,7 @@ pub async fn launch_profile(
         None,
     );
     write_profile_blocked_domains(&state, &profile.id, &profile_root).map_err(|e| e.to_string())?;
+    write_locked_app_policy(&profile, &profile_root).map_err(|e| e.to_string())?;
     if matches!(engine, EngineKind::Wayfern) {
         emit_profile_launch_progress(
             &app_handle,
@@ -579,7 +660,7 @@ pub async fn launch_profile(
         false,
         None,
     );
-    let pid = tauri::async_runtime::spawn_blocking(move || {
+    let pid_result = tauri::async_runtime::spawn_blocking(move || {
         launch_runtime.launch(
             engine,
             launch_root,
@@ -592,7 +673,11 @@ pub async fn launch_profile(
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string());
+    if pid_result.is_err() && matches!(engine, EngineKind::Wayfern) {
+        clear_wayfern_profile_certificates(&app_handle, profile_id);
+    }
+    let pid = pid_result?;
     let tracked_pid = if matches!(engine, EngineKind::Camoufox | EngineKind::Wayfern) {
         find_profile_main_window_pid_for_dir(&user_data_dir)
             .or_else(|| find_profile_process_pid_for_dir(&user_data_dir))
@@ -700,13 +785,21 @@ fn prepare_camoufox_profile_runtime(
         "user_pref(\"browser.search.region\", \"US\");".to_string(),
         "user_pref(\"browser.urlbar.suggest.searches\", false);".to_string(),
         "user_pref(\"browser.shell.checkDefaultBrowser\", false);".to_string(),
+        "user_pref(\"accessibility.browsewithcaret\", false);".to_string(),
+        "user_pref(\"layout.accessiblecaret.enabled\", false);".to_string(),
+        "user_pref(\"layout.accessiblecaret.hide_carets_for_mouse_input\", true);".to_string(),
+        "user_pref(\"layout.accessiblecaret.allow_script_change_updates\", false);".to_string(),
+        "user_pref(\"layout.accessiblecaret.use_long_tap_injector\", false);".to_string(),
+        "user_pref(\"devtools.responsive.touchSimulation.enabled\", false);".to_string(),
         "user_pref(\"dom.w3c_touch_events.enabled\", 0);".to_string(),
         "user_pref(\"dom.w3c_touch_events.legacy_apis.enabled\", false);".to_string(),
-        "user_pref(\"dom.w3c_pointer_events.enabled\", true);".to_string(),
-        "user_pref(\"ui.primaryPointerCapabilities\", 1);".to_string(),
-        "user_pref(\"ui.allPointerCapabilities\", 1);".to_string(),
+        "user_pref(\"dom.w3c_pointer_events.dispatch_by_pointer_messages\", false);".to_string(),
         "user_pref(\"browser.ui.touch_activation.enabled\", false);".to_string(),
+        "user_pref(\"apz.windows.use_direct_manipulation\", false);".to_string(),
+        "user_pref(\"ui.osk.enabled\", false);".to_string(),
         "user_pref(\"userChrome.decoration.cursor\", false);".to_string(),
+        "user_pref(\"humanize\", false);".to_string(),
+        "user_pref(\"showcursor\", false);".to_string(),
         "user_pref(\"browser.search.newSearchConfigEnabled\", false);".to_string(),
     ];
     if let Some(engine_name) = map_search_provider_to_firefox_engine(default_search_provider) {
@@ -830,7 +923,9 @@ fn firefox_search_engine_policy_entries() -> Vec<serde_json::Value> {
         firefox_search_engine_entry(
             "Google",
             "https://www.google.com/search?q={searchTerms}",
-            Some("https://suggestqueries.google.com/complete/search?output=firefox&q={searchTerms}"),
+            Some(
+                "https://suggestqueries.google.com/complete/search?output=firefox&q={searchTerms}",
+            ),
         ),
         firefox_search_engine_entry(
             "Bing",
@@ -875,7 +970,12 @@ fn firefox_search_engine_entry(
     entry
 }
 
-fn firefox_search_engine_catalog() -> Vec<(&'static str, &'static str, &'static str, Option<&'static str>)> {
+fn firefox_search_engine_catalog() -> Vec<(
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+)> {
     vec![
         (
             "duckduckgo",
@@ -887,7 +987,9 @@ fn firefox_search_engine_catalog() -> Vec<(&'static str, &'static str, &'static 
             "google",
             "Google",
             "https://www.google.com/search?q={searchTerms}",
-            Some("https://suggestqueries.google.com/complete/search?output=firefox&q={searchTerms}"),
+            Some(
+                "https://suggestqueries.google.com/complete/search?output=firefox&q={searchTerms}",
+            ),
         ),
         (
             "bing",
@@ -1071,7 +1173,9 @@ fn extension_contains_marker(item: &ExtensionLibraryItem, marker: &str) -> bool 
 fn is_keepassxc_extension(item: &ExtensionLibraryItem) -> bool {
     extension_has_tag(item, "keepassxc")
         || extension_contains_marker(item, "keepassxc")
-        || item.id.eq_ignore_ascii_case("oboonakemofpalcgghocfoadofidjkkk")
+        || item
+            .id
+            .eq_ignore_ascii_case("oboonakemofpalcgghocfoadofidjkkk")
 }
 
 fn is_system_access_extension(item: &ExtensionLibraryItem) -> bool {
@@ -1351,6 +1455,152 @@ fn global_active_blocklist_domains(state: &State<'_, AppState>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn tags_request_isolated_certificates(tags: &[String]) -> bool {
+    tags.iter().any(|tag| {
+        tag.strip_prefix("cert-id:")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+            || tag
+                .strip_prefix("cert:")
+                .map(|value| value != "global" && !value.trim().is_empty())
+                .unwrap_or(false)
+    })
+}
+
+fn has_global_isolated_certificates(state: &State<'_, AppState>) -> bool {
+    load_global_security_record(state)
+        .map(|record| {
+            record
+                .certificates
+                .into_iter()
+                .any(|item| item.apply_globally && !item.path.trim().is_empty())
+        })
+        .unwrap_or(false)
+}
+
+fn profile_uses_isolated_certificates(
+    state: &State<'_, AppState>,
+    profile_id: Option<Uuid>,
+    tags: &[String],
+) -> bool {
+    if let Some(profile_id) = profile_id {
+        !resolve_profile_certificate_paths(state, profile_id, tags).is_empty()
+    } else {
+        tags_request_isolated_certificates(tags) || has_global_isolated_certificates(state)
+    }
+}
+
+fn ensure_engine_supports_isolated_certificates(
+    state: &State<'_, AppState>,
+    profile_id: Option<Uuid>,
+    engine: &Engine,
+    tags: &[String],
+) -> Result<(), String> {
+    if matches!(engine, Engine::Wayfern) && profile_uses_isolated_certificates(state, profile_id, tags) {
+        return Err(ERR_WAYFERN_PROFILE_CERTIFICATES_UNSUPPORTED.to_string());
+    }
+    Ok(())
+}
+
+fn reset_profile_runtime_workspace(state: &State<'_, AppState>, profile_id: Uuid) -> Result<(), String> {
+    stop_profile_network_stack(&state.app_handle, profile_id);
+    let _ = revoke_launch_session(state.inner(), profile_id, None);
+    if let Ok(mut launched) = state.launched_processes.lock() {
+        launched.remove(&profile_id);
+    }
+    clear_wayfern_profile_certificates(&state.app_handle, profile_id);
+    let profile_root = state.profile_root.join(profile_id.to_string());
+    if !profile_root.exists() {
+        return Ok(());
+    }
+    let keep = ["metadata.json", "lock_state.json"];
+    let entries = fs::read_dir(&profile_root).map_err(|e| format!("read profile workspace: {e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read profile workspace entry: {e}"))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if keep.iter().any(|value| value == &name) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            fs::remove_dir_all(&path)
+                .map_err(|e| format!("remove profile workspace dir {}: {e}", path.display()))?;
+        } else {
+            fs::remove_file(&path)
+                .map_err(|e| format!("remove profile workspace file {}: {e}", path.display()))?;
+        }
+    }
+    for dir_name in ["data", "cache", "extensions", "tmp"] {
+        fs::create_dir_all(profile_root.join(dir_name))
+            .map_err(|e| format!("recreate profile workspace dir {dir_name}: {e}"))?;
+    }
+    Ok(())
+}
+
+fn purge_profile_related_state(state: &State<'_, AppState>, profile_id: Uuid) -> Result<(), String> {
+    let profile_key = profile_id.to_string();
+    let profile_root = state.profile_root.join(&profile_key);
+    let user_data_dir = profile_root.join("engine-profile");
+    if let Some(pid) = trusted_session_pid(state.inner(), profile_id)?
+        .or_else(|| state.launched_processes.lock().ok().and_then(|items| items.get(&profile_id).copied()))
+        .or_else(|| find_profile_process_pid_for_dir(&user_data_dir))
+    {
+        terminate_process_tree(pid);
+    }
+    terminate_profile_processes(&user_data_dir);
+    let _ = revoke_launch_session(state.inner(), profile_id, None);
+    stop_profile_network_stack(&state.app_handle, profile_id);
+    clear_wayfern_profile_certificates(&state.app_handle, profile_id);
+    if let Ok(mut launched) = state.launched_processes.lock() {
+        launched.remove(&profile_id);
+    }
+    if let Ok(mut store) = state.identity_store.lock() {
+        store.items.remove(&profile_key);
+        let path = state.identity_store_path(&state.app_handle)?;
+        crate::state::persist_identity_store(&path, &store)?;
+    }
+    if let Ok(mut store) = state.network_store.lock() {
+        store.vpn_proxy.remove(&profile_key);
+        store.dns.remove(&profile_key);
+        store.profile_template_selection.remove(&profile_key);
+        let path = state.network_store_path(&state.app_handle)?;
+        crate::state::persist_network_store(&path, &store)?;
+    }
+    if let Ok(mut store) = state.sync_store.lock() {
+        store.controls.remove(&profile_key);
+        store.conflicts.remove(&profile_key);
+        store.snapshots.remove(&profile_key);
+        let path = state.sync_store_path(&state.app_handle)?;
+        crate::state::persist_sync_store_with_secret(&path, &state.sensitive_store_secret, &store)?;
+    }
+    if let Ok(mut store) = state.link_routing_store.lock() {
+        if store.global_profile_id.as_deref() == Some(profile_key.as_str()) {
+            store.global_profile_id = None;
+        }
+        store.type_bindings.retain(|_, value| value != &profile_key);
+        let path = state.link_routing_store_path(&state.app_handle)?;
+        crate::state::persist_link_routing_store_with_secret(&path, &state.sensitive_store_secret, &store)?;
+    }
+    if let Ok(mut store) = state.network_sandbox_store.lock() {
+        store.profiles.remove(&profile_key);
+        let path = state.network_sandbox_store_path(&state.app_handle)?;
+        crate::state::persist_network_sandbox_store(&path, &store)?;
+    }
+    if let Ok(mut library) = state.extension_library.lock() {
+        for item in library.items.values_mut() {
+            item.assigned_profile_ids.retain(|value| value != &profile_key);
+        }
+        let path = state.extension_library_path(&state.app_handle)?;
+        crate::state::persist_extension_library_store(&path, &library)?;
+    }
+    let mut security = load_global_security_record(state.inner())?;
+    for cert in &mut security.certificates {
+        cert.profile_ids.retain(|value| value != &profile_key);
+    }
+    persist_global_security_record(state.inner(), &security)?;
+    Ok(())
+}
+
 fn resolve_profile_certificate_paths(
     state: &State<'_, AppState>,
     profile_id: Uuid,
@@ -1476,6 +1726,7 @@ pub fn stop_profile(
     }
     revoke_launch_session(&state, profile_id, tracked_pid)?;
     stop_profile_network_stack(&state.app_handle, profile_id);
+    clear_wayfern_profile_certificates(&state.app_handle, profile_id);
     clear_profile_process(
         &state.app_handle,
         profile_id,
@@ -1500,14 +1751,61 @@ pub fn acknowledge_wayfern_tos(
     request: AcknowledgeWayfernTosRequest,
     correlation_id: String,
 ) -> Result<UiEnvelope<bool>, String> {
-    let profile_id =
-        Uuid::parse_str(&request.profile_id).map_err(|e| format!("profile id: {e}"))?;
     let runtime =
         EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
+    let profile_id = if let Some(profile_id) = request.profile_id.as_deref() {
+        Uuid::parse_str(profile_id).map_err(|e| format!("profile id: {e}"))?
+    } else {
+        let manager = state
+            .manager
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        manager
+            .list_profiles()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|profile| matches!(profile.engine, Engine::Wayfern))
+            .map(|profile| profile.id)
+            .ok_or_else(|| "no wayfern profile available for global terms acceptance".to_string())?
+    };
     runtime
         .acknowledge_wayfern_tos(&state.profile_root.join(profile_id.to_string()), profile_id)
         .map_err(|e| e.to_string())?;
     Ok(ok(correlation_id, true))
+}
+
+#[tauri::command]
+pub fn get_wayfern_terms_status(
+    state: State<AppState>,
+    correlation_id: String,
+) -> Result<UiEnvelope<WayfernTermsStatus>, String> {
+    let runtime =
+        EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
+    let manager = state
+        .manager
+        .lock()
+        .map_err(|_| "lock poisoned".to_string())?;
+    let pending_profile_ids = manager
+        .list_profiles()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|profile| matches!(profile.engine, Engine::Wayfern))
+        .filter_map(|profile| {
+            runtime
+                .requires_wayfern_tos_ack(
+                    &state.profile_root.join(profile.id.to_string()),
+                    profile.id,
+                )
+                .ok()
+                .and_then(|required| required.then_some(profile.id.to_string()))
+        })
+        .collect::<Vec<_>>();
+    Ok(ok(
+        correlation_id,
+        WayfernTermsStatus {
+            pending_profile_ids,
+        },
+    ))
 }
 
 #[tauri::command]
@@ -1800,6 +2098,92 @@ fn engine_kind(engine: Engine) -> EngineKind {
     }
 }
 
+fn open_url_in_running_profile(
+    state: &AppState,
+    profile: &ProfileMetadata,
+    profile_root: &Path,
+    launch_url: &str,
+) -> Result<(), String> {
+    let runtime =
+        EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
+    runtime
+        .open_url_in_existing_profile(
+            engine_kind(profile.engine.clone()),
+            profile_root.to_path_buf(),
+            launch_url.trim().to_string(),
+        )
+        .map_err(|e| e.to_string())
+}
+
+fn write_locked_app_policy(
+    profile: &ProfileMetadata,
+    profile_root: &Path,
+) -> Result<(), std::io::Error> {
+    let path = profile_root.join("policy").join("locked-app.json");
+    if let Some(policy) = locked_app_policy_for_profile(profile) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(&policy)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        fs::write(path, bytes)?;
+    } else if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
+}
+
+fn locked_app_policy_for_profile(profile: &ProfileMetadata) -> Option<LockedAppPolicyRecord> {
+    if profile
+        .tags
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case("locked-app:discord"))
+    {
+        return Some(LockedAppPolicyRecord {
+            start_url: "https://discord.com/app".to_string(),
+            allowed_hosts: vec![
+                "discord.com".to_string(),
+                "discord.gg".to_string(),
+                "discordapp.com".to_string(),
+                "discordapp.net".to_string(),
+                "discord.media".to_string(),
+            ],
+        });
+    }
+    if profile
+        .tags
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case("locked-app:telegram"))
+    {
+        return Some(LockedAppPolicyRecord {
+            start_url: "https://web.telegram.org/".to_string(),
+            allowed_hosts: vec![
+                "web.telegram.org".to_string(),
+                "telegram.org".to_string(),
+                "t.me".to_string(),
+                "telegram.me".to_string(),
+            ],
+        });
+    }
+    if profile
+        .tags
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case("locked-app:custom"))
+    {
+        let start_url = normalize_start_page_url(profile.default_start_page.as_deref());
+        let parsed = reqwest::Url::parse(&start_url).ok()?;
+        let host = parsed.host_str()?.trim().to_ascii_lowercase();
+        if host.is_empty() {
+            return None;
+        }
+        return Some(LockedAppPolicyRecord {
+            start_url,
+            allowed_hosts: vec![host],
+        });
+    }
+    None
+}
+
 fn parse_state(state: &str) -> Result<ProfileState, String> {
     match state {
         "created" => Ok(ProfileState::Created),
@@ -2075,14 +2459,16 @@ async fn ensure_engine_ready(
 mod tests {
     use super::{
         build_firefox_search_plugin_xml, extension_allowed_for_launch,
-        firefox_search_engine_policy_entries, normalize_start_page_url,
-        prepare_camoufox_profile_runtime,
+        firefox_search_engine_policy_entries, locked_app_policy_for_profile,
+        normalize_start_page_url, prepare_camoufox_profile_runtime,
     };
     use crate::state::ExtensionLibraryItem;
+    use browser_profile::{Engine, ProfileMetadata, ProfileState};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
+    use uuid::Uuid;
 
     #[test]
     fn camoufox_profile_runtime_applies_homepage_and_search_provider() {
@@ -2130,6 +2516,19 @@ mod tests {
         assert!(user_js.contains("signon.rememberSignons\", false"));
         assert!(user_js.contains("browser.formfill.enable\", false"));
         assert!(user_js.contains("browser.sessionstore.privacy_level\", 2"));
+        assert!(user_js.contains("accessibility.browsewithcaret\", false"));
+        assert!(user_js.contains("layout.accessiblecaret.enabled\", false"));
+        assert!(user_js.contains("layout.accessiblecaret.hide_carets_for_mouse_input\", true"));
+        assert!(user_js.contains("devtools.responsive.touchSimulation.enabled\", false"));
+        assert!(user_js.contains("dom.w3c_touch_events.enabled\", 0"));
+        assert!(user_js.contains("dom.w3c_pointer_events.dispatch_by_pointer_messages\", false"));
+        assert!(user_js.contains("apz.windows.use_direct_manipulation\", false"));
+        assert!(user_js.contains("ui.osk.enabled\", false"));
+        assert!(user_js.contains("humanize\", false"));
+        assert!(user_js.contains("showcursor\", false"));
+        assert!(!user_js.contains("dom.w3c_pointer_events.enabled"));
+        assert!(!user_js.contains("ui.primaryPointerCapabilities"));
+        assert!(!user_js.contains("ui.allPointerCapabilities"));
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -2144,7 +2543,9 @@ mod tests {
         assert!(names.contains(&"DuckDuckGo"));
         assert!(names.contains(&"Google"));
         assert!(names.contains(&"Startpage"));
-        assert!(entries.iter().all(|entry| entry.get("URLTemplate").is_some()));
+        assert!(entries
+            .iter()
+            .all(|entry| entry.get("URLTemplate").is_some()));
     }
 
     #[test]
@@ -2157,10 +2558,33 @@ mod tests {
             normalize_start_page_url(Some("https://example.com")),
             "https://example.com"
         );
-        assert_eq!(
-            normalize_start_page_url(Some("about:blank")),
-            "about:blank"
-        );
+        assert_eq!(normalize_start_page_url(Some("about:blank")), "about:blank");
+    }
+
+    #[test]
+    fn locked_app_policy_uses_custom_single_page_start_host() {
+        let profile = ProfileMetadata {
+            id: Uuid::new_v4(),
+            name: "Single Page".to_string(),
+            description: None,
+            tags: vec!["locked-app:custom".to_string()],
+            engine: Engine::Wayfern,
+            state: ProfileState::Created,
+            default_start_page: Some("docs.example.com".to_string()),
+            default_search_provider: None,
+            ephemeral_mode: false,
+            password_lock_enabled: false,
+            panic_frame_enabled: false,
+            panic_frame_color: None,
+            panic_protected_sites: vec![],
+            crypto_version: 1,
+            ephemeral_retain_paths: vec![],
+            created_at: "0".to_string(),
+            updated_at: "0".to_string(),
+        };
+        let policy = locked_app_policy_for_profile(&profile).expect("locked app policy");
+        assert_eq!(policy.start_url, "https://docs.example.com");
+        assert_eq!(policy.allowed_hosts, vec!["docs.example.com"]);
     }
 
     #[test]

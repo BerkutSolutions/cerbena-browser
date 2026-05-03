@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use crate::{network_sandbox_container::ensure_profile_container_environment, state::AppState};
 
-const CONTAINER_IMAGE_REVISION: &str = "2026-05-02-r5";
-const CONTAINER_IMAGE_TAG: &str = "cerbena/network-sandbox:2026-05-02-r5";
+const CONTAINER_IMAGE_REVISION: &str = "2026-05-03-r7";
+const CONTAINER_IMAGE_TAG: &str = "cerbena/network-sandbox:2026-05-03-r7";
 pub const CONTAINER_PROXY_PORT: u16 = 17890;
 const CONTAINER_PROXY_ADDR: &str = "0.0.0.0:17890";
 const CONTAINER_MEMORY_LIMIT: &str = "192m";
@@ -31,14 +31,15 @@ fn docker_command() -> Command {
     command
 }
 
-const CONTAINER_DOCKERFILE: &str =
-    include_str!("../runtime/network-sandbox-container/Dockerfile");
+const CONTAINER_DOCKERFILE: &str = include_str!("../runtime/network-sandbox-container/Dockerfile");
 const CONTAINER_ENTRYPOINT: &str =
     include_str!("../runtime/network-sandbox-container/entrypoint.sh");
 const CONTAINER_PROXY_SOURCE: &str =
     include_str!("../runtime/network-sandbox-container/container_socks_proxy.go");
 const CONTAINER_SYSCTL_WRAPPER: &str =
     include_str!("../runtime/network-sandbox-container/sysctl_wrapper.sh");
+const CONTAINER_OPENVPN_DNS_SYNC: &str =
+    include_str!("../runtime/network-sandbox-container/openvpn_dns_sync.sh");
 
 #[derive(Debug, Clone)]
 pub struct ContainerRouteLaunch {
@@ -98,7 +99,8 @@ pub fn launch_sing_box_container_runtime(
         "container-config",
         "profile.launchProgress.containerConfig",
     );
-    fs::write(&config_path, config_json).map_err(|e| format!("write container sing-box config: {e}"))?;
+    fs::write(&config_path, config_json)
+        .map_err(|e| format!("write container sing-box config: {e}"))?;
     let _ = fs::remove_file(&log_path);
     fs::File::create(&log_path).map_err(|e| format!("create container sing-box log file: {e}"))?;
 
@@ -168,6 +170,7 @@ pub fn launch_openvpn_container_runtime(
     runtime_dir: &Path,
     host_proxy_port: u16,
     config_text: &str,
+    auth_path: Option<&PathBuf>,
 ) -> Result<ContainerRouteLaunch, String> {
     emit_container_launch_progress(
         app_handle,
@@ -188,18 +191,25 @@ pub fn launch_openvpn_container_runtime(
 
     let config_path = runtime_dir.join("container-openvpn.ovpn");
     let log_path = runtime_dir.join("container-openvpn.log");
+    let container_auth_path = auth_path.map(|_| runtime_dir.join("container-openvpn-auth.txt"));
     emit_container_launch_progress(
         app_handle,
         profile_id,
         "container-config",
         "profile.launchProgress.containerConfig",
     );
-    fs::write(&config_path, config_text).map_err(|e| format!("write container openvpn config: {e}"))?;
+    fs::write(&config_path, config_text)
+        .map_err(|e| format!("write container openvpn config: {e}"))?;
     let _ = fs::remove_file(&log_path);
     fs::File::create(&log_path).map_err(|e| format!("create container openvpn log file: {e}"))?;
+    if let (Some(source_path), Some(target_path)) = (auth_path, container_auth_path.as_ref()) {
+        fs::copy(source_path, target_path).map_err(|e| format!("copy container openvpn auth file: {e}"))?;
+    }
 
-    let run_output = docker_command()
-        .args([
+    let config_mount = format!("{}:/work/openvpn.ovpn:ro", config_path.display());
+    let log_mount = format!("{}:/work/route.log", log_path.display());
+    let mut command = docker_command();
+    command.args([
             "run",
             "--detach",
             "--name",
@@ -229,9 +239,9 @@ pub fn launch_openvpn_container_runtime(
             "--publish",
             &format!("127.0.0.1:{host_proxy_port}:{CONTAINER_PROXY_PORT}"),
             "--volume",
-            &format!("{}:/work/openvpn.ovpn:ro", config_path.display()),
+            &config_mount,
             "--volume",
-            &format!("{}:/work/route.log", log_path.display()),
+            &log_mount,
             "--env",
             "CERBENA_RUNTIME_KIND=openvpn",
             "--env",
@@ -242,8 +252,18 @@ pub fn launch_openvpn_container_runtime(
             &format!("CERBENA_PROXY_PORT={CONTAINER_PROXY_PORT}"),
             "--env",
             &format!("CERBENA_PROXY_LISTEN={CONTAINER_PROXY_ADDR}"),
-            image_tag.as_str(),
-        ])
+    ]);
+    if let Some(path) = container_auth_path.as_ref() {
+        let auth_mount = format!("{}:/work/openvpn-auth.txt:ro", path.display());
+        command.args([
+            "--volume",
+            auth_mount.as_str(),
+            "--env",
+            "CERBENA_OPENVPN_AUTH=/work/openvpn-auth.txt",
+        ]);
+    }
+    let run_output = command
+        .arg(image_tag.as_str())
         .output()
         .map_err(|e| format!("start openvpn container runtime: {e}"))?;
     if !run_output.status.success() {
@@ -264,7 +284,13 @@ pub fn launch_openvpn_container_runtime(
         container_name,
         host_proxy_port,
         config_path,
-        cleanup_paths: vec![log_path],
+        cleanup_paths: {
+            let mut paths = vec![log_path];
+            if let Some(path) = container_auth_path {
+                paths.push(path);
+            }
+            paths
+        },
     })
 }
 
@@ -301,7 +327,8 @@ pub fn launch_amnezia_container_runtime(
         "container-config",
         "profile.launchProgress.containerConfig",
     );
-    fs::write(&config_path, container_config).map_err(|e| format!("write container amnezia config: {e}"))?;
+    fs::write(&config_path, container_config)
+        .map_err(|e| format!("write container amnezia config: {e}"))?;
     let _ = fs::remove_file(&log_path);
     fs::File::create(&log_path).map_err(|e| format!("create container log file: {e}"))?;
 
@@ -378,9 +405,7 @@ pub fn launch_amnezia_container_runtime(
 }
 
 pub fn stop_container_runtime(container_name: &str) {
-    let _ = docker_command()
-        .args(["rm", "-f", container_name])
-        .output();
+    let _ = docker_command().args(["rm", "-f", container_name]).output();
 }
 
 pub fn cleanup_stale_container_route_runtimes(
@@ -470,6 +495,10 @@ fn write_container_build_context(context_dir: &Path) -> Result<(), String> {
         &context_dir.join("sysctl_wrapper.sh"),
         CONTAINER_SYSCTL_WRAPPER,
     )?;
+    write_utf8_file(
+        &context_dir.join("openvpn_dns_sync.sh"),
+        CONTAINER_OPENVPN_DNS_SYNC,
+    )?;
     Ok(())
 }
 
@@ -542,16 +571,13 @@ fn wait_for_container_proxy(
 
 fn is_container_running(container_name: &str) -> bool {
     docker_command()
-        .args([
-            "inspect",
-            "--format",
-            "{{.State.Running}}",
-            container_name,
-        ])
+        .args(["inspect", "--format", "{{.State.Running}}", container_name])
         .output()
         .map(|output| {
             output.status.success()
-                && String::from_utf8_lossy(&output.stdout).trim().eq_ignore_ascii_case("true")
+                && String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .eq_ignore_ascii_case("true")
         })
         .unwrap_or(false)
 }
@@ -588,14 +614,6 @@ fn extract_profile_label(labels: &str) -> Option<Uuid> {
 }
 
 fn tail_lines(value: &str, limit: usize) -> String {
-    let lines = value
-        .lines()
-        .rev()
-        .take(limit)
-        .collect::<Vec<_>>();
-    lines
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join(" | ")
+    let lines = value.lines().rev().take(limit).collect::<Vec<_>>();
+    lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
 }

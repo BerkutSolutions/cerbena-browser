@@ -238,7 +238,11 @@ fn read_keepassxc_origins_from_secure_preferences(
 fn discover_keepassxc_proxy_path() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(program_files) = std::env::var_os("ProgramFiles") {
-        candidates.push(PathBuf::from(program_files).join("KeePassXC").join(KEEPASSXC_PROXY_FILE));
+        candidates.push(
+            PathBuf::from(program_files)
+                .join("KeePassXC")
+                .join(KEEPASSXC_PROXY_FILE),
+        );
     }
     if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
         candidates.push(

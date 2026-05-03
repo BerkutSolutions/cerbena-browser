@@ -58,6 +58,10 @@ async function persistSecurity(model, t, rerender) {
     type: result.ok ? "success" : "error",
     text: result.ok ? t("action.save") : String(result.data.error)
   };
+  if (result.ok) {
+    model.securityLoaded = false;
+    await hydrateGlobalSecurityState(model);
+  }
   await rerender();
 }
 
@@ -73,19 +77,17 @@ export function renderSecurity(t, model) {
       </div>
       <div class="top-actions">
         <button id="sec-cert-add">${t("security.certificates.add")}</button>
-        <button id="sec-save-global">${t("action.save")}</button>
       </div>
     </div>
     ${notice}
 
     <div class="panel security-table-frame">
       <table class="extensions-table">
-        <thead><tr><th>${t("extensions.name")}</th><th>${t("security.path")}</th><th>${t("security.profiles")}</th><th>${t("extensions.actions")}</th></tr></thead>
+        <thead><tr><th>${t("extensions.name")}</th><th>${t("security.profiles")}</th><th>${t("extensions.actions")}</th></tr></thead>
         <tbody>
           ${(state.certificates ?? []).map((cert) => `
             <tr>
               <td>${escapeHtml(cert.name)}</td>
-              <td>${escapeHtml(cert.path)}</td>
               <td>
                 <div class="dns-dropdown">
                   <button type="button" class="dns-dropdown-toggle" data-cert-menu-toggle="${cert.id}">${escapeHtml(certificateProfileSummary(cert, model.profiles ?? [], t))}</button>
@@ -95,7 +97,7 @@ export function renderSecurity(t, model) {
               </td>
               <td class="actions"><button type="button" data-cert-remove="${cert.id}">${t("extensions.remove")}</button></td>
             </tr>
-          `).join("") || `<tr><td colspan="4" class="meta">${t("security.certificates.empty")}</td></tr>`}
+          `).join("") || `<tr><td colspan="3" class="meta">${t("security.certificates.empty")}</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -125,21 +127,19 @@ export function wireSecurity(root, model, rerender, t) {
     const existingPaths = new Set((state.certificates ?? []).map((item) => String(item.path ?? "").trim().toLowerCase()));
     for (const rawPath of (Array.isArray(picked.data) ? picked.data : [])) {
       const clean = String(rawPath ?? "").trim();
-      if (!clean || existingPaths.has(clean.toLowerCase())) continue;
+      if (!clean || existingPaths.has(clean.toLowerCase()) || existingIds.has(slugId(clean))) continue;
       existingPaths.add(clean.toLowerCase());
       state.certificates.push({
         id: makeUniqueId(clean, existingIds),
         name: clean.split(/[/\\]/).pop()?.replace(/\.(pem|crt|cer)$/i, "") || clean,
         path: clean,
+        issuerName: "",
+        subjectName: "",
         applyGlobally: false,
         profileIds: []
       });
       existingIds.add(state.certificates.at(-1)?.id ?? "");
     }
-    await rerender();
-  });
-
-  root.querySelector("#sec-save-global")?.addEventListener("click", async () => {
     await persistSecurity(model, t, rerender);
   });
 
@@ -148,7 +148,7 @@ export function wireSecurity(root, model, rerender, t) {
       const id = button.getAttribute("data-cert-remove");
       const state = ensureGlobalSecurityState(model);
       state.certificates = (state.certificates ?? []).filter((item) => item.id !== id);
-      await rerender();
+      await persistSecurity(model, t, rerender);
     });
   }
 
@@ -157,7 +157,7 @@ export function wireSecurity(root, model, rerender, t) {
       const id = checkbox.getAttribute("data-cert-global");
       const state = ensureGlobalSecurityState(model);
       state.certificates = (state.certificates ?? []).map((item) => item.id === id ? { ...item, applyGlobally: checkbox.checked, profileIds: checkbox.checked ? [] : item.profileIds } : item);
-      await rerender();
+      await persistSecurity(model, t, rerender);
     });
   }
 
@@ -178,7 +178,7 @@ export function wireSecurity(root, model, rerender, t) {
         else next.delete(profileId);
         return { ...item, profileIds: [...next] };
       });
-      await rerender();
+      await persistSecurity(model, t, rerender);
     });
   }
 }

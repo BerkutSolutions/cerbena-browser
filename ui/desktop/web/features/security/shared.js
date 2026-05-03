@@ -26,6 +26,8 @@ function parseGlobalSecurityPayload(raw) {
       id: item.id,
       name: item.name,
       path: item.path,
+      issuerName: item.issuerName ?? item.issuer_name ?? "",
+      subjectName: item.subjectName ?? item.subject_name ?? "",
       applyGlobally: Boolean(item.applyGlobally ?? item.apply_globally),
       profileIds: item.profileIds ?? item.profile_ids ?? []
     })),

@@ -61,6 +61,7 @@ fn update_profile_changes_state_and_updated_at() {
         .update_profile(
             created.id,
             PatchProfileInput {
+                engine: Some(Engine::Wayfern),
                 state: Some(ProfileState::Ready),
                 tags: Some(vec!["work".to_string(), "isolated".to_string()]),
                 ..PatchProfileInput::default()
@@ -68,6 +69,7 @@ fn update_profile_changes_state_and_updated_at() {
         )
         .expect("update profile");
 
+    assert_eq!(updated.engine, Engine::Wayfern);
     assert_eq!(updated.state, ProfileState::Ready);
     assert_eq!(updated.tags.len(), 2);
     assert_ne!(updated.updated_at, before);

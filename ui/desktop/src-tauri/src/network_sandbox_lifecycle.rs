@@ -19,7 +19,8 @@ use crate::{
     },
     state::AppState,
     traffic_gateway::{
-        ensure_profile_gateway, stop_all_profile_gateways, stop_profile_gateway, GatewayLaunchConfig,
+        ensure_profile_gateway, stop_all_profile_gateways, stop_profile_gateway,
+        GatewayLaunchConfig,
     },
 };
 
@@ -56,13 +57,14 @@ pub fn ensure_profile_network_stack(
             adapter.adapter_kind, adapter.reason
         ));
     }
-    let container_network_name = if strategy.mode
-        == crate::network_sandbox::ResolvedNetworkSandboxMode::Container
-    {
-        Some(ensure_profile_container_environment(app_handle, profile_id)?)
-    } else {
-        None
-    };
+    let container_network_name =
+        if strategy.mode == crate::network_sandbox::ResolvedNetworkSandboxMode::Container {
+            Some(ensure_profile_container_environment(
+                app_handle, profile_id,
+            )?)
+        } else {
+            None
+        };
     let gateway = ensure_profile_gateway(app_handle, profile_id)?;
     eprintln!(
         "[network-sandbox] profile={} gateway_port={} adapter={}",

@@ -21,14 +21,29 @@ pub struct WayfernAdapter {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct WayfernTosAck {
-    profile_id: Uuid,
     tos_version: String,
     accepted_at_epoch: u64,
 }
 
 impl WayfernAdapter {
-    pub fn tos_ack_path(profile_root: &Path) -> PathBuf {
+    fn legacy_tos_ack_path(profile_root: &Path) -> PathBuf {
         profile_root.join("policy").join("wayfern_tos_ack.json")
+    }
+
+    pub fn tos_ack_path(profile_root: &Path) -> PathBuf {
+        let Some(parent) = profile_root.parent() else {
+            return Self::legacy_tos_ack_path(profile_root);
+        };
+        let launcher_root = if parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("profiles"))
+        {
+            parent.parent().unwrap_or(parent)
+        } else {
+            parent
+        };
+        launcher_root.join("wayfern_tos_ack.json")
     }
 
     pub fn acknowledge_tos(
@@ -36,8 +51,8 @@ impl WayfernAdapter {
         profile_root: &Path,
         profile_id: Uuid,
     ) -> Result<(), EngineError> {
+        let _ = profile_id;
         let ack = WayfernTosAck {
-            profile_id,
             tos_version: self.tos_version.clone(),
             accepted_at_epoch: now_epoch(),
         };
@@ -45,22 +60,39 @@ impl WayfernAdapter {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, serde_json::to_vec_pretty(&ack)?)?;
+        fs::write(&path, serde_json::to_vec_pretty(&ack)?)?;
+        let legacy_path = Self::legacy_tos_ack_path(profile_root);
+        if legacy_path != path && legacy_path.exists() {
+            let _ = fs::remove_file(legacy_path);
+        }
         Ok(())
     }
 
-    fn ensure_tos_ack(&self, profile_root: &Path, profile_id: Uuid) -> Result<(), EngineError> {
+    pub fn is_tos_acknowledged(
+        &self,
+        profile_root: &Path,
+        profile_id: Uuid,
+    ) -> Result<bool, EngineError> {
+        let _ = profile_id;
         let path = Self::tos_ack_path(profile_root);
         if !path.exists() {
-            return Err(EngineError::LaunchBlocked(
-                "wayfern_terms_not_acknowledged".to_string(),
-            ));
+            return Ok(false);
         }
         let bytes = fs::read(path)?;
         let ack: WayfernTosAck = serde_json::from_slice(&bytes)?;
-        if ack.profile_id != profile_id || ack.tos_version != self.tos_version {
+        Ok(ack.tos_version == self.tos_version)
+    }
+
+    fn ensure_tos_ack(&self, profile_root: &Path, profile_id: Uuid) -> Result<(), EngineError> {
+        if !self.is_tos_acknowledged(profile_root, profile_id)? {
             return Err(EngineError::LaunchBlocked(
-                "wayfern_terms_ack_stale".to_string(),
+                if Self::tos_ack_path(profile_root).exists()
+                    || Self::legacy_tos_ack_path(profile_root).exists()
+                {
+                    "wayfern_terms_ack_stale".to_string()
+                } else {
+                    "wayfern_terms_not_acknowledged".to_string()
+                },
             ));
         }
         Ok(())

@@ -3,12 +3,17 @@ import { createUiState, persistSelectedFeature } from "../core/state.js";
 import { featureRegistry } from "../core/feature-registry.js";
 import { loadDictionaries, createI18n } from "../i18n/runtime.js";
 import { createDebugLogger } from "../core/debug.js";
+import { askConfirmModal } from "../core/modal.js";
 import { initEngineDownloadNotifications } from "../core/engine-downloads.js";
 import { initDnsBlocklistNotifications } from "../core/dns-blocklist-downloads.js";
 import { minimizeWindow, toggleMaximizeWindow, closeWindow } from "../core/window-controls.js";
 import { renderHome, hydrateHomeModel, wireHome } from "../features/home/view.js";
-import { launchProfile } from "../features/profiles/api.js";
-import { updateProfile } from "../features/profiles/api.js";
+import {
+  acknowledgeWayfernTos,
+  getWayfernTermsStatus,
+  launchProfile,
+  updateProfile
+} from "../features/profiles/api.js";
 import { hydrateProfilesModel, wireProfiles } from "../features/profiles/view.js";
 import { panicWipeProfile } from "../features/home/api.js";
 import { callCommand } from "../core/commands.js";
@@ -24,15 +29,24 @@ import {
   wireSettings,
   renderLinkLaunchModal,
   wireLinkLaunchModal,
+  handleExternalLinkRequest,
   consumePendingLinkLaunch
 } from "../features/settings/view.js";
-import { checkLauncherUpdates, getLauncherUpdateState } from "../features/settings/api.js";
+import {
+  checkLauncherUpdates,
+  confirmAppExit,
+  getLauncherUpdateState,
+  getShellPreferencesState,
+  hideWindowToTray,
+  setDefaultProfileForLinks,
+  saveShellPreferences
+} from "../features/settings/api.js";
 
 const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.9";
+const APP_VERSION = "1.0.10";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";
@@ -404,6 +418,122 @@ function renderAppLifecycleOverlay(i18n, model) {
   `;
 }
 
+function renderDefaultBrowserStartupModal(i18n, model) {
+  if (!model.defaultBrowserStartupModal) return "";
+  return `
+    <div class="profiles-modal-overlay" id="default-browser-startup-overlay">
+      <div class="profiles-modal-window profiles-modal-window-sm">
+        <div class="action-modal">
+          <h3>${i18n.t("links.defaultBrowser.modal.title")}</h3>
+          <p class="meta">${i18n.t("links.defaultBrowser.modal.body")}</p>
+          <div class="modal-actions">
+            <button type="button" id="default-browser-startup-no">${i18n.t("action.no")}</button>
+            <button type="button" id="default-browser-startup-yes">${i18n.t("action.yes")}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDefaultLinkProfileModal(i18n, model) {
+  if (!model.defaultLinkProfileModal) return "";
+  return `
+    <div class="profiles-modal-overlay" id="default-link-profile-overlay">
+      <div class="profiles-modal-window profiles-modal-window-sm">
+        <div class="action-modal">
+          <h3>${i18n.t("links.defaultProfile.modal.title")}</h3>
+          <p class="meta">${i18n.t("links.defaultProfile.modal.body")}</p>
+          <label>${i18n.t("links.defaultProfile.modal.profile")}
+            <select id="default-link-profile-select">
+              ${(model.profiles ?? []).map((profile) => `<option value="${profile.id}" ${profile.id === model.defaultLinkProfileModal.selectedProfileId ? "selected" : ""}>${profile.name}</option>`).join("")}
+            </select>
+          </label>
+          <div class="modal-actions">
+            <button type="button" id="default-link-profile-cancel">${i18n.t("action.cancel")}</button>
+            <button type="button" id="default-link-profile-save">${i18n.t("action.save")}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function pendingWayfernProfileIds(model) {
+  return new Set(model.wayfernTermsStatus?.pendingProfileIds ?? []);
+}
+
+async function ensureWayfernTermsAccepted(model, profileId, rerender, t) {
+  if (!profileId || !pendingWayfernProfileIds(model).has(profileId)) {
+    return true;
+  }
+  const accepted = await askConfirmModal(t, {
+    title: t("profile.wayfernTerms.title"),
+    description: t("profile.wayfernTerms.description"),
+    submitLabel: t("action.confirm"),
+    cancelLabel: t("action.cancel")
+  });
+  if (!accepted) {
+    return false;
+  }
+  const ackResult = await acknowledgeWayfernTos(profileId);
+  if (!ackResult.ok) {
+    model.settingsNotice = { type: "error", text: String(ackResult.data.error) };
+    await rerender({ refreshProfiles: false, refreshFeature: false });
+    return false;
+  }
+  model.wayfernTermsStatus = { pendingProfileIds: [] };
+  return true;
+}
+
+async function acknowledgePendingWayfernProfiles(model, rerender, t) {
+  const pending = model.wayfernTermsStatus?.pendingProfileIds ?? [];
+  if (!pending.length) {
+    return true;
+  }
+  const accepted = await askConfirmModal(t, {
+    title: t("profile.wayfernTerms.title"),
+    description: t("profile.wayfernTerms.description"),
+    submitLabel: t("action.confirm"),
+    cancelLabel: t("action.cancel")
+  });
+  if (!accepted) {
+    return false;
+  }
+  const ackResult = await acknowledgeWayfernTos(pending[0] ?? null);
+  if (!ackResult.ok) {
+    model.settingsNotice = { type: "error", text: String(ackResult.data.error) };
+    await rerender({ refreshProfiles: false, refreshFeature: false });
+    return false;
+  }
+  model.wayfernTermsStatus = { pendingProfileIds: [] };
+  return true;
+}
+
+async function hydrateWayfernTermsStatus(model) {
+  const result = await getWayfernTermsStatus();
+  model.wayfernTermsStatus = result.ok ? result.data : { pendingProfileIds: [] };
+}
+
+function renderTrayCloseModal(i18n, model) {
+  if (!model.trayClosePromptModal) return "";
+  return `
+    <div class="profiles-modal-overlay" id="tray-close-prompt-overlay">
+      <div class="profiles-modal-window profiles-modal-window-sm">
+        <div class="action-modal">
+          <h3>${i18n.t("settings.tray.modal.title")}</h3>
+          <p class="meta">${i18n.t("settings.tray.modal.body")}</p>
+          <div class="modal-actions">
+            <button type="button" id="tray-close-prompt-cancel">${i18n.t("action.cancel")}</button>
+            <button type="button" id="tray-close-prompt-no">${i18n.t("action.no")}</button>
+            <button type="button" id="tray-close-prompt-yes">${i18n.t("action.yes")}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderStandaloneLifecycleOverlay(i18n, overlay) {
   const model = { appLifecycleOverlay: overlay };
   return `
@@ -464,6 +594,9 @@ function renderApp(root, state, i18n, model) {
       </div>
     </main>
     ${renderLinkLaunchModal(i18n.t, model)}
+    ${renderDefaultBrowserStartupModal(i18n, model)}
+    ${renderDefaultLinkProfileModal(i18n, model)}
+    ${renderTrayCloseModal(i18n, model)}
     ${renderPanicModal(i18n, model)}
     ${renderProfileLaunchOverlay(i18n, model)}
     ${renderAppLifecycleOverlay(i18n, model)}
@@ -703,7 +836,12 @@ async function bootstrap() {
     settingsNotice: null,
     settingsProvider: "duckduckgo",
     linkRoutingOverview: null,
+    shellPreferencesState: null,
     linkLaunchModal: null,
+    defaultBrowserStartupModal: null,
+    defaultLinkProfileModal: null,
+    trayClosePromptModal: null,
+    wayfernTermsStatus: { pendingProfileIds: [] },
     panicUi: null,
     appLifecycleOverlay: null
   };
@@ -768,12 +906,19 @@ async function bootstrap() {
 
   await rerender({ refreshProfiles: false, refreshFeature: false, refreshOverlay: false });
   if (!isPanicFrameOverlay()) {
+    await hydrateShellExperience(model);
+    await hydrateWayfernTermsStatus(model);
+    if ((model.wayfernTermsStatus?.pendingProfileIds ?? []).length) {
+      await acknowledgePendingWayfernProfiles(model, rerender, i18n.t);
+    }
     await consumePendingLinkLaunch(model, rerender, i18n.t);
+    await rerender({ refreshProfiles: false, refreshFeature: false });
   }
   const listen = getListen();
   let unlistenProfileState = null;
   let unlistenProfileLaunchProgress = null;
   let unlistenAppLifecycleProgress = null;
+  let unlistenCloseRequested = null;
   if (listen) {
     unlistenProfileState = await listen("profile-state-changed", async (event) => {
       const payload = event.payload ?? {};
@@ -835,6 +980,17 @@ async function bootstrap() {
       };
       await rerender({ refreshProfiles: false, refreshFeature: false });
     });
+    unlistenCloseRequested = await listen("app-close-requested", async () => {
+      model.trayClosePromptModal = { open: true };
+      await rerender({ refreshProfiles: false, refreshFeature: false });
+    });
+    await listen("external-link-received", async (event) => {
+      if (isPanicFrameOverlay()) return;
+      const payload = event.payload ?? {};
+      const url = typeof payload === "string" ? payload : String(payload.url ?? "").trim();
+      if (!url) return;
+      await handleExternalLinkRequest(model, url, rerender, i18n.t);
+    });
     await listen("traffic-gateway-event", async (event) => {
       if (isPanicFrameOverlay()) return;
       if (!applyHomeMetricEntry(model, event.payload ?? {})) return;
@@ -871,6 +1027,7 @@ async function bootstrap() {
     teardownEngineDownloads?.();
       teardownDnsBlocklists?.();
       unlistenAppLifecycleProgress?.();
+      unlistenCloseRequested?.();
       try {
         if (model.networkPingPoller) {
         clearInterval(model.networkPingPoller);
@@ -953,6 +1110,117 @@ function wire(root, bus, state, model, rerender, i18n) {
   if (state.currentFeature === "security") wireSecurity(root, model, rerender, t);
   if (state.currentFeature === "settings") wireSettings(root, model, rerender, t);
   if (model.linkLaunchModal) wireLinkLaunchModal(document.body, model, rerender, t);
+  wireShellModals(root, state, model, rerender, i18n.t);
+}
+
+async function hydrateShellExperience(model) {
+  const shellState = await getShellPreferencesState();
+  if (!shellState.ok) {
+    return;
+  }
+  model.shellPreferencesState = shellState.data;
+  if (shellState.data.shouldPromptDefaultBrowserPreference) {
+    model.defaultBrowserStartupModal = { open: true };
+    model.defaultLinkProfileModal = null;
+    return;
+  }
+  if (shellState.data.shouldPromptDefaultLinkProfile) {
+    model.defaultLinkProfileModal = {
+      selectedProfileId:
+        model.linkRoutingOverview?.globalProfileId ??
+        model.selectedProfileId ??
+        model.profiles?.[0]?.id ??
+        ""
+    };
+  }
+}
+
+function wireShellModals(root, state, model, rerender, t) {
+  root.querySelector("#default-browser-startup-no")?.addEventListener("click", async () => {
+    const result = await saveShellPreferences({
+      checkDefaultBrowserOnStartup: false,
+      defaultBrowserPromptDecided: true
+    });
+    if (result.ok) {
+      model.shellPreferencesState = result.data;
+      model.defaultBrowserStartupModal = null;
+      model.defaultLinkProfileModal = null;
+    }
+    await rerender({ refreshProfiles: false, refreshFeature: true });
+  });
+
+  root.querySelector("#default-browser-startup-yes")?.addEventListener("click", async () => {
+    const result = await saveShellPreferences({
+      checkDefaultBrowserOnStartup: true,
+      defaultBrowserPromptDecided: true
+    });
+    if (result.ok) {
+      model.shellPreferencesState = result.data;
+      model.defaultBrowserStartupModal = null;
+      model.defaultLinkProfileModal = result.data.isDefaultBrowser
+        ? {
+            selectedProfileId:
+              model.linkRoutingOverview?.globalProfileId ??
+              model.selectedProfileId ??
+              model.profiles?.[0]?.id ??
+              ""
+          }
+        : null;
+    }
+    await rerender({ refreshProfiles: false, refreshFeature: true });
+  });
+
+  root.querySelector("#default-link-profile-cancel")?.addEventListener("click", async () => {
+    model.defaultLinkProfileModal = null;
+    await rerender({ refreshProfiles: false, refreshFeature: false });
+  });
+
+  root.querySelector("#default-link-profile-save")?.addEventListener("click", async () => {
+    const profileId = root.querySelector("#default-link-profile-select")?.value ?? "";
+    if (!profileId) return;
+    if (!(await ensureWayfernTermsAccepted(model, profileId, rerender, t))) {
+      return;
+    }
+    const result = await setDefaultProfileForLinks({ profileId });
+    if (result.ok) {
+      model.defaultLinkProfileModal = null;
+      if (state.currentFeature === "settings") {
+        await hydrateSettingsModel(model);
+      }
+    }
+    await rerender({ refreshProfiles: false, refreshFeature: false });
+  });
+
+  root.querySelector("#tray-close-prompt-cancel")?.addEventListener("click", async () => {
+    model.trayClosePromptModal = null;
+    model.appLifecycleOverlay = null;
+    await rerender({ refreshProfiles: false, refreshFeature: false });
+  });
+
+  root.querySelector("#tray-close-prompt-yes")?.addEventListener("click", async () => {
+    const result = await saveShellPreferences({
+      minimizeToTrayEnabled: true,
+      closeToTrayPromptDeclined: false
+    });
+    if (result.ok) {
+      model.shellPreferencesState = result.data;
+    }
+    model.trayClosePromptModal = null;
+    model.appLifecycleOverlay = null;
+    await hideWindowToTray();
+    await rerender({ refreshProfiles: false, refreshFeature: false });
+  });
+
+  root.querySelector("#tray-close-prompt-no")?.addEventListener("click", async () => {
+    const result = await saveShellPreferences({
+      closeToTrayPromptDeclined: true
+    });
+    if (result.ok) {
+      model.shellPreferencesState = result.data;
+    }
+    model.trayClosePromptModal = null;
+    await confirmAppExit();
+  });
 }
 
 function renderFatalError(error) {

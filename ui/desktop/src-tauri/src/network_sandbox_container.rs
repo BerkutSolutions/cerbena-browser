@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    process::Command,
-};
+use std::{collections::BTreeSet, process::Command};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};

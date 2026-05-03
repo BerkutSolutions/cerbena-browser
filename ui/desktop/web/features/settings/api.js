@@ -59,3 +59,27 @@ export async function checkLauncherUpdates(manual = true) {
 export async function launchUpdaterPreview() {
   return callCommand("launch_updater_preview");
 }
+
+export async function getShellPreferencesState() {
+  return callCommand("get_shell_preferences_state");
+}
+
+export async function saveShellPreferences(request) {
+  return callCommand("save_shell_preferences", { request });
+}
+
+export async function hideWindowToTray() {
+  return callCommand("window_hide_to_tray");
+}
+
+export async function restoreWindowFromTray() {
+  return callCommand("window_restore_from_tray");
+}
+
+export async function confirmAppExit() {
+  return callCommand("confirm_app_exit");
+}
+
+export async function openDefaultAppsSettings() {
+  return callCommand("open_default_apps_settings");
+}

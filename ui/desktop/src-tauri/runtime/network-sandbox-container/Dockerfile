@@ -26,7 +26,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/container-socks-pr
 
 COPY entrypoint.sh /src/entrypoint.sh
 COPY sysctl_wrapper.sh /src/sysctl_wrapper.sh
-RUN chmod +x /src/entrypoint.sh
+COPY openvpn_dns_sync.sh /src/openvpn_dns_sync.sh
+RUN chmod +x /src/entrypoint.sh /src/openvpn_dns_sync.sh
 
 FROM debian:bookworm-slim
 
@@ -40,6 +41,7 @@ COPY --from=builder /usr/local/bin/awg /usr/local/bin/awg
 COPY --from=builder /usr/local/bin/awg-quick /usr/local/bin/awg-quick
 COPY --from=builder /out/container-socks-proxy /usr/local/bin/container-socks-proxy
 COPY --from=builder /src/entrypoint.sh /usr/local/bin/cerbena-container-entrypoint
+COPY --from=builder /src/openvpn_dns_sync.sh /usr/local/bin/openvpn-dns-sync
 COPY --from=builder /src/sysctl_wrapper.sh /usr/local/bin/sysctl
 
 RUN chmod +x /usr/local/bin/amneziawg-go \
@@ -48,7 +50,8 @@ RUN chmod +x /usr/local/bin/amneziawg-go \
     /usr/local/bin/awg-quick \
     /usr/local/bin/sysctl \
     /usr/local/bin/container-socks-proxy \
-    /usr/local/bin/cerbena-container-entrypoint
+    /usr/local/bin/cerbena-container-entrypoint \
+    /usr/local/bin/openvpn-dns-sync
 
 ENV WG_QUICK_USERSPACE_IMPLEMENTATION=/usr/local/bin/amneziawg-go
 

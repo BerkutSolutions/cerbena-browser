@@ -36,7 +36,7 @@ import {
   saveNetworkSandboxProfileSettings,
   saveVpnProxyPolicy
 } from "../network/api.js";
-import { getGlobalSecuritySettings } from "../security/api.js";
+import { getGlobalSecuritySettings, saveGlobalSecuritySettings } from "../security/api.js";
 import { getSyncOverview, saveSyncControls } from "../sync/api.js";
 import { blockedServicesToPairs, loadDnsTemplates, loadProfileDnsDraft, saveProfileDnsDraft } from "../dns/store.js";
 import { applyPolicyPresetToDraft, loadPolicyPresets, summarizePolicyPreset } from "../dns/policy-store.js";
@@ -114,6 +114,7 @@ function cookieIcon() {
 function profileTags(profile) {
   return (profile.tags ?? []).filter((tag) => !tag.startsWith("policy:")
     && !tag.startsWith("dns-template:")
+    && !tag.startsWith("locked-app:")
     && !tag.startsWith("ext:")
     && !tag.startsWith("ext-disabled:")
     && !tag.startsWith("cert-id:")
@@ -131,6 +132,73 @@ function certificateIds(profile) {
   return (profile?.tags ?? [])
     .filter((tag) => tag.startsWith("cert-id:"))
     .map((tag) => tag.replace("cert-id:", ""));
+}
+
+function certificateLegacyPaths(profile) {
+  return (profile?.tags ?? [])
+    .filter((tag) => tag.startsWith("cert:"))
+    .map((tag) => tag.replace("cert:", ""))
+    .filter((path) => path !== "global");
+}
+
+function hasAssignedProfileCertificates(certificateEntries) {
+  return (certificateEntries ?? []).some((entry) => {
+    const kind = String(entry?.kind ?? "");
+    const value = String(entry?.value ?? "").trim();
+    return (kind === "id" || kind === "path") && value.length > 0;
+  });
+}
+
+function slugId(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function makeUniqueId(seed, existingIds) {
+  const base = slugId(seed) || "item";
+  let candidate = base;
+  let suffix = 2;
+  while (existingIds.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function normalizeGlobalSecuritySettings(raw) {
+  const payload = typeof raw === "string" ? JSON.parse(raw || "{}") : (raw ?? {});
+  return {
+    startupPage: payload.startup_page ?? payload.startupPage ?? "",
+    certificates: (payload.certificates ?? []).map((item) => ({
+      id: item.id,
+      name: item.name,
+      path: item.path,
+      issuerName: item.issuerName ?? item.issuer_name ?? "",
+      subjectName: item.subjectName ?? item.subject_name ?? "",
+      applyGlobally: Boolean(item.applyGlobally ?? item.apply_globally),
+      profileIds: item.profileIds ?? item.profile_ids ?? []
+    })),
+    blockedDomainSuffixes: payload.blocked_domain_suffixes ?? payload.blockedDomainSuffixes ?? [],
+    blocklists: (payload.blocklists ?? []).map((item) => ({
+      id: item.id,
+      name: item.name,
+      sourceKind: item.sourceKind ?? item.source_kind,
+      sourceValue: item.sourceValue ?? item.source_value,
+      active: Boolean(item.active),
+      domains: item.domains ?? []
+    }))
+  };
+}
+
+function buildGlobalSecuritySaveRequest(state) {
+  return {
+    startupPage: state.startupPage?.trim() ? state.startupPage.trim() : null,
+    certificates: state.certificates ?? [],
+    blockedDomainSuffixes: state.blockedDomainSuffixes ?? [],
+    blocklists: state.blocklists ?? []
+  };
 }
 
 function profileExtensions(profile) {
@@ -639,20 +707,18 @@ function renderProfileSandboxFrame(preview, selectedTemplate, selectedModeOverri
 function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, syncOverview, identityPreset) {
   const isRunning = profile?.state === "running";
   const searchDefault = profile?.default_search_provider ?? "duckduckgo";
+  const singlePageMode = Boolean((profile?.tags ?? []).some((tag) => tag === "locked-app:custom"));
   const currentPolicy = profile?.tags?.find((x) => x.startsWith("policy:"))?.replace("policy:", "") ?? "normal";
   const ext = mergedProfileExtensions(model, profile);
   const securityFlags = profileSecurityFlags(profile);
   const selectedCertIds = certificateIds(profile);
-  const selectedCertPaths = (profile?.tags ?? [])
-    .filter((tag) => tag.startsWith("cert:"))
-    .map((tag) => tag.replace("cert:", ""))
-    .filter((path) => path !== "global");
+  const selectedCertPaths = certificateLegacyPaths(profile);
   const selectedBlocklists = dnsDraft?.selectedBlocklists ?? [];
   const allowDomains = dnsDraft?.allowlist ? dnsDraft.allowlist.split(",").map((v) => v.trim()).filter(Boolean) : [];
   const denyDomains = dnsDraft?.denylist ? dnsDraft.denylist.split(",").map((v) => v.trim()).filter(Boolean) : [];
   const policyPresets = loadPolicyPresets(model.serviceCatalog);
   const policySummary = summarizePolicyPreset(policyPresets[currentPolicy]);
-  const certificateOptions = (globalSecurity?.certificates ?? []).map((item) => `<option value="${item.id}">${escapeHtml(item.name)} (${escapeHtml(item.path)})</option>`).join("");
+  const certificateOptions = (globalSecurity?.certificates ?? []).map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("");
   const routeTemplates = networkState?.connectionTemplates ?? [];
   const selectedRouteMode = normalizeProfileRouteMode(profile ? (networkState?.payload?.route_mode ?? "direct") : "direct");
   const routeIsDirect = selectedRouteMode === "direct";
@@ -691,7 +757,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
           <div class="tab-pane" data-pane="general">
             <div class="grid-two profile-modal-grid">
               <label>${t("profile.field.name")}<input name="name" value="${profile?.name ?? ""}" required /></label>
-              <label>${t("profile.field.engine")}<select name="engine">${option("wayfern", "Wayfern Chromium", profile?.engine === "wayfern")}${option("camoufox", "Camoufox Firefox", profile?.engine === "camoufox")}</select></label>
+              <label>${t("profile.field.engine")}<select name="engine" id="profile-engine">${option("wayfern", "Wayfern Chromium", profile?.engine === "wayfern")}${option("camoufox", "Camoufox Firefox", profile?.engine === "camoufox")}</select></label>
               <label class="profile-modal-span-2 profile-description-field">${t("profile.field.description")}<textarea name="description" rows="4">${escapeHtml(profile?.description ?? "")}</textarea></label>
               <label class="profile-modal-span-2">${t("profile.field.tags")}
                 ${buildTagPickerMarkup({
@@ -704,7 +770,12 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
                 })}
               </label>
               <label>${t("profile.field.defaultStartPage")}<input name="defaultStartPage" value="${profile?.default_start_page ?? "https://duckduckgo.com"}" /></label>
-              <label>${t("profile.field.defaultSearch")}<select name="defaultSearchProvider">${searchOptions(searchDefault)}</select></label>
+              <label class="checkbox-inline">
+                <input type="checkbox" name="singlePageMode" id="profile-single-page-mode" ${singlePageMode ? "checked" : ""} />
+                <span>${t("profile.field.singlePage")}</span>
+              </label>
+              <label id="profile-default-search-row" class="${singlePageMode ? "hidden" : ""}">${t("profile.field.defaultSearch")}<select name="defaultSearchProvider" ${singlePageMode ? "disabled" : ""}>${searchOptions(searchDefault)}</select></label>
+              <p class="meta profile-modal-span-2 ${singlePageMode ? "" : "hidden"}" id="profile-single-page-hint">${t("profile.field.singlePageHint")}</p>
               <label class="checkbox-inline profile-modal-span-2">
                 <input type="checkbox" name="panicFrameEnabled" ${profile?.panic_frame_enabled ? "checked" : ""} />
                 <span>${t("profile.field.panicFrame")}</span>
@@ -878,13 +949,14 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
             <div class="security-frame">
               <h4>${t("security.certificates.customTitle")}</h4>
               <p class="meta">${t("security.certificates.hint")}</p>
+              <div id="profile-certificate-engine-guard"></div>
               <div class="grid-two profile-certificates-toolbar">
                 <label>${t("security.certificates.profile")}<select name="profileCertificateSelect"><option value="">${t("security.selectCertificate")}</option>${certificateOptions}</select></label>
                 <label class="profile-toolbar-action">&nbsp;<button type="button" class="profile-toolbar-button" id="profile-certificate-add">${t("security.certificates.add")}</button></label>
                 <label class="profile-modal-span-2 profile-toolbar-action">&nbsp;<button type="button" class="profile-toolbar-button profile-toolbar-button-wide" id="profile-certificate-pick">${t("security.certificates.pickFiles")}</button></label>
               </div>
               <table class="extensions-table">
-                <thead><tr><th>${t("extensions.name")}</th><th>${t("security.path")}</th><th>${t("extensions.actions")}</th></tr></thead>
+                <thead><tr><th>${t("extensions.name")}</th><th>${t("extensions.actions")}</th></tr></thead>
                 <tbody
                   id="profile-certificates-table"
                   data-certificate-ids="${escapeHtml(JSON.stringify(selectedCertIds))}"
@@ -943,7 +1015,8 @@ function resolveProfileErrorMessage(t, errorText) {
     "profile_protection.system_access_forbidden": "profile.security.systemAccessBlocked",
     "profile_protection.keepassxc_forbidden": "profile.security.keepassxcBlocked",
     "profile_protection.maximum_policy_extensions_forbidden": "profile.security.maximumPolicyExtensionsBlocked",
-    "profile_protection.cookies_copy_blocked": "profile.security.cookiesCopyBlocked"
+    "profile_protection.cookies_copy_blocked": "profile.security.cookiesCopyBlocked",
+    "profile.security.wayfern_certificates_not_supported": "profile.security.wayfernCertificatesBlocked"
   };
   for (const [marker, key] of Object.entries(keyMap)) {
     if (text.includes(marker)) {
@@ -1199,9 +1272,22 @@ export function wireProfiles(root, model, rerender, t) {
                 if (!ackResult.ok) {
                   setNotice(model, "error", resolveProfileErrorMessage(t, ackResult.data.error));
                 } else {
+                  model.wayfernTermsStatus = { pendingProfileIds: [] };
                   const relaunched = await launchProfile(profileId);
                   setNotice(model, relaunched.ok ? "success" : "error", relaunched.ok ? t("profile.notice.launched") : resolveProfileErrorMessage(t, relaunched.data.error));
                 }
+              }
+            } else if (errorText.includes("profile.security.wayfern_certificates_not_supported")) {
+              const accepted = await askConfirm(
+                root,
+                t,
+                t("profile.security.wayfernCertificatesBlockedTitle"),
+                t("profile.security.wayfernCertificatesBlockedDescription")
+              );
+              if (accepted) {
+                await openProfileModal(root, model, rerender, t, profile);
+              } else {
+                setNotice(model, "error", resolveProfileErrorMessage(t, errorText));
               }
             } else {
               setNotice(model, "error", resolveProfileErrorMessage(t, errorText));
@@ -1230,7 +1316,10 @@ export function wireProfiles(root, model, rerender, t) {
 
       if (action === "delete") {
         const confirmed = await askConfirm(root, t, t("profile.delete.title"), t("profile.delete.confirm"));
-        if (confirmed) await deleteProfile(profileId);
+        if (confirmed) {
+          const result = await deleteProfile(profileId);
+          setNotice(model, result.ok ? "success" : "error", result.ok ? t("profile.notice.deleted") : String(result.data.error));
+        }
       }
 
       await hydrateProfilesModel(model);
@@ -1334,7 +1423,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
   const globalSecurityResult = await getGlobalSecuritySettings();
   if (globalSecurityResult.ok) {
     try {
-      globalSecurity = JSON.parse(globalSecurityResult.data || "{}");
+      globalSecurity = normalizeGlobalSecuritySettings(globalSecurityResult.data);
     } catch {}
   }
   const dnsDraftKey = existing?.id ?? "create-profile";
@@ -1657,6 +1746,10 @@ async function openProfileModal(root, model, rerender, t, existing) {
   const passwordLockField = overlay.querySelector("[name='passwordLock']");
   const panicFrameEnabledField = overlay.querySelector("[name='panicFrameEnabled']");
   const panicColorRow = overlay.querySelector("#profile-panic-color-row");
+  const profileEngineField = overlay.querySelector("#profile-engine");
+  const singlePageModeField = overlay.querySelector("#profile-single-page-mode");
+  const defaultSearchRow = overlay.querySelector("#profile-default-search-row");
+  const singlePageHint = overlay.querySelector("#profile-single-page-hint");
   const passwordFields = overlay.querySelector("#profile-password-fields");
   const passwordValueField = overlay.querySelector("[name='profilePassword']");
   const passwordConfirmField = overlay.querySelector("[name='profilePasswordConfirm']");
@@ -1667,6 +1760,8 @@ async function openProfileModal(root, model, rerender, t, existing) {
   const domainSearchField = overlay.querySelector("#profile-domain-search");
   const domainFilterField = overlay.querySelector("#profile-domain-filter");
   const certificateTable = overlay.querySelector("#profile-certificates-table");
+  const profileCertificateSelectField = overlay.querySelector("[name='profileCertificateSelect']");
+  const profileCertificateEngineGuard = overlay.querySelector("#profile-certificate-engine-guard");
   const extensionState = (() => {
     try {
       return {
@@ -1736,6 +1831,59 @@ async function openProfileModal(root, model, rerender, t, existing) {
     }
   });
   profileTagPicker?.rerender(profileTagState.available, profileTagState.selected);
+  const renderSinglePageControls = () => {
+    const engine = profileEngineField?.value ?? "wayfern";
+    const supported = engine === "wayfern";
+    if (singlePageModeField) {
+      if (!supported) {
+        singlePageModeField.checked = false;
+      }
+      singlePageModeField.disabled = !supported;
+    }
+    const active = Boolean(supported && singlePageModeField?.checked);
+    if (defaultSearchRow) {
+      defaultSearchRow.classList.toggle("hidden", active);
+      const select = defaultSearchRow.querySelector("[name='defaultSearchProvider']");
+      if (select) {
+        select.disabled = active;
+      }
+    }
+    if (singlePageHint) {
+      singlePageHint.classList.toggle("hidden", !active);
+    }
+  };
+  const renderCertificateEngineGuard = () => {
+    const engine = profileEngineField?.value ?? "wayfern";
+    const hasCertificates = hasAssignedProfileCertificates(certificateState);
+    const certificatesSupported = engine === "camoufox";
+    if (!profileCertificateEngineGuard) return;
+    let message = "";
+    if (!certificatesSupported && hasCertificates) {
+      message = t("profile.security.certificateIsolationWarning");
+    } else if (!certificatesSupported) {
+      message = t("profile.security.certificateIsolationHint");
+    } else if (hasCertificates) {
+      message = t("profile.security.certificateIsolationCamoufox");
+    }
+    profileCertificateEngineGuard.innerHTML = message
+      ? `
+        <div class="notice ${certificatesSupported ? "" : "error"}">
+          ${escapeHtml(message)}
+        </div>
+      `
+      : "";
+  };
+  renderSinglePageControls();
+  renderCertificateEngineGuard();
+  profileEngineField?.addEventListener("change", () => {
+    dirty = true;
+    renderSinglePageControls();
+    renderCertificateEngineGuard();
+  });
+  singlePageModeField?.addEventListener("change", () => {
+    dirty = true;
+    renderSinglePageControls();
+  });
   const renderExtensions = () => {
     if (!extensionsTable) return;
     const rows = [];
@@ -1839,7 +1987,6 @@ async function openProfileModal(root, model, rerender, t, existing) {
         return `
           <tr>
             <td>${escapeHtml(cert.name)}</td>
-            <td>${escapeHtml(cert.path)}</td>
             <td class="actions"><button type="button" data-cert-remove="id:${cert.id}">${t("extensions.remove")}</button></td>
           </tr>
         `;
@@ -1850,11 +1997,10 @@ async function openProfileModal(root, model, rerender, t, existing) {
       return `
         <tr>
           <td>${escapeHtml(name)}</td>
-          <td>${escapeHtml(path)}</td>
           <td class="actions"><button type="button" data-cert-remove="path:${escapeHtml(path)}">${t("extensions.remove")}</button></td>
         </tr>
       `;
-    }).join("") || `<tr><td colspan="3" class="meta">${t("security.certificates.empty")}</td></tr>`;
+    }).join("") || `<tr><td colspan="2" class="meta">${t("security.certificates.empty")}</td></tr>`;
     for (const btn of certificateTable.querySelectorAll("[data-cert-remove]")) {
       btn.addEventListener("click", () => {
         const [kind, ...valueParts] = String(btn.getAttribute("data-cert-remove") ?? "").split(":");
@@ -1864,6 +2010,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
         certificateState.push(...next);
         dirty = true;
         renderCertificates();
+        renderCertificateEngineGuard();
       });
     }
   };
@@ -1990,6 +2137,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
       certificateState.push({ kind: "id", value });
       dirty = true;
       renderCertificates();
+      renderCertificateEngineGuard();
     }
   });
   overlay.querySelector("#profile-certificate-pick")?.addEventListener("click", async () => {
@@ -2000,15 +2148,53 @@ async function openProfileModal(root, model, rerender, t, existing) {
       return;
     }
     const files = Array.isArray(result.data) ? result.data : [];
+    if (!files.length) return;
+    const existingIds = new Set((globalSecurity.certificates ?? []).map((item) => String(item.id ?? "")));
+    const existingPaths = new Set((globalSecurity.certificates ?? []).map((item) => String(item.path ?? "").trim().toLowerCase()));
+    const addedIds = [];
     for (const filePath of files) {
       const clean = String(filePath ?? "").trim();
       if (!clean) continue;
-      if (!certificateState.some((item) => item.kind === "path" && item.value === clean)) {
-        certificateState.push({ kind: "path", value: clean });
+      if (existingPaths.has(clean.toLowerCase()) || existingIds.has(slugId(clean))) continue;
+      const id = makeUniqueId(clean, existingIds);
+      existingIds.add(id);
+      existingPaths.add(clean.toLowerCase());
+      globalSecurity.certificates.push({
+        id,
+        name: clean.split(/[/\\]/).pop()?.replace(/\.(pem|crt|cer)$/i, "") || clean,
+        path: clean,
+        issuerName: "",
+        subjectName: "",
+        applyGlobally: false,
+        profileIds: []
+      });
+      addedIds.push(id);
+    }
+    if (addedIds.length) {
+      const saveResult = await saveGlobalSecuritySettings(buildGlobalSecuritySaveRequest(globalSecurity));
+      if (!saveResult.ok) {
+        setNotice(model, "error", String(saveResult.data?.error ?? "save_global_security_settings failed"));
+        await rerender();
+        return;
+      }
+      const refreshedSecurity = await getGlobalSecuritySettings();
+      if (refreshedSecurity.ok) {
+        try {
+          globalSecurity = normalizeGlobalSecuritySettings(refreshedSecurity.data);
+          if (profileCertificateSelectField) {
+            profileCertificateSelectField.innerHTML = `<option value="">${t("security.selectCertificate")}</option>${(globalSecurity.certificates ?? []).map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}`;
+          }
+        } catch {}
+      }
+      for (const id of addedIds) {
+        if (!certificateState.some((item) => item.kind === "id" && item.value === id)) {
+          certificateState.push({ kind: "id", value: id });
+        }
       }
     }
     dirty = true;
     renderCertificates();
+    renderCertificateEngineGuard();
   });
   const blocklistDropdown = overlay.querySelector(".profile-blocklist-dropdown");
   const blocklistMenu = overlay.querySelector("#profile-blocklists-menu");
@@ -2147,13 +2333,37 @@ async function openProfileModal(root, model, rerender, t, existing) {
     if (form.allowKeepassxc.checked) {
       tags.push("ext-keepassxc");
     }
+    const preservedLockedAppTags = (existing?.tags ?? []).filter((tag) =>
+      tag.startsWith("locked-app:") && tag !== "locked-app:custom"
+    );
+    tags.push(...preservedLockedAppTags);
+    if (form.engine.value === "wayfern" && form.singlePageMode?.checked) {
+      tags.push("locked-app:custom");
+    }
+    const defaultStartPageValue = String(form.defaultStartPage.value ?? "").trim();
+    if (form.engine.value === "wayfern" && form.singlePageMode?.checked) {
+      const normalizedStartPage = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(defaultStartPageValue)
+        ? defaultStartPageValue
+        : `https://${defaultStartPageValue}`;
+      let startUrl = null;
+      try {
+        startUrl = new URL(normalizedStartPage);
+      } catch {
+        startUrl = null;
+      }
+      if (!startUrl?.host) {
+        setNotice(model, "error", t("profile.field.singlePageInvalidUrl"));
+        rerender();
+        return;
+      }
+    }
     const payload = {
       name: form.name.value,
       description: form.description.value || null,
       tags,
       engine: form.engine.value,
-      defaultStartPage: form.defaultStartPage.value || null,
-      defaultSearchProvider: form.defaultSearchProvider.value || null,
+      defaultStartPage: defaultStartPageValue || null,
+      defaultSearchProvider: form.singlePageMode?.checked ? null : (form.defaultSearchProvider.value || null),
       ephemeralMode: form.ephemeral.checked,
       passwordLockEnabled: form.passwordLock.checked,
       panicFrameEnabled: form.panicFrameEnabled.checked,
@@ -2341,11 +2551,13 @@ async function openProfileModal(root, model, rerender, t, existing) {
     };
 
     if (existing) {
+      const engineChanged = String(existing.engine ?? "wayfern") !== String(form.engine.value ?? "wayfern");
       const updateResult = await updateProfile({
         profileId: existing.id,
         name: payload.name,
         description: payload.description,
         tags: payload.tags,
+        engine: form.engine.value,
         defaultStartPage: payload.defaultStartPage,
         defaultSearchProvider: payload.defaultSearchProvider,
         ephemeralMode: payload.ephemeralMode,
@@ -2374,7 +2586,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
         const identityResult = await saveIdentityPolicy(existing.id);
         const passwordResult = await saveProfilePassword(existing.id);
         if (dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
-          setNotice(model, "success", t("profile.runtime.appliedNow"));
+          setNotice(model, "success", engineChanged ? t("profile.runtime.engineChangedReset") : t("profile.runtime.appliedNow"));
         } else {
           setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(dnsResult, routeResult, sandboxResult, syncResult, identityResult));
         }

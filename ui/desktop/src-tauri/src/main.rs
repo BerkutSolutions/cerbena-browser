@@ -1,19 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod device_posture;
+mod certificate_runtime;
 mod envelope;
 mod extensions_commands;
 mod identity_commands;
 mod install_registration;
+mod instance_handoff;
 mod keepassxc_bridge;
 mod launch_sessions;
 mod launcher_commands;
 mod network_commands;
 mod network_runtime;
+mod network_sandbox;
 mod network_sandbox_adapter;
 mod network_sandbox_container;
 mod network_sandbox_container_runtime;
-mod network_sandbox;
 mod network_sandbox_lifecycle;
 mod panic_frame;
 mod process_tracking;
@@ -24,6 +26,7 @@ mod sensitive_store;
 mod service_catalog_seed;
 mod service_domains;
 mod service_domains_data;
+mod shell_commands;
 mod state;
 mod sync_commands;
 mod sync_snapshots;
@@ -36,6 +39,39 @@ use state::AppState;
 use tauri::{Manager, WindowEvent};
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    let app_data_root = std::env::var_os("LOCALAPPDATA").map(|local_app_data| {
+        std::path::PathBuf::from(local_app_data).join(if cfg!(debug_assertions) {
+            "dev.browser.launcher"
+        } else {
+            "Cerbena Browser"
+        })
+    });
+    let startup_link_arg = std::env::args()
+        .skip(1)
+        .find(|value| launcher_commands::detect_link_type(value).is_ok());
+
+    #[cfg(target_os = "windows")]
+    if let Some(app_data_root) = app_data_root.as_deref() {
+        if !instance_handoff::acquire_single_instance_guard(app_data_root).unwrap_or(true) {
+            if let Some(link_arg) = startup_link_arg.as_deref() {
+                let _ =
+                    instance_handoff::forward_link_to_primary_data_root(app_data_root, link_arg);
+            } else {
+                let _ = instance_handoff::signal_primary_activation_data_root(app_data_root);
+            }
+            return;
+        }
+
+        if let Some(link_arg) = startup_link_arg.as_deref() {
+            if instance_handoff::forward_link_to_primary_data_root(app_data_root, link_arg)
+                .unwrap_or(false)
+            {
+                return;
+            }
+        }
+    }
+
     let updater_launch_mode = update_commands::active_updater_launch_mode();
     tauri::Builder::default()
         .on_window_event(|window, event| {
@@ -48,12 +84,27 @@ fn main() {
             if window.label() != "main" {
                 return;
             }
-            if let WindowEvent::CloseRequested { .. } = event {
+            if let WindowEvent::CloseRequested { api, .. } = event {
                 if update_commands::active_updater_launch_mode().is_active() {
                     update_commands::launch_pending_update_on_exit(&window.app_handle());
                     return;
                 }
-                window_commands::perform_shutdown_cleanup(&window.app_handle());
+                match shell_commands::resolve_close_request(&window.app_handle()) {
+                    Ok(shell_commands::CloseRequestAction::AllowExit) => {
+                        window_commands::perform_shutdown_cleanup(&window.app_handle());
+                    }
+                    Ok(shell_commands::CloseRequestAction::HideToTray) => {
+                        api.prevent_close();
+                        let _ = shell_commands::hide_main_window(&window.app_handle());
+                    }
+                    Ok(shell_commands::CloseRequestAction::PromptToEnableTray) => {
+                        api.prevent_close();
+                        shell_commands::emit_close_to_tray_prompt(&window.app_handle());
+                    }
+                    Err(_) => {
+                        window_commands::perform_shutdown_cleanup(&window.app_handle());
+                    }
+                }
             }
         })
         .on_page_load(|window, payload| {
@@ -90,20 +141,30 @@ fn main() {
             #[cfg(debug_assertions)]
             main_window.open_devtools();
 
+            if let Some(link_arg) = startup_link_arg.as_deref() {
+                if instance_handoff::forward_link_to_primary(app.handle(), link_arg)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                {
+                    let _ = main_window.hide();
+                    std::process::exit(0);
+                }
+            }
+
             let state = AppState::bootstrap(app.handle())
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             launch_sessions::prune_inactive_sessions(&state)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-            if let Some(link_arg) = std::env::args()
-                .skip(1)
-                .find(|value| launcher_commands::detect_link_type(value).is_ok())
-            {
+            if let Some(link_arg) = startup_link_arg {
                 if let Ok(mut pending) = state.pending_external_link.lock() {
                     *pending = Some(link_arg);
                 }
             }
             app.manage(state);
             install_registration::reconcile_install_registration(app.handle());
+            shell_commands::setup_system_tray(app)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            instance_handoff::setup_primary_instance_bridge(app)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
@@ -141,6 +202,7 @@ fn main() {
             profile_commands::launch_profile,
             profile_commands::stop_profile,
             profile_commands::acknowledge_wayfern_tos,
+            profile_commands::get_wayfern_terms_status,
             profile_commands::ensure_engine_binaries,
             profile_commands::copy_profile_cookies,
             profile_commands::set_profile_password,
@@ -217,6 +279,12 @@ fn main() {
             launcher_commands::save_global_security_settings,
             launcher_commands::get_device_posture_report,
             launcher_commands::refresh_device_posture_report,
+            shell_commands::get_shell_preferences_state,
+            shell_commands::save_shell_preferences,
+            shell_commands::window_hide_to_tray,
+            shell_commands::window_restore_from_tray,
+            shell_commands::confirm_app_exit,
+            shell_commands::open_default_apps_settings,
             update_commands::get_launcher_update_state,
             update_commands::set_launcher_auto_update,
             update_commands::check_launcher_updates,

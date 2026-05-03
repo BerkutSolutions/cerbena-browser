@@ -75,6 +75,14 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LockedAppConfig {
+    start_url: String,
+    #[serde(default)]
+    allowed_hosts: Vec<String>,
+}
+
 impl EngineRuntime {
     pub fn new(base_dir: PathBuf) -> Result<Self, EngineError> {
         let install_root = base_dir.join("engines");
@@ -97,6 +105,16 @@ impl EngineRuntime {
     ) -> Result<(), EngineError> {
         self.wayfern_adapter()
             .acknowledge_tos(profile_root, profile_id)
+    }
+
+    pub fn requires_wayfern_tos_ack(
+        &self,
+        profile_root: &Path,
+        profile_id: uuid::Uuid,
+    ) -> Result<bool, EngineError> {
+        Ok(!self
+            .wayfern_adapter()
+            .is_tos_acknowledged(profile_root, profile_id)?)
     }
 
     pub fn installed(&self, engine: EngineKind) -> Result<Option<EngineInstallation>, EngineError> {
@@ -247,6 +265,40 @@ impl EngineRuntime {
             EngineKind::Wayfern => self.wayfern_adapter().launch(request),
             EngineKind::Camoufox => self.camoufox_adapter().launch(request),
         }
+    }
+
+    pub fn open_url_in_existing_profile(
+        &self,
+        engine: EngineKind,
+        profile_root: PathBuf,
+        url: String,
+    ) -> Result<(), EngineError> {
+        let installation = self
+            .registry
+            .get(engine)?
+            .ok_or_else(|| EngineError::Launch("engine is not installed".to_string()))?;
+        let binary_path = if matches!(engine, EngineKind::Camoufox) {
+            prefer_camoufox_browser_binary(&installation.binary_path)
+        } else {
+            installation.binary_path
+        };
+        let args = reopen_args(engine, &profile_root, &url)?;
+        eprintln!(
+            "[engine-runtime] reopen {} binary={} args={:?}",
+            engine.as_key(),
+            binary_path.display(),
+            args
+        );
+        let mut command = Command::new(binary_path);
+        command.args(&args);
+        #[cfg(target_os = "windows")]
+        {
+            command.creation_flags(0x08000000);
+        }
+        command
+            .spawn()
+            .map_err(|e| EngineError::Launch(format!("reopen existing profile failed: {e}")))?;
+        Ok(())
     }
 
     fn resolve_artifact(&self, engine: EngineKind) -> Result<ResolvedArtifact, EngineError> {
@@ -908,6 +960,7 @@ fn launch_args(
     let runtime_dir = profile_root.join("engine-profile");
     match engine {
         EngineKind::Wayfern => {
+            let locked_app = load_locked_app_config(profile_root)?;
             // Keep launch command size bounded on Windows. Huge domain blocklists can
             // overflow CreateProcess argument limits when passed via host resolver rules.
             const MAX_HOST_RESOLVER_RULES_LEN: usize = 8_192;
@@ -950,7 +1003,12 @@ fn launch_args(
                     .join(",");
                 args.push(format!("--load-extension={joined}"));
             }
-            args.push(start_page.to_string());
+            if let Some(config) = locked_app {
+                let app_url = resolve_locked_app_target_url(&config, start_page);
+                args.push(format!("--app={app_url}"));
+            } else {
+                args.push(start_page.to_string());
+            }
             Ok(args)
         }
         EngineKind::Camoufox => {
@@ -966,6 +1024,35 @@ fn launch_args(
             Ok(args)
         }
     }
+}
+
+fn reopen_args(
+    engine: EngineKind,
+    profile_root: &Path,
+    url: &str,
+) -> Result<Vec<String>, EngineError> {
+    let runtime_dir = profile_root.join("engine-profile");
+    Ok(match engine {
+        EngineKind::Wayfern => {
+            let locked_app = load_locked_app_config(profile_root)?;
+            let mut args = vec![format!("--user-data-dir={}", runtime_dir.to_string_lossy())];
+            if let Some(config) = locked_app {
+                args.push(format!(
+                    "--app={}",
+                    resolve_locked_app_target_url(&config, url)
+                ));
+            } else {
+                args.push(url.trim().to_string());
+            }
+            args
+        }
+        EngineKind::Camoufox => vec![
+            "-profile".to_string(),
+            runtime_dir.to_string_lossy().to_string(),
+            "-new-tab".to_string(),
+            url.trim().to_string(),
+        ],
+    })
 }
 
 fn wayfern_host_resolver_rules(profile_root: &Path, max_len: usize) -> Option<String> {
@@ -1002,7 +1089,8 @@ fn wayfern_host_resolver_rules(profile_root: &Path, max_len: usize) -> Option<St
 
 fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<PathBuf>, EngineError> {
     let blocked_domains = blocked_domains_for_profile(profile_root)?;
-    if blocked_domains.is_empty() {
+    let locked_app = load_locked_app_config(profile_root)?;
+    if blocked_domains.is_empty() && locked_app.is_none() {
         return Ok(None);
     }
 
@@ -1011,7 +1099,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
     let manifest = serde_json::json!({
         "manifest_version": 3,
         "name": "Cerbena Policy Firewall",
-        "version": "1.0.9",
+        "version": "1.0.10",
         "description": "Profile-scoped outbound policy enforcement for blocked domains.",
         "declarative_net_request": {
             "rule_resources": [
@@ -1024,7 +1112,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
         },
         "permissions": ["declarativeNetRequest", "declarativeNetRequestFeedback"]
     });
-    let rules = blocked_domains
+    let mut rules = blocked_domains
         .into_iter()
         .enumerate()
         .map(|(index, domain)| {
@@ -1053,6 +1141,40 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
             })
         })
         .collect::<Vec<_>>();
+    if let Some(config) = locked_app {
+        let allowed_hosts = config
+            .allowed_hosts
+            .into_iter()
+            .map(|host| host.trim().trim_start_matches('.').to_lowercase())
+            .filter(|host| !host.is_empty())
+            .collect::<Vec<_>>();
+        if !allowed_hosts.is_empty() {
+            rules.push(serde_json::json!({
+                "id": rules.len() + 1,
+                "priority": 2,
+                "action": { "type": "block" },
+                "condition": {
+                    "regexFilter": "^https?://",
+                    "excludedRequestDomains": allowed_hosts,
+                    "resourceTypes": [
+                        "main_frame",
+                        "sub_frame",
+                        "stylesheet",
+                        "script",
+                        "image",
+                        "font",
+                        "object",
+                        "xmlhttprequest",
+                        "ping",
+                        "media",
+                        "websocket",
+                        "webtransport",
+                        "other"
+                    ]
+                }
+            }));
+        }
+    }
 
     fs::write(
         extension_dir.join("manifest.json"),
@@ -1063,6 +1185,41 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
         serde_json::to_vec_pretty(&rules)?,
     )?;
     Ok(Some(extension_dir))
+}
+
+fn load_locked_app_config(profile_root: &Path) -> Result<Option<LockedAppConfig>, EngineError> {
+    let path = profile_root.join("policy").join("locked-app.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read(path)?;
+    let config = serde_json::from_slice::<LockedAppConfig>(&raw)?;
+    Ok(Some(config))
+}
+
+fn resolve_locked_app_target_url(config: &LockedAppConfig, requested_url: &str) -> String {
+    let trimmed = requested_url.trim();
+    if trimmed.is_empty() {
+        return config.start_url.clone();
+    }
+    let Ok(parsed) = reqwest::Url::parse(trimmed) else {
+        return config.start_url.clone();
+    };
+    let Some(host) = parsed.host_str().map(|value| value.to_ascii_lowercase()) else {
+        return config.start_url.clone();
+    };
+    let allowed = config.allowed_hosts.iter().any(|candidate| {
+        let normalized = candidate
+            .trim()
+            .trim_start_matches('.')
+            .to_ascii_lowercase();
+        host == normalized || host.ends_with(&format!(".{normalized}"))
+    });
+    if allowed {
+        trimmed.to_string()
+    } else {
+        config.start_url.clone()
+    }
 }
 
 fn prepare_wayfern_extension_dirs(profile_root: &Path) -> Result<Vec<PathBuf>, EngineError> {
@@ -1151,6 +1308,30 @@ mod tests {
 
         let domains = blocked_domains_for_profile(temp.path()).expect("domains");
         assert_eq!(domains, vec!["reddit.com".to_string()]);
+    }
+
+    #[test]
+    fn prepares_locked_app_block_rule_for_wayfern_extension() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let policy_dir = temp.path().join("policy");
+        fs::create_dir_all(&policy_dir).expect("policy dir");
+        fs::write(
+            policy_dir.join("locked-app.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "startUrl": "https://discord.com/app",
+                "allowedHosts": ["discord.com", "discord.gg"]
+            }))
+            .expect("serialize locked app"),
+        )
+        .expect("write locked app");
+
+        let extension_dir = prepare_wayfern_blocking_extension(temp.path())
+            .expect("prepare extension")
+            .expect("extension dir");
+        let rules_raw = fs::read_to_string(extension_dir.join("rules.json")).expect("rules");
+        assert!(rules_raw.contains("\"regexFilter\": \"^https?://\""));
+        assert!(rules_raw.contains("discord.com"));
+        assert!(rules_raw.contains("excludedRequestDomains"));
     }
 }
 

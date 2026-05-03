@@ -2,10 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
-    sync::{
-        atomic::AtomicBool,
-        Arc, Mutex,
-    },
+    sync::{atomic::AtomicBool, Arc, Mutex},
 };
 
 use browser_api_local::{
@@ -24,13 +21,14 @@ use uuid::Uuid;
 
 use crate::device_posture::{load_device_posture_store, DevicePostureStore};
 use crate::launch_sessions::{load_launch_session_store, LaunchSessionStore};
-use crate::network_sandbox_lifecycle::NetworkSandboxLifecycleState;
 use crate::network_sandbox::{
     load_network_sandbox_store, migrate_network_sandbox_store, NetworkSandboxStore,
 };
+use crate::network_sandbox_lifecycle::NetworkSandboxLifecycleState;
 use crate::route_runtime::RouteRuntimeState;
 use crate::sensitive_store::derive_app_secret_material;
 use crate::service_catalog_seed::build_service_catalog;
+use crate::shell_commands::{load_shell_preference_store, ShellPreferenceStore};
 use crate::traffic_gateway::{load_rules_store, load_traffic_log, TrafficGatewayState};
 use crate::update_commands::{AppUpdateStore, UpdaterLaunchMode, UpdaterRuntimeState};
 
@@ -189,6 +187,7 @@ pub struct AppState {
     pub security_guardrails: Mutex<SecurityGuardrails>,
     pub device_posture_store: Mutex<DevicePostureStore>,
     pub app_update_store: Mutex<AppUpdateStore>,
+    pub shell_preference_store: Mutex<ShellPreferenceStore>,
     pub updater_runtime: Arc<Mutex<UpdaterRuntimeState>>,
     pub runtime_logs: Mutex<Vec<String>>,
     pub pending_external_link: Mutex<Option<String>>,
@@ -198,6 +197,7 @@ pub struct AppState {
     pub cancelled_engine_downloads: Arc<Mutex<BTreeSet<String>>>,
     pub active_network_downloads: Mutex<BTreeSet<String>>,
     pub shutdown_cleanup_started: AtomicBool,
+    pub allow_exit_once: AtomicBool,
     pub network_sandbox_store: Mutex<NetworkSandboxStore>,
     pub network_sandbox_lifecycle: Mutex<NetworkSandboxLifecycleState>,
     pub route_runtime: Mutex<RouteRuntimeState>,
@@ -245,6 +245,8 @@ impl AppState {
         let device_posture_store =
             load_device_posture_store(&app_data.join("device_posture_store.json"))?;
         let app_update_store = load_app_update_store(&app_data.join("app_update_store.json"))?;
+        let shell_preference_store =
+            load_shell_preference_store(&app_data.join("shell_preference_store.json"))?;
         let updater_launch_mode = UpdaterLaunchMode::from_args(std::env::args().skip(1));
         let traffic_rules = load_rules_store(&app_data.join("traffic_gateway_rules.json"))?;
         let traffic_log = load_traffic_log(&app_data.join("traffic_gateway_log.json"))?;
@@ -278,6 +280,7 @@ impl AppState {
             security_guardrails: Mutex::new(SecurityGuardrails::default()),
             device_posture_store: Mutex::new(device_posture_store),
             app_update_store: Mutex::new(app_update_store),
+            shell_preference_store: Mutex::new(shell_preference_store),
             updater_runtime: Arc::new(Mutex::new(UpdaterRuntimeState::new(updater_launch_mode))),
             runtime_logs: Mutex::new(Vec::new()),
             pending_external_link: Mutex::new(None),
@@ -287,6 +290,7 @@ impl AppState {
             cancelled_engine_downloads: Arc::new(Mutex::new(BTreeSet::new())),
             active_network_downloads: Mutex::new(BTreeSet::new()),
             shutdown_cleanup_started: AtomicBool::new(false),
+            allow_exit_once: AtomicBool::new(false),
             network_sandbox_store: Mutex::new(network_sandbox_store),
             network_sandbox_lifecycle: Mutex::new(NetworkSandboxLifecycleState::default()),
             route_runtime: Mutex::new(RouteRuntimeState::default()),
@@ -358,6 +362,11 @@ impl AppState {
         Ok(app_data.join("app_update_store.json"))
     }
 
+    pub fn shell_preference_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
+        let app_data = app_local_data_root(app)?;
+        Ok(app_data.join("shell_preference_store.json"))
+    }
+
     pub fn app_update_root_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
         let app_data = app_local_data_root(app)?;
         Ok(app_data.join("updates"))
@@ -366,6 +375,11 @@ impl AppState {
     pub fn global_security_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
         let app_data = app_local_data_root(app)?;
         Ok(app_data.join("global_security_store.json"))
+    }
+
+    pub fn managed_certificates_root(&self, app: &AppHandle) -> Result<PathBuf, String> {
+        let app_data = app_local_data_root(app)?;
+        Ok(app_data.join("managed-certificates"))
     }
 
     pub fn global_security_legacy_path(&self) -> PathBuf {
@@ -499,6 +513,54 @@ pub(crate) fn ensure_default_profiles(manager: &ProfileManager) -> Result<(), St
                 default_start_page: Some("https://duckduckgo.com".to_string()),
                 default_search_provider: Some("duckduckgo".to_string()),
                 ephemeral_mode: true,
+                password_lock_enabled: false,
+                panic_frame_enabled: false,
+                panic_frame_color: None,
+                panic_protected_sites: vec![],
+                ephemeral_retain_paths: vec![],
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    if !has("Discord") {
+        manager
+            .create_profile(CreateProfileInput {
+                name: "Discord".to_string(),
+                description: Some(
+                    "Strict Discord app window without a free address bar.".to_string(),
+                ),
+                tags: vec![
+                    "default".to_string(),
+                    "engine:wayfern".to_string(),
+                    "locked-app:discord".to_string(),
+                ],
+                engine: Engine::Wayfern,
+                default_start_page: Some("https://discord.com/app".to_string()),
+                default_search_provider: Some("duckduckgo".to_string()),
+                ephemeral_mode: false,
+                password_lock_enabled: false,
+                panic_frame_enabled: false,
+                panic_frame_color: None,
+                panic_protected_sites: vec![],
+                ephemeral_retain_paths: vec![],
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    if !has("Telegram") {
+        manager
+            .create_profile(CreateProfileInput {
+                name: "Telegram".to_string(),
+                description: Some(
+                    "Strict Telegram app window without a free address bar.".to_string(),
+                ),
+                tags: vec![
+                    "default".to_string(),
+                    "engine:wayfern".to_string(),
+                    "locked-app:telegram".to_string(),
+                ],
+                engine: Engine::Wayfern,
+                default_start_page: Some("https://web.telegram.org/".to_string()),
+                default_search_provider: Some("duckduckgo".to_string()),
+                ephemeral_mode: false,
                 password_lock_enabled: false,
                 panic_frame_enabled: false,
                 panic_frame_color: None,

@@ -527,7 +527,13 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
     let relaunch_executable = resolve_relaunch_executable_path(&install_root);
 
     let launched = match extension.as_str() {
-        "zip" => launch_zip_apply_helper(current_pid, &asset_path, &install_root, relaunch_executable.as_deref()).is_ok(),
+        "zip" => launch_zip_apply_helper(
+            current_pid,
+            &asset_path,
+            &install_root,
+            relaunch_executable.as_deref(),
+        )
+        .is_ok(),
         "msi" => launch_msi_installer(&asset_path).is_ok(),
         _ => false,
     };
@@ -818,8 +824,7 @@ fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, Str
                             }
                         }
                     } else {
-                        if let Err(error) = stage_release_if_needed(state, &mut store, &candidate)
-                        {
+                        if let Err(error) = stage_release_if_needed(state, &mut store, &candidate) {
                             store.status = "error".to_string();
                             store.last_error = Some(error);
                         }
@@ -1288,10 +1293,7 @@ fn signature_verification_variants(checksums_bytes: &[u8]) -> Vec<Vec<u8>> {
     };
 
     let normalized_lf = text.replace("\r\n", "\n").replace('\r', "\n");
-    for candidate in [
-        normalized_lf.clone(),
-        normalized_lf.replace('\n', "\r\n"),
-    ] {
+    for candidate in [normalized_lf.clone(), normalized_lf.replace('\n', "\r\n")] {
         let candidate_bytes = candidate.into_bytes();
         if variants.iter().all(|existing| existing != &candidate_bytes) {
             variants.push(candidate_bytes);
@@ -1345,7 +1347,8 @@ fn launch_zip_apply_helper(
     install_root: &Path,
     relaunch_executable: Option<&Path>,
 ) -> Result<(), String> {
-    let helper = build_zip_apply_helper_script(pid, archive_path, install_root, relaunch_executable);
+    let helper =
+        build_zip_apply_helper_script(pid, archive_path, install_root, relaunch_executable);
     Command::new("powershell")
         .args([
             "-NoProfile",
@@ -1568,7 +1571,11 @@ fn parse_version_parts(value: &str) -> Vec<u64> {
         .map(|part| part.parse::<u64>().unwrap_or(0))
         .collect::<Vec<_>>();
     if let Some(suffix) = hotfix_suffix {
-        parsed.extend(suffix.split('.').map(|part| part.parse::<u64>().unwrap_or(0)));
+        parsed.extend(
+            suffix
+                .split('.')
+                .map(|part| part.parse::<u64>().unwrap_or(0)),
+        );
     }
     parsed
 }
@@ -1586,14 +1593,14 @@ fn powershell_quote(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        asset_rank, build_release_http_client, build_zip_apply_helper_script,
-        can_auto_apply_asset, default_auto_update_enabled, download_release_bytes,
+        asset_rank, build_release_http_client, build_zip_apply_helper_script, can_auto_apply_asset,
+        default_auto_update_enabled, download_release_bytes,
         ensure_asset_matches_verified_checksum, extract_checksum_for_asset,
         fetch_latest_release_from_url, is_version_newer, normalize_version, pick_release_asset,
-        reconcile_update_store_with_current_version, resolve_relaunch_executable_path,
-        sha256_hex, should_run_auto_update_check, signature_verification_variants,
-        AppUpdateStore, GithubReleaseAsset, VerifiedReleaseSecurityBundle, CURRENT_VERSION,
-        RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV, UpdaterLaunchMode,
+        reconcile_update_store_with_current_version, resolve_relaunch_executable_path, sha256_hex,
+        should_run_auto_update_check, signature_verification_variants, AppUpdateStore,
+        GithubReleaseAsset, UpdaterLaunchMode, VerifiedReleaseSecurityBundle, CURRENT_VERSION,
+        RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV,
     };
     use std::{
         io::{Read, Write},
@@ -1618,7 +1625,14 @@ mod tests {
         parts.join(".")
     }
 
-    fn spawn_http_server(routes: Vec<(String, Vec<u8>, &'static str, Vec<(&'static str, &'static str)>)>) -> String {
+    fn spawn_http_server(
+        routes: Vec<(
+            String,
+            Vec<u8>,
+            &'static str,
+            Vec<(&'static str, &'static str)>,
+        )>,
+    ) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test http server");
         let addr = listener.local_addr().expect("local addr");
         thread::spawn(move || {
@@ -1628,10 +1642,7 @@ mod tests {
                 let read = stream.read(&mut buffer).expect("read request");
                 let request = String::from_utf8_lossy(&buffer[..read]);
                 let first_line = request.lines().next().unwrap_or_default();
-                let path = first_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("/");
+                let path = first_line.split_whitespace().nth(1).unwrap_or("/");
                 let (status, body, content_type, extra_headers) = routes
                     .iter()
                     .find(|(route, _, _, _)| route == path)
@@ -1832,7 +1843,8 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         assert!(script.contains("Stop-Process -Id $proc.Id -Force"));
         assert!(script.contains("WaitForExit(15000)"));
         assert!(script.contains("@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe')"));
-        assert!(script.contains("for ($attempt=0; $attempt -lt 10 -and -not $copySucceeded; $attempt++)"));
+        assert!(script
+            .contains("for ($attempt=0; $attempt -lt 10 -and -not $copySucceeded; $attempt++)"));
     }
 
     #[test]
@@ -1858,14 +1870,12 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         let checksum = sha256_hex(&asset_bytes);
         let next_version = next_release_version(CURRENT_VERSION);
         let checksums_text = format!("{checksum}  {asset_name}\n");
-        let base = spawn_http_server(vec![
-            (
-                format!("/{asset_name}"),
-                asset_bytes.clone(),
-                "application/octet-stream",
-                Vec::new(),
-            ),
-        ]);
+        let base = spawn_http_server(vec![(
+            format!("/{asset_name}"),
+            asset_bytes.clone(),
+            "application/octet-stream",
+            Vec::new(),
+        )]);
         let release_payload = format!(
             r#"{{
                 "tag_name":"v{version}",
@@ -1880,22 +1890,20 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             asset_name = asset_name,
             base = base
         );
-        let api_base = spawn_http_server(vec![
-            (
-                "/latest".to_string(),
-                release_payload.into_bytes(),
-                "application/json",
-                Vec::new(),
-            ),
-        ]);
+        let api_base = spawn_http_server(vec![(
+            "/latest".to_string(),
+            release_payload.into_bytes(),
+            "application/json",
+            Vec::new(),
+        )]);
         let client = build_release_http_client(Duration::from_secs(5), false)
             .expect("build discovery client");
         let candidate = fetch_latest_release_from_url(&client, &format!("{api_base}/latest"))
             .expect("discover mocked release");
         assert!(is_version_newer(&candidate.version, CURRENT_VERSION));
         assert_eq!(candidate.asset_name.as_deref(), Some(asset_name));
-        let download_client = build_release_http_client(Duration::from_secs(5), true)
-            .expect("build download client");
+        let download_client =
+            build_release_http_client(Duration::from_secs(5), true).expect("build download client");
         let downloaded = download_release_bytes(
             &download_client,
             candidate.asset_url.as_deref().expect("asset url"),
@@ -1919,8 +1927,9 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         )]);
         let client = build_release_http_client(Duration::from_secs(5), true)
             .expect("build raw download client");
-        let downloaded = download_release_bytes(&client, &format!("{base}/asset.zip"), "release asset")
-            .expect("download payload with broken content encoding header");
+        let downloaded =
+            download_release_bytes(&client, &format!("{base}/asset.zip"), "release asset")
+                .expect("download payload with broken content encoding header");
         assert_eq!(downloaded, payload);
     }
 }

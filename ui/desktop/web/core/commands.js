@@ -13,6 +13,7 @@ const MOCK_LINK_ROUTING_KEY = "launcher.mock.link-routing.v1";
 const MOCK_DEVICE_POSTURE_KEY = "launcher.mock.device-posture.v1";
 const MOCK_SYNC_KEY = "launcher.mock.sync.v1";
 const MOCK_UPDATES_KEY = "launcher.mock.updates.v1";
+const MOCK_SHELL_PREFS_KEY = "launcher.mock.shell-prefs.v1";
 
 function readMockProfiles() {
   try {
@@ -64,10 +65,10 @@ function writeMockSyncStore(value) {
 
 function readMockUpdateState() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.1\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
+    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.10\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
   } catch {
     return {
-      currentVersion: "1.0.1",
+      currentVersion: "1.0.10",
       repositoryUrl: "https://github.com/BerkutSolutions/cerbena-browser",
       autoUpdateEnabled: false,
       lastCheckedAt: null,
@@ -85,6 +86,24 @@ function readMockUpdateState() {
 
 function writeMockUpdateState(value) {
   localStorage.setItem(MOCK_UPDATES_KEY, JSON.stringify(value));
+}
+
+function readMockShellPreferences() {
+  try {
+    return JSON.parse(localStorage.getItem(MOCK_SHELL_PREFS_KEY) ?? "{\"checkDefaultBrowserOnStartup\":true,\"defaultBrowserPromptDecided\":false,\"minimizeToTrayEnabled\":false,\"closeToTrayPromptDeclined\":false,\"isDefaultBrowser\":false}");
+  } catch {
+    return {
+      checkDefaultBrowserOnStartup: true,
+      defaultBrowserPromptDecided: false,
+      minimizeToTrayEnabled: false,
+      closeToTrayPromptDeclined: false,
+      isDefaultBrowser: false
+    };
+  }
+}
+
+function writeMockShellPreferences(value) {
+  localStorage.setItem(MOCK_SHELL_PREFS_KEY, JSON.stringify(value));
 }
 
 function nowIso() {
@@ -243,23 +262,40 @@ function mockProfileCommand(command, args) {
   if (command === "get_link_routing_overview") {
     const routing = readMockLinkRouting();
     const supported = [
-      ["http", "links.type.http"],
-      ["https", "links.type.https"],
-      ["ftp", "links.type.ftp"],
-      ["mailto", "links.type.mailto"],
-      ["magnet", "links.type.magnet"],
-      ["tg", "links.type.tg"],
-      ["discord", "links.type.discord"],
-      ["slack", "links.type.slack"],
-      ["zoommtg", "links.type.zoommtg"]
+      ["http", "links.type.http", true],
+      ["https", "links.type.https", true],
+      ["ftp", "links.type.ftp", false],
+      ["mailto", "links.type.mailto", false],
+      ["irc", "links.type.irc", false],
+      ["mms", "links.type.mms", false],
+      ["news", "links.type.news", false],
+      ["nntp", "links.type.nntp", false],
+      ["sms", "links.type.sms", false],
+      ["smsto", "links.type.smsto", false],
+      ["snews", "links.type.snews", false],
+      ["tel", "links.type.tel", false],
+      ["urn", "links.type.urn", false],
+      ["webcal", "links.type.webcal", false],
+      ["magnet", "links.type.magnet", false],
+      ["tg", "links.type.tg", false],
+      ["discord", "links.type.discord", false],
+      ["slack", "links.type.slack", false],
+      ["zoommtg", "links.type.zoommtg", false],
+      ["file:mht", "links.type.fileMht", false],
+      ["file:mhtml", "links.type.fileMhtml", false],
+      ["file:pdf", "links.type.filePdf", false],
+      ["file:shtml", "links.type.fileShtml", false],
+      ["file:svg", "links.type.fileSvg", false],
+      ["file:xhtml", "links.type.fileXhtml", false]
     ];
     return {
       globalProfileId: routing.globalProfileId ?? null,
-      supportedTypes: supported.map(([linkType, labelKey]) => ({
+      supportedTypes: supported.map(([linkType, labelKey, allowGlobalDefault]) => ({
         linkType,
         labelKey,
         profileId: routing.typeBindings?.[linkType] ?? null,
-        usesGlobalDefault: !routing.typeBindings?.[linkType] && Boolean(routing.globalProfileId)
+        usesGlobalDefault: allowGlobalDefault && !routing.typeBindings?.[linkType] && Boolean(routing.globalProfileId),
+        allowGlobalDefault
       }))
     };
   }
@@ -300,19 +336,30 @@ function mockProfileCommand(command, args) {
     if (!url) throw new Error("link URL is required");
     const routing = readMockLinkRouting();
     const schemeMatch = url.match(/^([a-z0-9+.-]+):/i);
-    const linkType = (schemeMatch?.[1] ?? "https").toLowerCase();
-    const targetProfileId = routing.typeBindings?.[linkType] ?? routing.globalProfileId ?? null;
+    let linkType = (schemeMatch?.[1] ?? "https").toLowerCase();
+    if (linkType === "file") {
+      const fileMatch = url.match(/\.([a-z0-9]+)$/i);
+      const ext = (fileMatch?.[1] ?? "").toLowerCase();
+      const normalizedExt = ext === "xhy" || ext === "xht" ? "xhtml" : ext;
+      linkType = `file:${normalizedExt}`;
+    }
+    const allowGlobalDefault = linkType === "http" || linkType === "https";
+    const targetProfileId = routing.typeBindings?.[linkType] ?? (allowGlobalDefault ? routing.globalProfileId ?? null : null);
     return {
       status: targetProfileId ? "resolved" : "prompt",
       linkType,
       url,
       targetProfileId,
-      resolutionScope: routing.typeBindings?.[linkType] ? "type" : routing.globalProfileId ? "global" : null
+      resolutionScope: routing.typeBindings?.[linkType] ? "type" : (allowGlobalDefault && routing.globalProfileId ? "global" : null)
     };
   }
 
   if (command === "consume_pending_external_link") {
     return null;
+  }
+
+  if (command === "get_wayfern_terms_status") {
+    return { pendingProfileIds: [] };
   }
 
   if (command === "get_device_posture_report" || command === "refresh_device_posture_report") {
@@ -349,6 +396,52 @@ function mockProfileCommand(command, args) {
     state.lastError = null;
     writeMockUpdateState(state);
     return state;
+  }
+
+  if (command === "get_shell_preferences_state") {
+    const state = readMockShellPreferences();
+    const routing = readMockLinkRouting();
+    return {
+      ...state,
+      shouldPromptDefaultBrowserPreference: !state.defaultBrowserPromptDecided,
+      shouldPromptDefaultLinkProfile: Boolean(state.checkDefaultBrowserOnStartup && state.isDefaultBrowser && !routing.globalProfileId)
+    };
+  }
+
+  if (command === "save_shell_preferences") {
+    const state = {
+      ...readMockShellPreferences(),
+      ...(request.checkDefaultBrowserOnStartup !== undefined
+        ? { checkDefaultBrowserOnStartup: Boolean(request.checkDefaultBrowserOnStartup) }
+        : {}),
+      ...(request.defaultBrowserPromptDecided !== undefined
+        ? { defaultBrowserPromptDecided: Boolean(request.defaultBrowserPromptDecided) }
+        : {}),
+      ...(request.minimizeToTrayEnabled !== undefined
+        ? { minimizeToTrayEnabled: Boolean(request.minimizeToTrayEnabled) }
+        : {}),
+      ...(request.closeToTrayPromptDeclined !== undefined
+        ? { closeToTrayPromptDeclined: Boolean(request.closeToTrayPromptDeclined) }
+        : {})
+    };
+    if (state.minimizeToTrayEnabled) {
+      state.closeToTrayPromptDeclined = false;
+    }
+    writeMockShellPreferences(state);
+    const routing = readMockLinkRouting();
+    return {
+      ...state,
+      shouldPromptDefaultBrowserPreference: !state.defaultBrowserPromptDecided,
+      shouldPromptDefaultLinkProfile: Boolean(state.checkDefaultBrowserOnStartup && state.isDefaultBrowser && !routing.globalProfileId)
+    };
+  }
+
+  if (
+    command === "window_hide_to_tray" ||
+    command === "window_restore_from_tray" ||
+    command === "confirm_app_exit"
+  ) {
+    return true;
   }
 
   throw new Error("This command requires Tauri runtime.");
