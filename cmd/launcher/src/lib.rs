@@ -91,6 +91,7 @@ fn cmd_build_launch_plan(args: &[String]) -> Result<String, String> {
         profile_root: PathBuf::from(&root).join(profile_id.to_string()),
         binary_path: PathBuf::from(binary),
         args: vec!["--profile".to_string(), profile_id.to_string()],
+        env: vec![],
     };
     match profile.engine {
         Engine::Wayfern => {

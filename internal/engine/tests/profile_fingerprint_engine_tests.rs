@@ -88,6 +88,7 @@ fn chromium_profile_creation_and_fingerprint_values_are_applied() {
                 ),
                 "--engine=chromium".to_string(),
             ],
+            env: vec![],
         };
         let plan = adapter.build_launch_plan(req).expect("launch plan");
         assert!(plan.args.iter().any(|a| a.contains("Chrome/125")));
@@ -173,6 +174,7 @@ fn firefox_profile_creation_and_fingerprint_values_are_applied() {
             ),
             "--engine=firefox".to_string(),
         ],
+        env: vec![],
     };
     let plan = adapter.build_launch_plan(req).expect("launch plan");
     assert!(plan.args.iter().any(|a| a.contains("Firefox/126.0")));

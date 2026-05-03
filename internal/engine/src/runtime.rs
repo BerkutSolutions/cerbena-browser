@@ -83,6 +83,44 @@ struct LockedAppConfig {
     allowed_hosts: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+struct IdentityLaunchPolicy {
+    core: IdentityLaunchCore,
+    locale: IdentityLaunchLocale,
+    window: IdentityLaunchWindow,
+    screen: IdentityLaunchScreen,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+struct IdentityLaunchCore {
+    user_agent: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+struct IdentityLaunchLocale {
+    navigator_language: String,
+    languages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+struct IdentityLaunchWindow {
+    outer_width: u32,
+    outer_height: u32,
+    screen_x: i32,
+    screen_y: i32,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+struct IdentityLaunchScreen {
+    width: u32,
+    height: u32,
+}
+
 impl EngineRuntime {
     pub fn new(base_dir: PathBuf) -> Result<Self, EngineError> {
         let install_root = base_dir.join("engines");
@@ -263,13 +301,15 @@ impl EngineRuntime {
                 gateway_proxy_port,
                 runtime_hardening,
             )?,
+            env: launch_environment(engine, &profile_root),
         };
         eprintln!(
-            "[engine-runtime] launch {} profile={} binary={} args={:?}",
+            "[engine-runtime] launch {} profile={} binary={} args={:?} env={:?}",
             engine.as_key(),
             profile_id,
             request.binary_path.display(),
-            request.args
+            request.args,
+            request.env
         );
         match engine {
             EngineKind::Wayfern => self.wayfern_adapter().launch(request),
@@ -1011,6 +1051,7 @@ fn launch_args(
     match engine {
         EngineKind::Wayfern => {
             let locked_app = load_locked_app_config(profile_root)?;
+            let identity_policy = load_identity_launch_policy(profile_root);
             // Keep launch command size bounded on Windows. Huge domain blocklists can
             // overflow CreateProcess argument limits when passed via host resolver rules.
             const MAX_HOST_RESOLVER_RULES_LEN: usize = 8_192;
@@ -1044,6 +1085,7 @@ fn launch_args(
                     args.push(format!("--host-resolver-rules={host_rules}"));
                 }
             }
+            apply_wayfern_identity_args(profile_root, identity_policy.as_ref(), &mut args)?;
             let extension_dirs = prepare_wayfern_extension_dirs(profile_root)?;
             if !extension_dirs.is_empty() {
                 let joined = extension_dirs
@@ -1107,6 +1149,167 @@ fn reopen_args(
     })
 }
 
+fn load_identity_launch_policy(profile_root: &Path) -> Option<IdentityLaunchPolicy> {
+    let path = profile_root.join("policy").join("identity-preset.json");
+    let raw = fs::read(path).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+fn apply_wayfern_identity_args(
+    profile_root: &Path,
+    identity: Option<&IdentityLaunchPolicy>,
+    args: &mut Vec<String>,
+) -> Result<(), EngineError> {
+    let Some(identity) = identity else {
+        return Ok(());
+    };
+    if !identity.core.user_agent.trim().is_empty() {
+        args.push(format!("--user-agent={}", identity.core.user_agent.trim()));
+    }
+    if let Some(language) = normalize_primary_language(&identity.locale.navigator_language) {
+        args.push(format!("--lang={language}"));
+    }
+    let window_width = first_positive(identity.window.outer_width, identity.screen.width);
+    let window_height = first_positive(identity.window.outer_height, identity.screen.height);
+    if window_width > 0 && window_height > 0 {
+        args.push(format!("--window-size={window_width},{window_height}"));
+    }
+    if identity.window.screen_x != 0 || identity.window.screen_y != 0 {
+        args.push(format!(
+            "--window-position={},{}",
+            identity.window.screen_x, identity.window.screen_y
+        ));
+    }
+    let languages = normalize_accept_languages(
+        &identity.locale.navigator_language,
+        &identity.locale.languages,
+    );
+    if !languages.is_empty() {
+        args.push(format!("--accept-lang={}", languages.join(",")));
+        write_wayfern_language_preferences(profile_root, &languages)?;
+        write_wayfern_local_state_locale(profile_root, &languages)?;
+    }
+    Ok(())
+}
+
+fn launch_environment(engine: EngineKind, profile_root: &Path) -> Vec<(String, String)> {
+    match engine {
+        EngineKind::Wayfern => wayfern_launch_environment(profile_root),
+        EngineKind::Camoufox => Vec::new(),
+    }
+}
+
+fn wayfern_launch_environment(profile_root: &Path) -> Vec<(String, String)> {
+    let Some(identity) = load_identity_launch_policy(profile_root) else {
+        return Vec::new();
+    };
+    let languages = normalize_accept_languages(
+        &identity.locale.navigator_language,
+        &identity.locale.languages,
+    );
+    if languages.is_empty() {
+        return Vec::new();
+    }
+    let primary = languages[0].clone();
+    vec![
+        ("LANG".to_string(), format!("{primary}.UTF-8")),
+        ("LANGUAGE".to_string(), languages.join(":")),
+        ("LC_ALL".to_string(), format!("{primary}.UTF-8")),
+    ]
+}
+
+fn first_positive(primary: u32, fallback: u32) -> u32 {
+    if primary > 0 { primary } else { fallback }
+}
+
+fn normalize_primary_language(language: &str) -> Option<String> {
+    let trimmed = language.trim().replace('_', "-");
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn normalize_accept_languages(primary: &str, languages: &[String]) -> Vec<String> {
+    let mut normalized = BTreeSet::new();
+    let mut ordered = Vec::new();
+    for candidate in std::iter::once(primary).chain(languages.iter().map(String::as_str)) {
+        let value = candidate.trim().replace('_', "-");
+        if value.is_empty() {
+            continue;
+        }
+        let dedupe_key = value.to_ascii_lowercase();
+        if normalized.insert(dedupe_key) {
+            ordered.push(value);
+        }
+    }
+    ordered
+}
+
+fn write_wayfern_language_preferences(
+    profile_root: &Path,
+    languages: &[String],
+) -> Result<(), EngineError> {
+    let preferences_path = profile_root
+        .join("engine-profile")
+        .join("Default")
+        .join("Preferences");
+    if let Some(parent) = preferences_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut value = if preferences_path.exists() {
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&preferences_path)?)?
+    } else {
+        serde_json::json!({})
+    };
+    if !value.is_object() {
+        value = serde_json::json!({});
+    }
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| EngineError::Launch("wayfern preferences root is not an object".to_string()))?;
+    let intl = root
+        .entry("intl".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !intl.is_object() {
+        *intl = serde_json::json!({});
+    }
+    intl["accept_languages"] = serde_json::Value::String(languages.join(","));
+    intl["selected_languages"] = serde_json::Value::String(languages.join(","));
+    let bytes = serde_json::to_vec_pretty(&value)?;
+    fs::write(preferences_path, bytes)?;
+    Ok(())
+}
+
+fn write_wayfern_local_state_locale(
+    profile_root: &Path,
+    languages: &[String],
+) -> Result<(), EngineError> {
+    let local_state_path = profile_root.join("engine-profile").join("Local State");
+    if let Some(parent) = local_state_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut value = if local_state_path.exists() {
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&local_state_path)?)?
+    } else {
+        serde_json::json!({})
+    };
+    if !value.is_object() {
+        value = serde_json::json!({});
+    }
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| EngineError::Launch("wayfern local state root is not an object".to_string()))?;
+    let intl = root
+        .entry("intl".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !intl.is_object() {
+        *intl = serde_json::json!({});
+    }
+    intl["app_locale"] = serde_json::Value::String(languages[0].clone());
+    intl["selected_languages"] = serde_json::Value::String(languages.join(","));
+    let bytes = serde_json::to_vec_pretty(&value)?;
+    fs::write(local_state_path, bytes)?;
+    Ok(())
+}
+
 fn wayfern_host_resolver_rules(profile_root: &Path, max_len: usize) -> Option<String> {
     let path = profile_root.join("policy").join("blocked-domains.json");
     let raw = fs::read(path).ok()?;
@@ -1151,7 +1354,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
     let manifest = serde_json::json!({
         "manifest_version": 3,
         "name": "Cerbena Policy Firewall",
-        "version": "1.0.13-1",
+        "version": "1.0.13-2",
         "description": "Profile-scoped outbound policy enforcement for blocked domains.",
         "declarative_net_request": {
             "rule_resources": [
@@ -1313,7 +1516,7 @@ fn blocked_domains_for_profile(profile_root: &Path) -> Result<Vec<String>, Engin
 mod tests {
     use super::{
         blocked_domains_for_profile, ensure_wayfern_launch_binary, launch_args,
-        prepare_wayfern_blocking_extension, EngineKind,
+        prepare_wayfern_blocking_extension, wayfern_launch_environment, EngineKind,
     };
     use std::fs;
 
@@ -1407,6 +1610,94 @@ mod tests {
             .any(|value| value == "--accept-terms-and-conditions"));
         assert!(!args.iter().any(|value| value == "--enable-logging"));
         assert!(!args.iter().any(|value| value.contains("--log-file=")));
+    }
+
+    #[test]
+    fn wayfern_launch_args_apply_identity_policy_overrides() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let policy_dir = temp.path().join("policy");
+        fs::create_dir_all(&policy_dir).expect("policy dir");
+        fs::write(
+            policy_dir.join("identity-preset.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "core": {
+                    "user_agent": "Mozilla/5.0 Test Browser"
+                },
+                "locale": {
+                    "navigator_language": "ru",
+                    "languages": ["ru", "en", "en-GB", "en-US"]
+                },
+                "window": {
+                    "outer_width": 1440,
+                    "outer_height": 920,
+                    "screen_x": 320,
+                    "screen_y": 343
+                },
+                "screen": {
+                    "width": 2560,
+                    "height": 1440
+                }
+            }))
+            .expect("serialize identity policy"),
+        )
+        .expect("write identity policy");
+
+        let args = launch_args(
+            EngineKind::Wayfern,
+            temp.path(),
+            "https://duckduckgo.com",
+            false,
+            None,
+            false,
+        )
+        .expect("launch args");
+
+        assert!(args.iter().any(|value| value == "--user-agent=Mozilla/5.0 Test Browser"));
+        assert!(args.iter().any(|value| value == "--lang=ru"));
+        assert!(args
+            .iter()
+            .any(|value| value == "--accept-lang=ru,en,en-GB,en-US"));
+        assert!(args.iter().any(|value| value == "--window-size=1440,920"));
+        assert!(args.iter().any(|value| value == "--window-position=320,343"));
+
+        let preferences: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                temp.path()
+                    .join("engine-profile")
+                    .join("Default")
+                    .join("Preferences"),
+            )
+            .expect("read preferences"),
+        )
+        .expect("parse preferences");
+        assert_eq!(
+            preferences["intl"]["accept_languages"].as_str(),
+            Some("ru,en,en-GB,en-US")
+        );
+        assert_eq!(
+            preferences["intl"]["selected_languages"].as_str(),
+            Some("ru,en,en-GB,en-US")
+        );
+        let local_state: serde_json::Value = serde_json::from_slice(
+            &fs::read(temp.path().join("engine-profile").join("Local State"))
+                .expect("read local state"),
+        )
+        .expect("parse local state");
+        assert_eq!(local_state["intl"]["app_locale"].as_str(), Some("ru"));
+        assert_eq!(
+            local_state["intl"]["selected_languages"].as_str(),
+            Some("ru,en,en-GB,en-US")
+        );
+
+        let env = wayfern_launch_environment(temp.path());
+        assert_eq!(
+            env,
+            vec![
+                ("LANG".to_string(), "ru.UTF-8".to_string()),
+                ("LANGUAGE".to_string(), "ru:en:en-GB:en-US".to_string()),
+                ("LC_ALL".to_string(), "ru.UTF-8".to_string()),
+            ]
+        );
     }
 
     #[test]

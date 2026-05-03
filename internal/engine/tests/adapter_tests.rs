@@ -22,9 +22,11 @@ fn camoufox_builds_launch_plan() {
         profile_root: tmp.path().join("profile"),
         binary_path: tmp.path().join("bin").join("camoufox.exe"),
         args: vec!["--profile".to_string(), "x".to_string()],
+        env: vec![("LANG".to_string(), "en-US.UTF-8".to_string())],
     };
     let plan = adapter.build_launch_plan(req).expect("plan");
     assert_eq!(plan.args.len(), 2);
+    assert_eq!(plan.env.len(), 1);
 }
 
 #[test]
@@ -49,6 +51,7 @@ fn wayfern_requires_tos_ack() {
         profile_root: profile_root.clone(),
         binary_path: tmp.path().join("bin").join("wayfern.exe"),
         args: vec![],
+        env: vec![],
     };
     assert!(adapter.build_launch_plan(req.clone()).is_err());
 

@@ -46,7 +46,7 @@ const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.13";
+const APP_VERSION = "1.0.13-2";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";
@@ -1268,4 +1268,3 @@ function renderFatalError(error) {
 window.addEventListener("error", (event) => renderFatalError(event.error ?? event.message));
 window.addEventListener("unhandledrejection", (event) => renderFatalError(event.reason));
 bootstrap().catch((error) => renderFatalError(error));
-

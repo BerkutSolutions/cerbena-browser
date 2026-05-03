@@ -39,6 +39,7 @@ impl EngineAdapter for CamoufoxAdapter {
             engine: EngineKind::Camoufox,
             binary_path: request.binary_path,
             args: request.args,
+            env: request.env,
             cwd,
         })
     }
@@ -54,6 +55,7 @@ impl EngineAdapter for CamoufoxAdapter {
         let child = Command::new(&plan.binary_path)
             .current_dir(&plan.cwd)
             .args(&plan.args)
+            .envs(plan.env.iter().map(|(key, value)| (key, value)))
             .spawn()
             .map_err(|e| EngineError::Launch(format!("spawn failed: {e}")))?;
         eprintln!("[camoufox-adapter] spawned pid={}", child.id());

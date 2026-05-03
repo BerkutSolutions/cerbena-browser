@@ -8,6 +8,7 @@ use std::{
 };
 
 use browser_engine::{EngineDownloadProgress, EngineInstallation, EngineKind, EngineRuntime};
+use browser_fingerprint::IdentityPreset;
 use browser_import_export::{
     export_profile_archive, import_profile_archive, EncryptedProfileArchive,
 };
@@ -16,6 +17,7 @@ use browser_profile::{
     ProfileModalPayload, ProfileState,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
@@ -187,6 +189,13 @@ pub struct ImportProfileResponse {
 struct LockedAppPolicyRecord {
     start_url: String,
     allowed_hosts: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityAppliedMarker {
+    engine: String,
+    identity_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -439,6 +448,8 @@ pub async fn launch_profile(
         let profile_root = state.profile_root.join(profile.id.to_string());
         let user_data_dir = profile_root.join("engine-profile");
         fs::create_dir_all(&user_data_dir).map_err(|e| e.to_string())?;
+        let identity_policy_hash =
+            write_profile_identity_policy(&state, profile.id, &profile_root).map_err(|e| e.to_string())?;
         emit_profile_launch_progress(
             &app_handle,
             profile.id,
@@ -454,6 +465,11 @@ pub async fn launch_profile(
                 .lock()
                 .map_err(|_| "launch map lock poisoned".to_string())?;
             if let Some(existing_pid) = launched.get(&profile_id).copied() {
+                let identity_restart_required = should_restart_for_identity_policy(
+                    &profile_root,
+                    session_engine,
+                    identity_policy_hash.as_deref(),
+                );
                 let trusted = trusted_session_for_profile(
                     &state,
                     profile_id,
@@ -463,6 +479,16 @@ pub async fn launch_profile(
                     &user_data_dir,
                 )?;
                 if trusted.is_some() && is_pid_running(existing_pid) && !launch_url_requested {
+                    if identity_restart_required {
+                        append_profile_log(
+                            &app_handle,
+                            profile_id,
+                            "launcher",
+                            format!("Restarting running session pid={existing_pid} to apply updated identity policy"),
+                        );
+                        terminate_process_tree(existing_pid);
+                        let _ = revoke_launch_session(&state, profile_id, Some(existing_pid));
+                    } else {
                     append_profile_log(
                         &app_handle,
                         profile_id,
@@ -470,8 +496,19 @@ pub async fn launch_profile(
                         format!("Trusted running session reused pid={existing_pid}"),
                     );
                     return Ok(ok(correlation_id, profile.clone()));
+                    }
                 }
                 if trusted.is_some() && is_pid_running(existing_pid) && launch_url_requested {
+                    if identity_restart_required {
+                        append_profile_log(
+                            &app_handle,
+                            profile_id,
+                            "launcher",
+                            format!("Restarting running session pid={existing_pid} before opening URL so identity policy is applied"),
+                        );
+                        terminate_process_tree(existing_pid);
+                        let _ = revoke_launch_session(&state, profile_id, Some(existing_pid));
+                    } else {
                     append_profile_log(
                         &app_handle,
                         profile_id,
@@ -492,6 +529,7 @@ pub async fn launch_profile(
                         }),
                     );
                     return patch_state(&state, &request, correlation_id, ProfileState::Running);
+                    }
                 }
                 if trusted.is_none() && !launch_url_requested && is_pid_running(existing_pid) {
                     append_profile_log(
@@ -513,6 +551,11 @@ pub async fn launch_profile(
             user_data_dir.display()
         );
         if let Some(existing_pid) = find_profile_process_pid_for_dir(&user_data_dir) {
+            let identity_restart_required = should_restart_for_identity_policy(
+                &profile_root,
+                session_engine,
+                identity_policy_hash.as_deref(),
+            );
             let trusted = trusted_session_for_profile(
                 &state,
                 profile_id,
@@ -522,7 +565,19 @@ pub async fn launch_profile(
             &user_data_dir,
         )?;
             if trusted.is_some() {
-                if launch_url_requested {
+                if identity_restart_required {
+                    append_profile_log(
+                        &app_handle,
+                        profile_id,
+                        "launcher",
+                        format!("Restarting discovered trusted process pid={existing_pid} to apply updated identity policy"),
+                    );
+                    eprintln!(
+                        "[profile-launch] restarting trusted process for identity policy pid={existing_pid}"
+                    );
+                    terminate_process_tree(existing_pid);
+                    let _ = revoke_launch_session(&state, profile_id, Some(existing_pid));
+                } else if launch_url_requested {
                     append_profile_log(
                         &app_handle,
                         profile_id,
@@ -661,6 +716,7 @@ pub async fn launch_profile(
             profile.default_search_provider.as_deref(),
             Some(gateway.port),
             runtime_hardening,
+            load_identity_preset_for_profile(&state, profile.id).as_ref(),
         )
         .map_err(|e| e.to_string())?;
         let user_js = user_data_dir.join("user.js");
@@ -755,6 +811,8 @@ pub async fn launch_profile(
             clear_wayfern_profile_certificates(&app_handle, profile_id);
         }
         let pid = pid_result?;
+        persist_identity_applied_marker(&profile_root, session_engine, identity_policy_hash.as_deref())
+            .map_err(|e| e.to_string())?;
         let tracked_pid =
             wait_for_profile_process_startup(&user_data_dir, pid, engine).map_err(|error| {
                 append_profile_log(&app_handle, profile_id, "launcher", error.clone());
@@ -872,6 +930,7 @@ fn prepare_camoufox_profile_runtime(
     default_search_provider: Option<&str>,
     gateway_proxy_port: Option<u16>,
     runtime_hardening: bool,
+    identity_preset: Option<&IdentityPreset>,
 ) -> Result<(), std::io::Error> {
     fs::create_dir_all(profile_dir)?;
     let startup_page = normalize_start_page_url(default_start_page)
@@ -991,6 +1050,7 @@ fn prepare_camoufox_profile_runtime(
         user_js_lines.push(format!("user_pref(\"network.proxy.ssl_port\", {port});"));
         user_js_lines.push("user_pref(\"network.proxy.no_proxies_on\", \"\");".to_string());
     }
+    apply_camoufox_identity_prefs(&mut user_js_lines, identity_preset);
     let user_js = user_js_lines.join("\n");
     fs::write(profile_dir.join("user.js"), format!("{user_js}\n"))?;
 
@@ -1020,6 +1080,56 @@ fn prepare_camoufox_profile_runtime(
         profile_dir.display()
     );
     Ok(())
+}
+
+fn load_identity_preset_for_profile(state: &AppState, profile_id: Uuid) -> Option<IdentityPreset> {
+    let key = profile_id.to_string();
+    state
+        .identity_store
+        .lock()
+        .ok()
+        .and_then(|store| store.items.get(&key).cloned())
+}
+
+fn apply_camoufox_identity_prefs(
+    user_js_lines: &mut Vec<String>,
+    identity_preset: Option<&IdentityPreset>,
+) {
+    let Some(identity_preset) = identity_preset else {
+        return;
+    };
+    let user_agent = identity_preset.core.user_agent.trim();
+    if !user_agent.is_empty() {
+        user_js_lines.push(format!(
+            "user_pref(\"general.useragent.override\", \"{}\");",
+            escape_firefox_pref_string(user_agent)
+        ));
+    }
+    let language = identity_preset.locale.navigator_language.trim();
+    if !language.is_empty() {
+        user_js_lines.push(format!(
+            "user_pref(\"intl.locale.requested\", \"{}\");",
+            escape_firefox_pref_string(language)
+        ));
+    }
+    let accept_languages = identity_preset
+        .locale
+        .languages
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if !accept_languages.is_empty() {
+        user_js_lines.push(format!(
+            "user_pref(\"intl.accept_languages\", \"{}\");",
+            escape_firefox_pref_string(&accept_languages.join(","))
+        ));
+    }
+    user_js_lines.push("user_pref(\"privacy.spoof_english\", 0);".to_string());
+}
+
+fn escape_firefox_pref_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn normalize_start_page_url(default_start_page: Option<&str>) -> String {
@@ -2291,11 +2401,87 @@ fn write_locked_app_policy(
         }
         let bytes = serde_json::to_vec_pretty(&policy)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
-        fs::write(path, bytes)?;
+        fs::write(&path, bytes)?;
     } else if path.exists() {
         let _ = fs::remove_file(path);
     }
     Ok(())
+}
+
+fn write_profile_identity_policy(
+    state: &AppState,
+    profile_id: Uuid,
+    profile_root: &Path,
+) -> Result<Option<String>, std::io::Error> {
+    let path = profile_root.join("policy").join("identity-preset.json");
+    let profile_key = profile_id.to_string();
+    let preset = state
+        .identity_store
+        .lock()
+        .ok()
+        .and_then(|store| store.items.get(&profile_key).cloned());
+    if let Some(preset) = preset {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(&preset)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        fs::write(&path, bytes)?;
+        return Ok(Some(identity_policy_hash_bytes(&fs::read(&path)?)));
+    } else if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+    Ok(None)
+}
+
+fn identity_policy_hash_bytes(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn identity_applied_marker_path(profile_root: &Path) -> PathBuf {
+    profile_root.join("policy").join("identity-applied.json")
+}
+
+fn should_restart_for_identity_policy(
+    profile_root: &Path,
+    engine: &str,
+    expected_hash: Option<&str>,
+) -> bool {
+    let Some(expected_hash) = expected_hash else {
+        return false;
+    };
+    let Ok(raw) = fs::read(identity_applied_marker_path(profile_root)) else {
+        return true;
+    };
+    let Ok(marker) = serde_json::from_slice::<IdentityAppliedMarker>(&raw) else {
+        return true;
+    };
+    marker.engine != engine || marker.identity_hash != expected_hash
+}
+
+fn persist_identity_applied_marker(
+    profile_root: &Path,
+    engine: &str,
+    identity_hash: Option<&str>,
+) -> Result<(), std::io::Error> {
+    let path = identity_applied_marker_path(profile_root);
+    let Some(identity_hash) = identity_hash else {
+        if path.exists() {
+            let _ = fs::remove_file(path);
+        }
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let marker = IdentityAppliedMarker {
+        engine: engine.to_string(),
+        identity_hash: identity_hash.to_string(),
+    };
+    let bytes = serde_json::to_vec_pretty(&marker)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+    fs::write(path, bytes)
 }
 
 fn locked_app_policy_for_profile(profile: &ProfileMetadata) -> Option<LockedAppPolicyRecord> {
@@ -2627,6 +2813,7 @@ mod tests {
         firefox_search_engine_policy_entries, locked_app_policy_for_profile,
         normalize_start_page_url, prepare_camoufox_profile_runtime,
     };
+    use browser_fingerprint::IdentityPreset;
     use crate::state::ExtensionLibraryItem;
     use browser_profile::{Engine, ProfileMetadata, ProfileState};
     use std::{
@@ -2648,6 +2835,7 @@ mod tests {
             Some("startpage"),
             None,
             false,
+            None,
         )
         .expect("prepare camoufox profile runtime");
 
@@ -2674,6 +2862,7 @@ mod tests {
             Some("duckduckgo"),
             None,
             true,
+            None,
         )
         .expect("prepare camoufox hardened runtime");
 
@@ -2694,6 +2883,97 @@ mod tests {
         assert!(!user_js.contains("dom.w3c_pointer_events.enabled"));
         assert!(!user_js.contains("ui.primaryPointerCapabilities"));
         assert!(!user_js.contains("ui.allPointerCapabilities"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn camoufox_profile_runtime_applies_identity_locale_and_user_agent() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("cerbena-camoufox-identity-{unique}"));
+        let identity = IdentityPreset {
+            mode: browser_fingerprint::IdentityPresetMode::Real,
+            auto_platform: None,
+            display_name: Some("Real".to_string()),
+            core: browser_fingerprint::IdentityCore {
+                user_agent: "Mozilla/5.0 Custom Firefox".to_string(),
+                platform: "Win32".to_string(),
+                platform_version: "10.0".to_string(),
+                brand: "Firefox".to_string(),
+                brand_version: "126".to_string(),
+                vendor: "Mozilla".to_string(),
+                vendor_sub: "".to_string(),
+                product_sub: "20030107".to_string(),
+            },
+            hardware: browser_fingerprint::HardwareProfile {
+                cpu_threads: 8,
+                max_touch_points: 0,
+                device_memory_gb: 16,
+            },
+            screen: browser_fingerprint::ScreenProfile {
+                width: 1920,
+                height: 1080,
+                device_pixel_ratio: 1.0,
+                avail_width: 1920,
+                avail_height: 1040,
+                color_depth: 32,
+            },
+            window: browser_fingerprint::WindowProfile {
+                outer_width: 1440,
+                outer_height: 920,
+                inner_width: 1400,
+                inner_height: 860,
+                screen_x: 0,
+                screen_y: 0,
+            },
+            locale: browser_fingerprint::LocaleProfile {
+                navigator_language: "ru".to_string(),
+                languages: vec!["ru".to_string(), "en".to_string()],
+                do_not_track: "unspecified".to_string(),
+                timezone_iana: "Europe/Moscow".to_string(),
+                timezone_offset_minutes: -180,
+            },
+            geo: browser_fingerprint::GeoProfile {
+                latitude: 0.0,
+                longitude: 0.0,
+                accuracy_meters: 100000.0,
+            },
+            auto_geo: browser_fingerprint::AutoGeoConfig { enabled: false },
+            webgl: browser_fingerprint::WebGlProfile {
+                vendor: "Mozilla".to_string(),
+                renderer: "WebRender".to_string(),
+                params_json: "{\"antialias\":true}".to_string(),
+            },
+            canvas_noise_seed: 1,
+            fonts: vec!["Arial".to_string()],
+            audio: browser_fingerprint::AudioProfile {
+                sample_rate: 44100,
+                max_channels: 2,
+            },
+            battery: browser_fingerprint::BatteryProfile {
+                charging: true,
+                level: 1.0,
+            },
+        };
+        prepare_camoufox_profile_runtime(
+            &temp_dir,
+            Some("https://duckduckgo.com"),
+            Some("duckduckgo"),
+            None,
+            false,
+            Some(&identity),
+        )
+        .expect("prepare camoufox identity runtime");
+
+        let user_js = fs::read_to_string(temp_dir.join("user.js")).expect("read user.js");
+        assert!(user_js.contains("general.useragent.override"));
+        assert!(user_js.contains("Mozilla/5.0 Custom Firefox"));
+        assert!(user_js.contains("intl.locale.requested\", \"ru\""));
+        assert!(user_js.contains("intl.accept_languages\", \"ru,en\""));
+        assert!(user_js.contains("privacy.spoof_english\", 0"));
 
         let _ = fs::remove_dir_all(temp_dir);
     }

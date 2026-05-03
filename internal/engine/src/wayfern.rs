@@ -208,6 +208,7 @@ impl EngineAdapter for WayfernAdapter {
             engine: EngineKind::Wayfern,
             binary_path: request.binary_path.clone(),
             args: request.args.clone(),
+            env: request.env.clone(),
             cwd: request.profile_root.clone(),
         })
     }
@@ -217,6 +218,7 @@ impl EngineAdapter for WayfernAdapter {
         let child = Command::new(&plan.binary_path)
             .current_dir(&plan.cwd)
             .args(&plan.args)
+            .envs(plan.env.iter().map(|(key, value)| (key, value)))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

@@ -17,6 +17,7 @@ pub struct LaunchRequest {
     pub profile_root: PathBuf,
     pub binary_path: PathBuf,
     pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +25,7 @@ pub struct LaunchPlan {
     pub engine: EngineKind,
     pub binary_path: PathBuf,
     pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
     pub cwd: PathBuf,
 }
 

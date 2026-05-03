@@ -67,6 +67,13 @@ function Write-Utf8NoBomFile([string]$Path, [string]$Content) {
     [System.IO.File]::WriteAllText($Path, $Content, $encoding)
 }
 
+function Read-JsonFile([string]$Path) {
+    if (-not (Test-Path $Path)) {
+        throw "missing file: $Path"
+    }
+    return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+}
+
 function Normalize-Version([string]$Value) {
     if ($null -eq $Value) {
         return ""
@@ -74,11 +81,18 @@ function Normalize-Version([string]$Value) {
     return $Value.Trim().TrimStart("v", "V")
 }
 
+function Get-VersionCore([string]$Value) {
+    $normalized = Normalize-Version $Value
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return ""
+    }
+    return ($normalized -split "-", 2)[0]
+}
+
 function Compare-SemVer([string]$Left, [string]$Right) {
     $split = {
         param([string]$Version)
-        $normalized = Normalize-Version $Version
-        $core = ($normalized -split "-", 2)[0]
+        $core = Get-VersionCore $Version
         return $core.Split(".") | ForEach-Object {
             $value = 0
             [void][int]::TryParse($_, [ref]$value)
@@ -95,6 +109,40 @@ function Compare-SemVer([string]$Left, [string]$Right) {
         if ($leftValue -gt $rightValue) { return 1 }
     }
     return 0
+}
+
+function Test-VersionEquivalent([string]$Actual, [string]$Expected) {
+    $normalizedActual = Normalize-Version $Actual
+    $normalizedExpected = Normalize-Version $Expected
+    if ($normalizedActual -eq $normalizedExpected) {
+        return $true
+    }
+    return (Get-VersionCore $normalizedActual) -eq (Get-VersionCore $normalizedExpected)
+}
+
+function Resolve-WorkspaceVersion([string]$RepoRoot) {
+    $tauriConfig = Read-JsonFile (Join-Path $RepoRoot "ui\desktop\src-tauri\tauri.conf.json")
+    $rootPackage = Read-JsonFile (Join-Path $RepoRoot "package.json")
+    $desktopPackage = Read-JsonFile (Join-Path $RepoRoot "ui\desktop\package.json")
+    $version = Normalize-Version ([string]$tauriConfig.version)
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        $workspaceManifestPath = Join-Path $RepoRoot "Cargo.toml"
+        $workspaceManifest = Get-Content -LiteralPath $workspaceManifestPath -Raw
+        $workspaceMatch = [regex]::Match($workspaceManifest, 'version = "([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)"')
+        if ($workspaceMatch.Success) {
+            $version = Normalize-Version $workspaceMatch.Groups[1].Value
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        throw "failed to detect current workspace version"
+    }
+    if ((Normalize-Version ([string]$rootPackage.version)) -ne $version) {
+        throw "root package.json version mismatch: $($rootPackage.version) != $version"
+    }
+    if ((Normalize-Version ([string]$desktopPackage.version)) -ne $version) {
+        throw "ui/desktop package.json version mismatch: $($desktopPackage.version) != $version"
+    }
+    return $version
 }
 
 function Get-LatestPublishedRelease() {
@@ -211,13 +259,7 @@ function Test-StoreStatusAllowsBackgroundRelaunch([string]$Status) {
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$workspaceManifestPath = Join-Path $repoRoot "Cargo.toml"
-$workspaceManifest = Get-Content -LiteralPath $workspaceManifestPath -Raw
-$currentVersionMatch = [regex]::Match($workspaceManifest, 'version = "([0-9]+\.[0-9]+\.[0-9]+)"')
-if (-not $currentVersionMatch.Success) {
-    throw "failed to detect current workspace version"
-}
-$currentVersion = $currentVersionMatch.Groups[1].Value
+$currentVersion = Resolve-WorkspaceVersion $repoRoot
 $publishedRelease = Get-LatestPublishedRelease
 if ((Compare-SemVer $publishedRelease.Version $MinimumPublishedVersion) -lt 0) {
     throw "latest published release $($publishedRelease.Version) is older than required minimum $MinimumPublishedVersion"
@@ -312,7 +354,7 @@ try {
         $lastError = Get-StoreFieldValue $store @("lastError", "last_error")
         throw "timed out waiting for the relaunched updated build to report its version; last updater status: $status; error: $lastError"
     }
-    if ($resolvedVersion -ne $publishedRelease.Version) {
+    if (-not (Test-VersionEquivalent $resolvedVersion $publishedRelease.Version)) {
         throw "updated build reported version $resolvedVersion, expected published release $($publishedRelease.Version)"
     }
 
