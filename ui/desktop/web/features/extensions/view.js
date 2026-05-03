@@ -115,7 +115,7 @@ function extensionLogo(item) {
 
 function extensionCard(item, profiles, t) {
   const name = item.displayName ?? "Extension";
-  const version = item.version ?? "1.0.12-1";
+  const version = item.version ?? "1.0.13";
   const assigned = profileSummary(item, profiles, t);
   const primaryTag = (item.tags ?? [])[0] ?? "";
   return `
@@ -191,7 +191,7 @@ function extensionModalHtml(t, profiles, item) {
           <div class="extension-library-modal-meta">
             <label>${t("extensions.name")}<input id="extension-name" value="${escapeHtml(item.displayName ?? "")}" /></label>
             <div class="grid-two">
-              <label>${t("extensions.version")}<input id="extension-version" value="${escapeHtml(item.version ?? "1.0.12-1")}" /></label>
+              <label>${t("extensions.version")}<input id="extension-version" value="${escapeHtml(item.version ?? "1.0.13")}" /></label>
               <label>${t("extensions.engine")}<select id="extension-engine">
                 <option value="chromium" ${normalizeEngineScope(item.engineScope) === "chromium" ? "selected" : ""}>chromium</option>
                 <option value="firefox" ${normalizeEngineScope(item.engineScope) === "firefox" ? "selected" : ""}>firefox</option>

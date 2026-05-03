@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, sync::Mutex};
 
 use browser_engine::{
     contract::{EngineAdapter, LaunchRequest},
@@ -11,9 +11,16 @@ use browser_fingerprint::{
 use browser_profile::{CreateProfileInput, Engine, ProfileManager};
 use tempfile::tempdir;
 
+static APPDATA_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 #[test]
 fn chromium_profile_creation_and_fingerprint_values_are_applied() {
+    let _guard = APPDATA_ENV_LOCK.lock().expect("lock appdata env");
     let tmp = tempdir().expect("tempdir");
+    let appdata_root = tmp.path().join("appdata");
+    fs::create_dir_all(&appdata_root).expect("mk appdata");
+    let previous_appdata = std::env::var_os("APPDATA");
+    std::env::set_var("APPDATA", &appdata_root);
     let manager = ProfileManager::new(tmp.path()).expect("manager");
     let profile = manager
         .create_profile(CreateProfileInput {
@@ -64,26 +71,34 @@ fn chromium_profile_creation_and_fingerprint_values_are_applied() {
     };
     let profile_root = tmp.path().join(profile.id.to_string());
     fs::create_dir_all(&profile_root).expect("profile root");
-    adapter
-        .acknowledge_tos(&profile_root, profile.id)
-        .expect("tos ack");
-    let req = LaunchRequest {
-        profile_id: profile.id,
-        profile_root,
-        binary_path: tmp.path().join("bin").join("wayfern.exe"),
-        args: vec![
-            format!("--user-agent={}", preset.core.user_agent),
-            format!("--lang={}", preset.locale.navigator_language),
-            format!(
-                "--window-size={},{}",
-                preset.screen.width, preset.screen.height
-            ),
-            "--engine=chromium".to_string(),
-        ],
-    };
-    let plan = adapter.build_launch_plan(req).expect("launch plan");
-    assert!(plan.args.iter().any(|a| a.contains("Chrome/125")));
-    assert!(plan.args.iter().any(|a| a == "--engine=chromium"));
+    let result = std::panic::catch_unwind(|| {
+        adapter
+            .acknowledge_tos(&profile_root, profile.id)
+            .expect("tos ack");
+        let req = LaunchRequest {
+            profile_id: profile.id,
+            profile_root,
+            binary_path: tmp.path().join("bin").join("wayfern.exe"),
+            args: vec![
+                format!("--user-agent={}", preset.core.user_agent),
+                format!("--lang={}", preset.locale.navigator_language),
+                format!(
+                    "--window-size={},{}",
+                    preset.screen.width, preset.screen.height
+                ),
+                "--engine=chromium".to_string(),
+            ],
+        };
+        let plan = adapter.build_launch_plan(req).expect("launch plan");
+        assert!(plan.args.iter().any(|a| a.contains("Chrome/125")));
+        assert!(plan.args.iter().any(|a| a == "--engine=chromium"));
+    });
+
+    match previous_appdata {
+        Some(value) => std::env::set_var("APPDATA", value),
+        None => std::env::remove_var("APPDATA"),
+    }
+    result.expect("chromium launch plan");
 }
 
 #[test]

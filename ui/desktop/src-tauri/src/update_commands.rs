@@ -1627,16 +1627,49 @@ mod tests {
 
     fn next_release_version(version: &str) -> String {
         let normalized = normalize_version(version);
-        let mut parts = normalized
+        let mut base_and_suffix = normalized.splitn(2, '-');
+        let base = base_and_suffix.next().unwrap_or_default();
+        let suffix = base_and_suffix.next();
+
+        if let Some(hotfix_suffix) = suffix.filter(|value| {
+            !value.is_empty()
+                && value
+                    .split('.')
+                    .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
+        }) {
+            let mut hotfix_parts = hotfix_suffix
+                .split('.')
+                .map(|value| value.parse::<u64>().unwrap_or(0))
+                .collect::<Vec<_>>();
+            if let Some(last) = hotfix_parts.last_mut() {
+                *last += 1;
+            } else {
+                hotfix_parts.push(1);
+            }
+            return format!(
+                "{base}-{}",
+                hotfix_parts
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(".")
+            );
+        }
+
+        let mut parts = base
             .split('.')
-            .map(|value| value.to_string())
+            .map(|value| value.parse::<u64>().unwrap_or(0))
             .collect::<Vec<_>>();
-        let last = parts
-            .pop()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0);
-        parts.push((last + 1).to_string());
-        parts.join(".")
+        if let Some(last) = parts.last_mut() {
+            *last += 1;
+        } else {
+            parts.push(1);
+        }
+        parts
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(".")
     }
 
     fn spawn_http_server(
@@ -1701,6 +1734,13 @@ mod tests {
         assert!(!is_version_newer("1.2.3", "1.2.3"));
         assert!(!is_version_newer("1.2.2", "1.2.3"));
         assert!(!is_version_newer("1.0.4-preview", "1.0.4"));
+    }
+
+    #[test]
+    fn next_release_version_advances_hotfix_versions() {
+        let next = next_release_version("1.0.12-1");
+        assert_eq!(next, "1.0.12-2");
+        assert!(is_version_newer(&next, "1.0.12-1"));
     }
 
     #[test]

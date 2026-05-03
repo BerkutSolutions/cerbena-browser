@@ -1014,17 +1014,12 @@ fn launch_args(
             // Keep launch command size bounded on Windows. Huge domain blocklists can
             // overflow CreateProcess argument limits when passed via host resolver rules.
             const MAX_HOST_RESOLVER_RULES_LEN: usize = 8_192;
-            let log_dir = profile_root.join("tmp");
-            let log_file = log_dir.join("wayfern-debug.log");
-            let _ = fs::create_dir_all(&log_dir);
             let mut args = vec![
                 format!("--user-data-dir={}", runtime_dir.to_string_lossy()),
                 "--no-first-run".to_string(),
                 "--no-default-browser-check".to_string(),
                 "--disable-background-mode".to_string(),
                 "--disable-quic".to_string(),
-                "--enable-logging".to_string(),
-                format!("--log-file={}", log_file.to_string_lossy()),
                 if runtime_hardening {
                     "--disable-features=AsyncDns,DnsHttpssvc,AutofillServerCommunication,AutofillEnableAccountWalletStorage,PasswordManagerOnboarding".to_string()
                 } else {
@@ -1089,14 +1084,9 @@ fn reopen_args(
     let runtime_dir = profile_root.join("engine-profile");
     Ok(match engine {
         EngineKind::Wayfern => {
-            let log_dir = profile_root.join("tmp");
-            let log_file = log_dir.join("wayfern-debug.log");
-            let _ = fs::create_dir_all(&log_dir);
             let locked_app = load_locked_app_config(profile_root)?;
             let mut args = vec![
                 format!("--user-data-dir={}", runtime_dir.to_string_lossy()),
-                "--enable-logging".to_string(),
-                format!("--log-file={}", log_file.to_string_lossy()),
             ];
             if let Some(config) = locked_app {
                 args.push(format!(
@@ -1161,7 +1151,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
     let manifest = serde_json::json!({
         "manifest_version": 3,
         "name": "Cerbena Policy Firewall",
-        "version": "1.0.12-1",
+        "version": "1.0.13",
         "description": "Profile-scoped outbound policy enforcement for blocked domains.",
         "declarative_net_request": {
             "rule_resources": [
@@ -1415,10 +1405,8 @@ mod tests {
         assert!(!args
             .iter()
             .any(|value| value == "--accept-terms-and-conditions"));
-        assert!(args.iter().any(|value| value == "--enable-logging"));
-        assert!(args
-            .iter()
-            .any(|value| value.contains("--log-file=") && value.contains("wayfern-debug.log")));
+        assert!(!args.iter().any(|value| value == "--enable-logging"));
+        assert!(!args.iter().any(|value| value.contains("--log-file=")));
     }
 
     #[test]

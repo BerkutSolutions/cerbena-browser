@@ -148,6 +148,34 @@ function certificateLegacyPaths(profile) {
     .filter((path) => path !== "global");
 }
 
+function certificateEntriesForProfile(profile, globalSecurity) {
+  const entries = [];
+  const seen = new Set();
+  for (const id of certificateIds(profile)) {
+    const key = `id:${id}`;
+    if (!seen.has(key)) {
+      entries.push({ kind: "id", value: id });
+      seen.add(key);
+    }
+  }
+  for (const item of globalSecurity?.certificates ?? []) {
+    const assigned = (item.profileIds ?? []).includes(profile?.id);
+    const key = `id:${item.id}`;
+    if (assigned && !seen.has(key)) {
+      entries.push({ kind: "id", value: item.id });
+      seen.add(key);
+    }
+  }
+  for (const path of certificateLegacyPaths(profile)) {
+    const key = `path:${path}`;
+    if (!seen.has(key)) {
+      entries.push({ kind: "path", value: path });
+      seen.add(key);
+    }
+  }
+  return entries;
+}
+
 function hasAssignedProfileCertificates(certificateEntries) {
   return (certificateEntries ?? []).some((entry) => {
     const kind = String(entry?.kind ?? "");
@@ -208,6 +236,26 @@ function buildGlobalSecuritySaveRequest(state) {
   };
 }
 
+function syncManagedCertificateAssignments(globalSecurity, profileId, certificateState) {
+  const selectedIds = new Set(
+    (certificateState ?? [])
+      .filter((item) => item.kind === "id")
+      .map((item) => String(item.value ?? "").trim())
+      .filter(Boolean)
+  );
+  const nextCertificates = (globalSecurity?.certificates ?? []).map((item) => {
+    const nextProfileIds = new Set((item.profileIds ?? []).filter((value) => value !== profileId));
+    if (selectedIds.has(item.id)) {
+      nextProfileIds.add(profileId);
+    }
+    return { ...item, profileIds: [...nextProfileIds] };
+  });
+  return {
+    ...(globalSecurity ?? {}),
+    certificates: nextCertificates
+  };
+}
+
 function profileExtensions(profile) {
   const enabled = [];
   const disabled = [];
@@ -247,6 +295,44 @@ function profileSecurityFlags(profile) {
 function selectionState(model) {
   if (!Array.isArray(model.selectedProfileIds)) model.selectedProfileIds = [];
   return model.selectedProfileIds;
+}
+
+function ensureProfilesViewState(model) {
+  if (!model.profilesViewState) {
+    model.profilesViewState = {
+      sortKey: "name",
+      sortDirection: "asc"
+    };
+  }
+  return model.profilesViewState;
+}
+
+function profileSortAria(sortState, key) {
+  if (sortState.sortKey !== key) return "none";
+  return sortState.sortDirection === "desc" ? "descending" : "ascending";
+}
+
+function sortedProfiles(model) {
+  const sortState = ensureProfilesViewState(model);
+  const direction = sortState.sortDirection === "desc" ? -1 : 1;
+  const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+  const valueFor = (profile, key) => {
+    if (key === "tags") {
+      return profileTags(profile).join(", ");
+    }
+    if (key === "note") {
+      return profile.description ?? "";
+    }
+    return profile[key] ?? "";
+  };
+  return [...(model.profiles ?? [])].sort((left, right) => {
+    const result = collator.compare(
+      String(valueFor(left, sortState.sortKey)),
+      String(valueFor(right, sortState.sortKey))
+    );
+    if (result !== 0) return result * direction;
+    return collator.compare(String(left.name ?? ""), String(right.name ?? ""));
+  });
 }
 
 function wayfernTermsDescriptionHtml(t) {
@@ -758,8 +844,9 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
   const currentPolicy = profile?.tags?.find((x) => x.startsWith("policy:"))?.replace("policy:", "") ?? "normal";
   const ext = mergedProfileExtensions(model, profile);
   const securityFlags = profileSecurityFlags(profile);
-  const selectedCertIds = certificateIds(profile);
-  const selectedCertPaths = certificateLegacyPaths(profile);
+  const selectedCertificates = certificateEntriesForProfile(profile, globalSecurity);
+  const selectedCertIds = selectedCertificates.filter((item) => item.kind === "id").map((item) => item.value);
+  const selectedCertPaths = selectedCertificates.filter((item) => item.kind === "path").map((item) => item.value);
   const selectedBlocklists = dnsDraft?.selectedBlocklists ?? [];
   const allowDomains = dnsDraft?.allowlist ? dnsDraft.allowlist.split(",").map((v) => v.trim()).filter(Boolean) : [];
   const denyDomains = dnsDraft?.denylist ? dnsDraft.denylist.split(",").map((v) => v.trim()).filter(Boolean) : [];
@@ -1154,7 +1241,8 @@ function resolveDevicePostureAction(errorText) {
 
 export function renderProfilesSection(t, model) {
   const selectedIds = selectionState(model);
-  const rows = model.profiles.map((profile) => rowHtml(profile, selectedIds.includes(profile.id), t)).join("");
+  const sortState = ensureProfilesViewState(model);
+  const rows = sortedProfiles(model).map((profile) => rowHtml(profile, selectedIds.includes(profile.id), t)).join("");
   const notice = model.profileNotice ? `<p class="notice ${model.profileNotice.type}">${model.profileNotice.text}</p>` : "";
   const allSelected = model.profiles.length > 0 && selectedIds.length === model.profiles.length;
   return `
@@ -1175,9 +1263,9 @@ export function renderProfilesSection(t, model) {
             <tr>
               <th class="profiles-col-check"><input type="checkbox" id="profiles-select-all" ${allSelected ? "checked" : ""} /></th>
               <th class="profiles-col-engine"></th>
-              <th>${t("profile.field.name")}</th>
-              <th>${t("profile.tags")}</th>
-              <th>${t("profile.table.note")}</th>
+              <th class="is-sortable" data-profile-sort="name" aria-sort="${profileSortAria(sortState, "name")}">${t("profile.field.name")}</th>
+              <th class="is-sortable" data-profile-sort="tags" aria-sort="${profileSortAria(sortState, "tags")}">${t("profile.tags")}</th>
+              <th class="is-sortable" data-profile-sort="note" aria-sort="${profileSortAria(sortState, "note")}">${t("profile.table.note")}</th>
               <th class="profiles-col-actions"></th>
             </tr>
           </thead>
@@ -1291,6 +1379,20 @@ export function wireProfiles(root, model, rerender, t) {
     await hydrateProfilesModel(model);
     rerender();
   });
+
+  for (const header of root.querySelectorAll("[data-profile-sort]")) {
+    header.addEventListener("click", () => {
+      const sortState = ensureProfilesViewState(model);
+      const key = header.getAttribute("data-profile-sort");
+      if (sortState.sortKey === key) {
+        sortState.sortDirection = sortState.sortDirection === "asc" ? "desc" : "asc";
+      } else {
+        sortState.sortKey = key;
+        sortState.sortDirection = "asc";
+      }
+      rerender();
+    });
+  }
 
   root.querySelector("#profiles-select-all")?.addEventListener("change", (event) => {
     model.selectedProfileIds = event.target.checked ? model.profiles.map((profile) => profile.id) : [];
@@ -2677,7 +2779,12 @@ async function openProfileModal(root, model, rerender, t, existing) {
       }
       return setProfilePassword(profileId, form.profilePassword.value);
     };
-    const resolveSaveError = (dnsResult, routeResult, sandboxResult, syncResult, identityResult) => {
+    const saveManagedCertificates = async (profileId) => {
+      globalSecurity = syncManagedCertificateAssignments(globalSecurity, profileId, certificateState);
+      return saveGlobalSecuritySettings(buildGlobalSecuritySaveRequest(globalSecurity));
+    };
+    const resolveSaveError = (certificateResult, dnsResult, routeResult, sandboxResult, syncResult, identityResult) => {
+      if (!certificateResult.ok) return String(certificateResult.data.error);
       if (!dnsResult.ok) return String(dnsResult.data.error);
       if (!routeResult.ok) return String(routeResult.data.error);
       if (!sandboxResult.ok) return String(sandboxResult.data.error);
@@ -2706,6 +2813,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
       });
       if (updateResult.ok) {
         await syncProfileExtensionAssignments(model, existing.id, extensionState);
+        const certificateResult = await saveManagedCertificates(existing.id);
         dnsPayload.profile_id = existing.id;
         saveProfileDnsDraft(existing.id, {
           ...dnsDraft,
@@ -2721,10 +2829,10 @@ async function openProfileModal(root, model, rerender, t, existing) {
         const syncResult = await saveSyncPolicy(existing.id);
         const identityResult = await saveIdentityPolicy(existing.id);
         const passwordResult = await saveProfilePassword(existing.id);
-        if (dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
+        if (certificateResult.ok && dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
           setNotice(model, "success", engineChanged ? t("profile.runtime.engineChangedReset") : t("profile.runtime.appliedNow"));
         } else {
-          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(dnsResult, routeResult, sandboxResult, syncResult, identityResult));
+          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(certificateResult, dnsResult, routeResult, sandboxResult, syncResult, identityResult));
         }
       } else {
         setNotice(model, "error", String(updateResult.data.error));
@@ -2733,6 +2841,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
       const createResult = await createProfile(payload);
       if (createResult.ok) {
         await syncProfileExtensionAssignments(model, createResult.data.id, extensionState);
+        const certificateResult = await saveManagedCertificates(createResult.data.id);
         dnsPayload.profile_id = createResult.data.id;
         saveProfileDnsDraft(createResult.data.id, {
           ...dnsDraft,
@@ -2748,10 +2857,10 @@ async function openProfileModal(root, model, rerender, t, existing) {
         const syncResult = await saveSyncPolicy(createResult.data.id);
         const identityResult = await saveIdentityPolicy(createResult.data.id);
         const passwordResult = await saveProfilePassword(createResult.data.id);
-        if (dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
+        if (certificateResult.ok && dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
           setNotice(model, "success", t("profile.create.success"));
         } else {
-          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(dnsResult, routeResult, sandboxResult, syncResult, identityResult));
+          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(certificateResult, dnsResult, routeResult, sandboxResult, syncResult, identityResult));
         }
       } else {
         setNotice(model, "error", String(createResult.data.error));

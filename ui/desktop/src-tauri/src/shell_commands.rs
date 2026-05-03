@@ -33,6 +33,10 @@ pub struct ShellPreferenceStore {
     pub minimize_to_tray_enabled: bool,
     #[serde(default)]
     pub close_to_tray_prompt_declined: bool,
+    #[serde(default)]
+    pub launch_on_system_startup: bool,
+    #[serde(default)]
+    pub startup_profile_id: Option<String>,
 }
 
 impl Default for ShellPreferenceStore {
@@ -42,6 +46,8 @@ impl Default for ShellPreferenceStore {
             default_browser_prompt_decided: false,
             minimize_to_tray_enabled: false,
             close_to_tray_prompt_declined: false,
+            launch_on_system_startup: false,
+            startup_profile_id: None,
         }
     }
 }
@@ -53,6 +59,8 @@ pub struct ShellPreferenceUpdateRequest {
     pub default_browser_prompt_decided: Option<bool>,
     pub minimize_to_tray_enabled: Option<bool>,
     pub close_to_tray_prompt_declined: Option<bool>,
+    pub launch_on_system_startup: Option<bool>,
+    pub startup_profile_id: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +70,9 @@ pub struct ShellPreferencesState {
     pub default_browser_prompt_decided: bool,
     pub minimize_to_tray_enabled: bool,
     pub close_to_tray_prompt_declined: bool,
+    pub launch_on_system_startup: bool,
+    pub startup_profile_id: Option<String>,
+    pub launched_from_system_startup: bool,
     pub is_default_browser: bool,
     pub should_prompt_default_browser_preference: bool,
     pub should_prompt_default_link_profile: bool,
@@ -198,6 +209,22 @@ fn build_shell_preferences_state(state: &AppState) -> Result<ShellPreferencesSta
         .link_routing_store
         .lock()
         .map_err(|_| "link routing store lock poisoned".to_string())?;
+    let startup_profile_id = {
+        let manager = state
+            .manager
+            .lock()
+            .map_err(|_| "manager lock poisoned".to_string())?;
+        let known_profile_ids = manager
+            .list_profiles()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|profile| profile.id.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        store
+            .startup_profile_id
+            .clone()
+            .filter(|profile_id| known_profile_ids.contains(profile_id))
+    };
     let is_default_browser = install_registration::is_default_browser();
     let should_prompt_default_link_profile = store.check_default_browser_on_startup
         && is_default_browser
@@ -207,10 +234,19 @@ fn build_shell_preferences_state(state: &AppState) -> Result<ShellPreferencesSta
         default_browser_prompt_decided: store.default_browser_prompt_decided,
         minimize_to_tray_enabled: store.minimize_to_tray_enabled,
         close_to_tray_prompt_declined: store.close_to_tray_prompt_declined,
+        launch_on_system_startup: store.launch_on_system_startup,
+        startup_profile_id,
+        launched_from_system_startup: launched_from_system_startup(),
         is_default_browser,
         should_prompt_default_browser_preference: !store.default_browser_prompt_decided,
         should_prompt_default_link_profile,
     })
+}
+
+fn launched_from_system_startup() -> bool {
+    std::env::args()
+        .skip(1)
+        .any(|value| value.trim().eq_ignore_ascii_case("--autorun"))
 }
 
 fn persist_shell_preferences(state: &AppState) -> Result<(), String> {
@@ -220,6 +256,37 @@ fn persist_shell_preferences(state: &AppState) -> Result<(), String> {
         .lock()
         .map_err(|_| "shell preference store lock poisoned".to_string())?;
     persist_shell_preference_store(&path, &store)
+}
+
+#[cfg(target_os = "windows")]
+fn sync_system_startup_registration(state: &AppState) -> Result<(), String> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const RUN_VALUE_NAME: &str = "Cerbena Browser";
+
+    let store = state
+        .shell_preference_store
+        .lock()
+        .map_err(|_| "shell preference store lock poisoned".to_string())?
+        .clone();
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = hkcu
+        .create_subkey(RUN_KEY)
+        .map_err(|e| format!("open startup registry key: {e}"))?;
+    if !store.launch_on_system_startup {
+        let _ = key.delete_value(RUN_VALUE_NAME);
+        return Ok(());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let command = format!("\"{}\" --autorun", exe.display());
+    key.set_value(RUN_VALUE_NAME, &command)
+        .map_err(|e| format!("write startup registry value: {e}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sync_system_startup_registration(_state: &AppState) -> Result<(), String> {
+    Ok(())
 }
 
 #[tauri::command]
@@ -256,8 +323,15 @@ pub fn save_shell_preferences(
         if let Some(value) = request.close_to_tray_prompt_declined {
             store.close_to_tray_prompt_declined = value;
         }
+        if let Some(value) = request.launch_on_system_startup {
+            store.launch_on_system_startup = value;
+        }
+        if let Some(value) = request.startup_profile_id {
+            store.startup_profile_id = value.map(|profile_id| profile_id.trim().to_string()).filter(|profile_id| !profile_id.is_empty());
+        }
     }
     persist_shell_preferences(&state)?;
+    sync_system_startup_registration(&state)?;
     Ok(ok(correlation_id, build_shell_preferences_state(&state)?))
 }
 

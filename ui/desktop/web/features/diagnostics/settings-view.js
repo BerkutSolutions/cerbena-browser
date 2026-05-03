@@ -50,13 +50,36 @@ function ensureSettingsModel(model) {
       linkTestUrl: "https://duckduckgo.com",
       syncProfileId: model.selectedProfileId ?? model.profiles?.[0]?.id ?? null,
       globalLinkProfileDraft: "",
-      linkProfileDrafts: {}
+      linkProfileDrafts: {},
+      startupProfileDraft: ""
     };
   }
   if (!model.settingsState.syncProfileId) {
     model.settingsState.syncProfileId = model.selectedProfileId ?? model.profiles?.[0]?.id ?? null;
   }
   return model.settingsState;
+}
+
+function startupProfileLabel(model, profileId, t) {
+  if (!profileId) return t("settings.startupProfile.none");
+  return profileName(model, profileId) || t("settings.startupProfile.none");
+}
+
+function startupProfileMenu(model, selectedProfileId) {
+  return `
+    <div class="dns-dropdown-menu hidden" id="settings-startup-profile-menu">
+      ${(model.profiles ?? []).map((profile) => `
+        <label class="dns-blocklist-option">
+          <input
+            type="checkbox"
+            data-settings-startup-profile="${profile.id}"
+            ${profile.id === selectedProfileId ? "checked" : ""}
+          />
+          <span>${escapeHtml(profile.name)}</span>
+        </label>
+      `).join("")}
+    </div>
+  `;
 }
 
 function profileName(model, profileId) {
@@ -143,6 +166,8 @@ async function ensureWayfernTermsAcceptedForProfile(model, profileId, rerender, 
 function renderUpdateCard(t, model) {
   const updateState = model.launcherUpdateState ?? {};
   const shellState = model.shellPreferencesState ?? {};
+  const settingsState = ensureSettingsModel(model);
+  const startupProfileId = settingsState.startupProfileDraft || shellState.startupProfileId || "";
   return `
     <div class="security-frame">
       <div class="row-between">
@@ -157,7 +182,7 @@ function renderUpdateCard(t, model) {
       </div>
       <div class="grid-two">
         <label>${t("settings.updates.currentVersion")}
-          <input value="${escapeHtml(updateState.currentVersion ?? "1.0.12-1")}" disabled />
+          <input value="${escapeHtml(updateState.currentVersion ?? "1.0.13")}" disabled />
         </label>
         <label>${t("settings.updates.latestVersion")}
           <input value="${escapeHtml(updateState.latestVersion ?? t("settings.updates.notChecked"))}" disabled />
@@ -171,6 +196,22 @@ function renderUpdateCard(t, model) {
         <input id="settings-tray-minimize" type="checkbox" ${shellState.minimizeToTrayEnabled ? "checked" : ""} />
         <span>${t("settings.tray.enabled")}</span>
       </label>
+      <label class="checkbox-inline">
+        <input id="settings-autostart-enabled" type="checkbox" ${shellState.launchOnSystemStartup ? "checked" : ""} />
+        <span>${t("settings.autostart.enabled")}</span>
+      </label>
+      ${shellState.launchOnSystemStartup ? `
+        <div class="dns-dropdown">
+          <label>${t("settings.startupProfile.label")}</label>
+          <button
+            type="button"
+            class="dns-dropdown-toggle"
+            id="settings-startup-profile-toggle"
+          >${escapeHtml(startupProfileLabel(model, startupProfileId, t))}</button>
+          ${startupProfileMenu(model, startupProfileId)}
+        </div>
+        <p class="meta">${t("settings.startupProfile.hint")}</p>
+      ` : ""}
       <p class="meta">${t("settings.updates.lastChecked")}: ${escapeHtml(updateState.lastCheckedAt ?? t("settings.updates.notChecked"))}</p>
       <p class="meta">${t("settings.updates.statusLabel")}: ${escapeHtml(updateStatusLabel(updateState, t))}</p>
       ${updateState.stagedVersion ? `<p class="meta">${t("settings.updates.staged")}: ${escapeHtml(updateState.stagedVersion)}</p>` : ""}
@@ -439,6 +480,9 @@ export async function hydrateSettingsModel(model) {
   model.linkRoutingOverview = links.ok ? links.data : { globalProfileId: null, supportedTypes: [] };
   const shellState = await getShellPreferencesState();
   model.shellPreferencesState = shellState.ok ? shellState.data : null;
+  if (!state.startupProfileDraft) {
+    state.startupProfileDraft = model.shellPreferencesState?.startupProfileId ?? "";
+  }
   const posture = await getDevicePostureReport();
   model.devicePostureReport = posture.ok ? posture.data : null;
   const updateState = await getLauncherUpdateState();
@@ -550,6 +594,53 @@ export function wireSettings(root, model, rerender, t) {
     };
     await rerender();
   });
+
+  root.querySelector("#settings-autostart-enabled")?.addEventListener("change", async (event) => {
+    const enabled = Boolean(event.target.checked);
+    const result = await saveShellPreferences({
+      launchOnSystemStartup: enabled,
+      startupProfileId: enabled ? (state.startupProfileDraft || model.shellPreferencesState?.startupProfileId || null) : null
+    });
+    model.shellPreferencesState = result.ok ? result.data : model.shellPreferencesState;
+    if (!enabled) {
+      state.startupProfileDraft = "";
+    } else if (!state.startupProfileDraft) {
+      state.startupProfileDraft = result.ok ? (result.data?.startupProfileId ?? "") : "";
+    }
+    model.settingsNotice = {
+      type: result.ok ? "success" : "error",
+      text: result.ok ? t("settings.autostart.saved") : String(result.data.error)
+    };
+    await rerender();
+  });
+
+  root.querySelector("#settings-startup-profile-toggle")?.addEventListener("click", () => {
+    root.querySelector("#settings-startup-profile-menu")?.classList.toggle("hidden");
+  });
+
+  for (const checkbox of root.querySelectorAll("[data-settings-startup-profile]")) {
+    checkbox.addEventListener("change", async () => {
+      const profileId = checkbox.getAttribute("data-settings-startup-profile");
+      state.startupProfileDraft = checkbox.checked ? profileId : "";
+      for (const other of root.querySelectorAll("[data-settings-startup-profile]")) {
+        if (other !== checkbox) {
+          other.checked = false;
+        }
+      }
+      const result = await saveShellPreferences({
+        startupProfileId: state.startupProfileDraft || null
+      });
+      model.shellPreferencesState = result.ok ? result.data : model.shellPreferencesState;
+      if (result.ok) {
+        state.startupProfileDraft = result.data?.startupProfileId ?? "";
+      }
+      model.settingsNotice = {
+        type: result.ok ? "success" : "error",
+        text: result.ok ? t("settings.startupProfile.saved") : String(result.data.error)
+      };
+      await rerender();
+    });
+  }
 
   root.querySelector("#settings-update-check")?.addEventListener("click", async () => {
     const result = await checkLauncherUpdates(true);

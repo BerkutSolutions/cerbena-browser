@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, sync::Mutex};
 
 use browser_engine::{
     contract::{EngineAdapter, LaunchRequest},
@@ -7,6 +7,8 @@ use browser_engine::{
 };
 use tempfile::tempdir;
 use uuid::Uuid;
+
+static APPDATA_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn camoufox_builds_launch_plan() {
@@ -27,7 +29,12 @@ fn camoufox_builds_launch_plan() {
 
 #[test]
 fn wayfern_requires_tos_ack() {
+    let _guard = APPDATA_ENV_LOCK.lock().expect("lock appdata env");
     let tmp = tempdir().expect("tempdir");
+    let appdata_root = tmp.path().join("appdata");
+    fs::create_dir_all(&appdata_root).expect("mk appdata");
+    let previous_appdata = std::env::var_os("APPDATA");
+    std::env::set_var("APPDATA", &appdata_root);
     let profile_root = tmp.path().join("profile");
     fs::create_dir_all(&profile_root).expect("mk profile");
     let profile_id = Uuid::new_v4();
@@ -45,8 +52,16 @@ fn wayfern_requires_tos_ack() {
     };
     assert!(adapter.build_launch_plan(req.clone()).is_err());
 
-    adapter
-        .acknowledge_tos(&profile_root, profile_id)
-        .expect("ack");
-    assert!(adapter.build_launch_plan(req).is_ok());
+    let result = std::panic::catch_unwind(|| {
+        adapter
+            .acknowledge_tos(&profile_root, profile_id)
+            .expect("ack");
+        assert!(adapter.build_launch_plan(req).is_ok());
+    });
+
+    match previous_appdata {
+        Some(value) => std::env::set_var("APPDATA", value),
+        None => std::env::remove_var("APPDATA"),
+    }
+    result.expect("wayfern ack flow")
 }

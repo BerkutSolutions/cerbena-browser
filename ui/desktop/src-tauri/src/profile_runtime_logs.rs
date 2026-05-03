@@ -152,12 +152,7 @@ fn collect_live_runtime_sections(state: &AppState, profile_id: Uuid) -> Vec<Stri
         sections.push(String::new());
     }
 
-    let browser_log_candidates = [
-        profile_root.join("tmp").join("wayfern-debug.log"),
-        profile_root.join("tmp").join("wayfern-stdout.log"),
-        profile_root.join("tmp").join("wayfern-stderr.log"),
-        profile_root.join("engine-profile").join("chrome_debug.log"),
-    ];
+    let browser_log_candidates = [profile_root.join("engine-profile").join("chrome_debug.log")];
 
     for path in browser_log_candidates {
         if !path.exists() {

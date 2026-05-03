@@ -146,27 +146,17 @@ impl WayfernAdapter {
         fs::create_dir_all(&log_dir)?;
         let acceptance_profile = log_dir.join("wayfern-acceptance-profile");
         fs::create_dir_all(&acceptance_profile)?;
-        let stdout_log = log_dir.join("wayfern-stdout.log");
-        let stderr_log = log_dir.join("wayfern-stderr.log");
-        let stdout = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&stdout_log)?;
-        let stderr = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&stderr_log)?;
 
         let mut command = Command::new(binary_path);
         command
-            .current_dir(binary_path.parent().unwrap_or(profile_root))
+            .current_dir(profile_root)
             .arg(format!(
                 "--user-data-dir={}",
                 acceptance_profile.to_string_lossy()
             ))
             .arg("--accept-terms-and-conditions")
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -214,38 +204,21 @@ impl EngineAdapter for WayfernAdapter {
 
     fn build_launch_plan(&self, request: LaunchRequest) -> Result<LaunchPlan, EngineError> {
         self.ensure_tos_ack(&request.profile_root, request.profile_id)?;
-        let cwd = request
-            .binary_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| request.profile_root.clone());
         Ok(LaunchPlan {
             engine: EngineKind::Wayfern,
             binary_path: request.binary_path.clone(),
             args: request.args.clone(),
-            cwd,
+            cwd: request.profile_root.clone(),
         })
     }
 
     fn launch(&self, request: LaunchRequest) -> Result<u32, EngineError> {
-        let log_dir = request.profile_root.join("tmp");
-        let _ = fs::create_dir_all(&log_dir);
-        let stdout_log = log_dir.join("wayfern-stdout.log");
-        let stderr_log = log_dir.join("wayfern-stderr.log");
-        let stdout = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&stdout_log)?;
-        let stderr = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&stderr_log)?;
         let plan = self.build_launch_plan(request)?;
         let child = Command::new(&plan.binary_path)
             .current_dir(&plan.cwd)
             .args(&plan.args)
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| EngineError::Launch(format!("spawn failed: {e}")))?;
         Ok(child.id())

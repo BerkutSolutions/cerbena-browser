@@ -44,7 +44,10 @@ use crate::{
         ERR_LOCKED_REQUIRES_UNLOCK, ERR_MAXIMUM_POLICY_EXTENSIONS_FORBIDDEN,
     },
     service_domains::service_domain_seeds,
-    state::{ensure_default_profiles, AppState, ExtensionLibraryItem},
+    state::{
+        ensure_default_profiles, is_builtin_default_profile_name,
+        persist_hidden_default_profiles_store, AppState, ExtensionLibraryItem,
+    },
 };
 
 const ERR_WAYFERN_PROFILE_CERTIFICATES_UNSUPPORTED: &str =
@@ -205,11 +208,17 @@ pub fn list_profiles(
     state: State<AppState>,
     correlation_id: String,
 ) -> Result<UiEnvelope<Vec<ProfileMetadata>>, String> {
+    let hidden = state
+        .hidden_default_profiles
+        .lock()
+        .map_err(|_| "hidden default profiles lock poisoned".to_string())?
+        .names
+        .clone();
     let manager = state
         .manager
         .lock()
         .map_err(|_| "lock poisoned".to_string())?;
-    ensure_default_profiles(&manager)?;
+    ensure_default_profiles(&manager, &hidden)?;
     let list = manager.list_profiles().map_err(|e| e.to_string())?;
     Ok(ok(correlation_id, list))
 }
@@ -309,6 +318,24 @@ pub fn delete_profile(
 ) -> Result<UiEnvelope<bool>, String> {
     let profile_id =
         Uuid::parse_str(&request.profile_id).map_err(|e| format!("profile id: {e}"))?;
+    let deleted_profile = {
+        let manager = state
+            .manager
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        manager.get_profile(profile_id).map_err(|e| e.to_string())?
+    };
+    if is_builtin_default_profile_name(&deleted_profile.name)
+        && deleted_profile.tags.iter().any(|tag| tag == "default")
+    {
+        let path = state.hidden_default_profiles_path(&state.app_handle)?;
+        let mut hidden = state
+            .hidden_default_profiles
+            .lock()
+            .map_err(|_| "hidden default profiles lock poisoned".to_string())?;
+        hidden.names.insert(deleted_profile.name.clone());
+        persist_hidden_default_profiles_store(&path, &hidden)?;
+    }
     purge_profile_related_state(&state, profile_id)?;
     let manager = state
         .manager

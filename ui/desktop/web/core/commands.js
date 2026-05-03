@@ -65,10 +65,10 @@ function writeMockSyncStore(value) {
 
 function readMockUpdateState() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.12-1\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
+    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.13\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
   } catch {
     return {
-      currentVersion: "1.0.12-1",
+      currentVersion: "1.0.13",
       repositoryUrl: "https://github.com/BerkutSolutions/cerbena-browser",
       autoUpdateEnabled: false,
       lastCheckedAt: null,
@@ -90,14 +90,17 @@ function writeMockUpdateState(value) {
 
 function readMockShellPreferences() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_SHELL_PREFS_KEY) ?? "{\"checkDefaultBrowserOnStartup\":true,\"defaultBrowserPromptDecided\":false,\"minimizeToTrayEnabled\":false,\"closeToTrayPromptDeclined\":false,\"isDefaultBrowser\":false}");
+    return JSON.parse(localStorage.getItem(MOCK_SHELL_PREFS_KEY) ?? "{\"checkDefaultBrowserOnStartup\":true,\"defaultBrowserPromptDecided\":false,\"minimizeToTrayEnabled\":false,\"closeToTrayPromptDeclined\":false,\"launchOnSystemStartup\":false,\"startupProfileId\":null,\"isDefaultBrowser\":false,\"launchedFromSystemStartup\":false}");
   } catch {
     return {
       checkDefaultBrowserOnStartup: true,
       defaultBrowserPromptDecided: false,
       minimizeToTrayEnabled: false,
       closeToTrayPromptDeclined: false,
-      isDefaultBrowser: false
+      launchOnSystemStartup: false,
+      startupProfileId: null,
+      isDefaultBrowser: false,
+      launchedFromSystemStartup: false
     };
   }
 }
@@ -410,6 +413,9 @@ function mockProfileCommand(command, args) {
     const routing = readMockLinkRouting();
     return {
       ...state,
+      launchOnSystemStartup: Boolean(state.launchOnSystemStartup),
+      startupProfileId: state.startupProfileId ?? null,
+      launchedFromSystemStartup: Boolean(state.launchedFromSystemStartup),
       shouldPromptDefaultBrowserPreference: !state.defaultBrowserPromptDecided,
       shouldPromptDefaultLinkProfile: Boolean(state.checkDefaultBrowserOnStartup && state.isDefaultBrowser && !routing.globalProfileId)
     };
@@ -429,6 +435,12 @@ function mockProfileCommand(command, args) {
         : {}),
       ...(request.closeToTrayPromptDeclined !== undefined
         ? { closeToTrayPromptDeclined: Boolean(request.closeToTrayPromptDeclined) }
+        : {}),
+      ...(request.launchOnSystemStartup !== undefined
+        ? { launchOnSystemStartup: Boolean(request.launchOnSystemStartup) }
+        : {}),
+      ...(request.startupProfileId !== undefined
+        ? { startupProfileId: request.startupProfileId || null }
         : {})
     };
     if (state.minimizeToTrayEnabled) {
@@ -438,6 +450,9 @@ function mockProfileCommand(command, args) {
     const routing = readMockLinkRouting();
     return {
       ...state,
+      launchOnSystemStartup: Boolean(state.launchOnSystemStartup),
+      startupProfileId: state.startupProfileId ?? null,
+      launchedFromSystemStartup: Boolean(state.launchedFromSystemStartup),
       shouldPromptDefaultBrowserPreference: !state.defaultBrowserPromptDecided,
       shouldPromptDefaultLinkProfile: Boolean(state.checkDefaultBrowserOnStartup && state.isDefaultBrowser && !routing.globalProfileId)
     };

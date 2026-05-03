@@ -46,7 +46,7 @@ const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.12-1";
+const APP_VERSION = "1.0.13";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";
@@ -530,9 +530,9 @@ function renderTrayCloseModal(i18n, model) {
           <h3>${i18n.t("settings.tray.modal.title")}</h3>
           <p class="meta">${i18n.t("settings.tray.modal.body")}</p>
           <div class="modal-actions">
-            <button type="button" id="tray-close-prompt-cancel">${i18n.t("action.cancel")}</button>
-            <button type="button" id="tray-close-prompt-no">${i18n.t("action.no")}</button>
             <button type="button" id="tray-close-prompt-yes">${i18n.t("action.yes")}</button>
+            <button type="button" id="tray-close-prompt-no">${i18n.t("action.no")}</button>
+            <button type="button" id="tray-close-prompt-cancel">${i18n.t("action.cancel")}</button>
           </div>
         </div>
       </div>
@@ -849,6 +849,7 @@ async function bootstrap() {
     trayClosePromptModal: null,
     wayfernTermsStatus: { pendingProfileIds: [] },
     panicUi: null,
+    systemStartupProfileLaunchHandled: false,
     appLifecycleOverlay: null
   };
 
@@ -917,6 +918,7 @@ async function bootstrap() {
     if ((model.wayfernTermsStatus?.pendingProfileIds ?? []).length) {
       await acknowledgePendingWayfernProfiles(model, rerender, i18n.t);
     }
+    await maybeLaunchSystemStartupProfile(model, rerender, i18n.t);
     await consumePendingLinkLaunch(model, rerender, i18n.t);
     await rerender({ refreshProfiles: false, refreshFeature: false });
   }
@@ -1135,10 +1137,30 @@ async function hydrateShellExperience(model) {
       selectedProfileId:
         model.linkRoutingOverview?.globalProfileId ??
         model.selectedProfileId ??
-        model.profiles?.[0]?.id ??
+      model.profiles?.[0]?.id ??
         ""
     };
   }
+}
+
+async function maybeLaunchSystemStartupProfile(model, rerender, t) {
+  if (model.systemStartupProfileLaunchHandled) {
+    return;
+  }
+  const shellState = model.shellPreferencesState;
+  const profileId = shellState?.startupProfileId ?? "";
+  model.systemStartupProfileLaunchHandled = true;
+  if (!shellState?.launchedFromSystemStartup || !shellState?.launchOnSystemStartup || !profileId) {
+    return;
+  }
+  if (!(await ensureWayfernTermsAccepted(model, profileId, rerender, t))) {
+    return;
+  }
+  const result = await launchProfile(profileId);
+  model.settingsNotice = {
+    type: result.ok ? "success" : "error",
+    text: result.ok ? t("links.notice.launched") : String(result.data.error)
+  };
 }
 
 function wireShellModals(root, state, model, rerender, t) {

@@ -1233,6 +1233,27 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   border-bottom: 1px solid rgba(125, 155, 255, 0.16);
 }
 
+.profiles-table thead th.is-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.profiles-table thead th.is-sortable::after {
+  content: "↕";
+  margin-left: 6px;
+  opacity: 0.45;
+}
+
+.profiles-table thead th.is-sortable[aria-sort="ascending"]::after {
+  content: "↑";
+  opacity: 0.9;
+}
+
+.profiles-table thead th.is-sortable[aria-sort="descending"]::after {
+  content: "↓";
+  opacity: 0.9;
+}
+
 .profiles-table tbody tr {
   transition: background 120ms ease;
 }

@@ -100,6 +100,12 @@ pub struct ExtensionLibraryStore {
     pub items: BTreeMap<String, ExtensionLibraryItem>,
 }
 
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct HiddenDefaultProfilesStore {
+    #[serde(default)]
+    pub names: BTreeSet<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionNode {
@@ -189,6 +195,7 @@ pub struct AppState {
     pub device_posture_store: Mutex<DevicePostureStore>,
     pub app_update_store: Mutex<AppUpdateStore>,
     pub shell_preference_store: Mutex<ShellPreferenceStore>,
+    pub hidden_default_profiles: Mutex<HiddenDefaultProfilesStore>,
     pub updater_runtime: Arc<Mutex<UpdaterRuntimeState>>,
     pub runtime_logs: Mutex<Vec<String>>,
     pub profile_logs: Mutex<ProfileLogStore>,
@@ -225,7 +232,9 @@ impl AppState {
 
         let manager =
             ProfileManager::new(&profile_root).map_err(|e| format!("manager init: {e}"))?;
-        ensure_default_profiles(&manager)?;
+        let hidden_default_profiles =
+            load_hidden_default_profiles_store(&app_data.join("hidden_default_profiles.json"))?;
+        ensure_default_profiles(&manager, &hidden_default_profiles.names)?;
         let identity_store = load_identity_store(&app_data.join("identity_store.json"))?;
         let network_store = load_network_store(&app_data.join("network_store.json"))?;
         let extension_library =
@@ -284,6 +293,7 @@ impl AppState {
             device_posture_store: Mutex::new(device_posture_store),
             app_update_store: Mutex::new(app_update_store),
             shell_preference_store: Mutex::new(shell_preference_store),
+            hidden_default_profiles: Mutex::new(hidden_default_profiles),
             updater_runtime: Arc::new(Mutex::new(UpdaterRuntimeState::new(updater_launch_mode))),
             runtime_logs: Mutex::new(Vec::new()),
             profile_logs: Mutex::new(profile_logs),
@@ -375,6 +385,11 @@ impl AppState {
         Ok(app_data.join("shell_preference_store.json"))
     }
 
+    pub fn hidden_default_profiles_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
+        let app_data = app_local_data_root(app)?;
+        Ok(app_data.join("hidden_default_profiles.json"))
+    }
+
     pub fn app_update_root_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
         let app_data = app_local_data_root(app)?;
         Ok(app_data.join("updates"))
@@ -427,6 +442,15 @@ fn load_app_update_store(path: &PathBuf) -> Result<AppUpdateStore, String> {
     serde_json::from_slice(&raw).map_err(|e| format!("parse app update store: {e}"))
 }
 
+fn load_hidden_default_profiles_store(path: &PathBuf) -> Result<HiddenDefaultProfilesStore, String> {
+    if !path.exists() {
+        return Ok(HiddenDefaultProfilesStore::default());
+    }
+    let raw = fs::read(path).map_err(|e| format!("read hidden default profiles store: {e}"))?;
+    serde_json::from_slice(&raw)
+        .map_err(|e| format!("parse hidden default profiles store: {e}"))
+}
+
 fn load_sync_store(path: &PathBuf, secret_material: &str) -> Result<SyncStore, String> {
     crate::sensitive_store::load_sensitive_json_or_default(path, "sync-store", secret_material)
 }
@@ -442,10 +466,39 @@ fn load_link_routing_store(
     )
 }
 
-pub(crate) fn ensure_default_profiles(manager: &ProfileManager) -> Result<(), String> {
+pub(crate) const BUILTIN_DEFAULT_PROFILE_NAMES: &[&str] = &[
+    "Chromium Default",
+    "Firefox Default",
+    "Chromium Private Memory",
+    "Firefox Private Memory",
+    "Discord",
+    "Telegram",
+];
+
+pub(crate) fn is_builtin_default_profile_name(name: &str) -> bool {
+    BUILTIN_DEFAULT_PROFILE_NAMES.iter().any(|value| *value == name)
+}
+
+pub(crate) fn persist_hidden_default_profiles_store(
+    path: &PathBuf,
+    store: &HiddenDefaultProfilesStore,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create hidden default profiles dir: {e}"))?;
+    }
+    let bytes = serde_json::to_vec_pretty(store)
+        .map_err(|e| format!("serialize hidden default profiles store: {e}"))?;
+    fs::write(path, bytes).map_err(|e| format!("write hidden default profiles store: {e}"))
+}
+
+pub(crate) fn ensure_default_profiles(
+    manager: &ProfileManager,
+    hidden_names: &BTreeSet<String>,
+) -> Result<(), String> {
     let existing = manager.list_profiles().map_err(|e| e.to_string())?;
     let has = |name: &str| existing.iter().any(|p| p.name == name);
-    if !has("Chromium Default") {
+    if !hidden_names.contains("Chromium Default") && !has("Chromium Default") {
         manager
             .create_profile(CreateProfileInput {
                 name: "Chromium Default".to_string(),
@@ -463,7 +516,7 @@ pub(crate) fn ensure_default_profiles(manager: &ProfileManager) -> Result<(), St
             })
             .map_err(|e| e.to_string())?;
     }
-    if !has("Firefox Default") {
+    if !hidden_names.contains("Firefox Default") && !has("Firefox Default") {
         manager
             .create_profile(CreateProfileInput {
                 name: "Firefox Default".to_string(),
@@ -481,7 +534,7 @@ pub(crate) fn ensure_default_profiles(manager: &ProfileManager) -> Result<(), St
             })
             .map_err(|e| e.to_string())?;
     }
-    if !has("Chromium Private Memory") {
+    if !hidden_names.contains("Chromium Private Memory") && !has("Chromium Private Memory") {
         manager
             .create_profile(CreateProfileInput {
                 name: "Chromium Private Memory".to_string(),
@@ -505,7 +558,7 @@ pub(crate) fn ensure_default_profiles(manager: &ProfileManager) -> Result<(), St
             })
             .map_err(|e| e.to_string())?;
     }
-    if !has("Firefox Private Memory") {
+    if !hidden_names.contains("Firefox Private Memory") && !has("Firefox Private Memory") {
         manager
             .create_profile(CreateProfileInput {
                 name: "Firefox Private Memory".to_string(),
@@ -529,7 +582,7 @@ pub(crate) fn ensure_default_profiles(manager: &ProfileManager) -> Result<(), St
             })
             .map_err(|e| e.to_string())?;
     }
-    if !has("Discord") {
+    if !hidden_names.contains("Discord") && !has("Discord") {
         manager
             .create_profile(CreateProfileInput {
                 name: "Discord".to_string(),
@@ -553,7 +606,7 @@ pub(crate) fn ensure_default_profiles(manager: &ProfileManager) -> Result<(), St
             })
             .map_err(|e| e.to_string())?;
     }
-    if !has("Telegram") {
+    if !hidden_names.contains("Telegram") && !has("Telegram") {
         manager
             .create_profile(CreateProfileInput {
                 name: "Telegram".to_string(),
