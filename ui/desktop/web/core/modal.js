@@ -33,13 +33,14 @@ function inputModalHtml(id, t, options) {
 function confirmModalHtml(id, t, options) {
   const title = options.title ?? "";
   const description = options.description ?? "";
+  const descriptionHtml = options.descriptionHtml ?? "";
   const submitLabel = options.submitLabel ?? t("action.confirm");
   const cancelLabel = options.cancelLabel ?? t("action.cancel");
   return `
   <div class="profiles-modal-overlay" id="${id}">
     <div class="profiles-modal-window profiles-modal-window-sm action-modal">
       <h3>${escapeHtml(title)}</h3>
-      <p class="meta">${escapeHtml(description)}</p>
+      ${descriptionHtml ? `<p class="meta">${descriptionHtml}</p>` : `<p class="meta">${escapeHtml(description)}</p>`}
       <footer class="modal-actions">
         <button type="button" data-modal-cancel>${escapeHtml(cancelLabel)}</button>
         <button type="button" data-modal-submit>${escapeHtml(submitLabel)}</button>

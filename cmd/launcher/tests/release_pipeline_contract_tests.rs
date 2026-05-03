@@ -77,6 +77,8 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
     let local_preflight = fs::read_to_string(root.join("scripts").join("local-ci-preflight.ps1"))
         .expect("read local ci preflight");
     assert!(local_preflight.contains("Trusted updater regression tests"));
+    assert!(local_preflight.contains("Published updater end-to-end test"));
+    assert!(local_preflight.contains("published-updater-e2e.ps1"));
     assert!(local_preflight.contains("cargo"));
     assert!(local_preflight.contains("trusted_updater"));
     assert!(local_preflight.contains("Desktop UI dev smoke"));

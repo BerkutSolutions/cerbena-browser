@@ -65,10 +65,10 @@ function writeMockSyncStore(value) {
 
 function readMockUpdateState() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.11\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
+    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.12\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
   } catch {
     return {
-      currentVersion: "1.0.11",
+      currentVersion: "1.0.12",
       repositoryUrl: "https://github.com/BerkutSolutions/cerbena-browser",
       autoUpdateEnabled: false,
       lastCheckedAt: null,
@@ -360,6 +360,13 @@ function mockProfileCommand(command, args) {
 
   if (command === "get_wayfern_terms_status") {
     return { pendingProfileIds: [] };
+  }
+
+  if (command === "read_profile_logs") {
+    return [
+      `[${new Date().toISOString()}][launcher] Mock profile log for ${request.profileId ?? "profile"}`,
+      "[live] Runtime log preview is available only in the desktop shell."
+    ];
   }
 
   if (command === "get_device_posture_report" || command === "refresh_device_posture_report") {

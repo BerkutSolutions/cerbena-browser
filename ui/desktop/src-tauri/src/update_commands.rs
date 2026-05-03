@@ -29,6 +29,7 @@ const UPDATE_CHECK_INTERVAL_MS: u128 = 6 * 60 * 60 * 1000;
 const SCHEDULER_TICK: Duration = Duration::from_secs(15 * 60);
 const USER_AGENT: &str = concat!("Cerbena-Updater/", env!("CARGO_PKG_VERSION"));
 const UPDATER_EVENT_NAME: &str = "updater-progress";
+pub const UPDATER_RELAUNCH_AUTO_EXIT_ENV: &str = "CERBENA_UPDATER_AUTO_EXIT_AFTER_SECONDS";
 const RELEASE_SIGNING_PUBLIC_KEY_XML: &str = r#"<RSAKeyValue><Modulus>sQ/dGNzpHEHiSUvpp8+h4axIghjUrkY9hHX3GNPwS9kGK6FCoc6+DuKSK/u5JwEKk/sjTks2m8ANgCm1ajaEPFE/BQjP1VsqQE3/MGbpRwWXIYUP6qKX2EhMQa5Fg0fywHV5uk7v3x6Q/Yfc4cWVLKNClqpq2hk8CX0NfUjqN1s5CNnNH1zgZPZ45ExXZQBlM5UUhdY/N4LKTFiYjpDMvoW4KSM4j9maUBmoNGVTnnRgfyWm6wM7LCoqSPpYhSb4yE+/HtaBGpePVy21B5Xi1nzPSYfShEdVkmeCJTcTj8gr1o8OcqKEs5V3yQa6MmUhNgYM/uC/lGeqiR+lwiLG4Q==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>"#;
 
 const UPDATER_STEP_DISCOVER: &str = "discover";
@@ -1378,6 +1379,8 @@ fn build_zip_apply_helper_script(
         $archive={archive};\
         $installRoot={install};\
         $relaunchExe={relaunch};\
+        $versionProbe=$env:CERBENA_SELFTEST_REPORT_VERSION_FILE;\
+        $autoExitAfter='20';\
         $targetExecutables=@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe');\
         while (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }};\
         $targetPaths=@();\
@@ -1422,14 +1425,25 @@ fn build_zip_apply_helper_script(
                     Start-Sleep -Milliseconds 500;\
                 }}\
             }};\
-            if ($relaunchExe -and (Test-Path -LiteralPath $relaunchExe)) {{ Start-Process -FilePath $relaunchExe }}\
+            if ($relaunchExe -and (Test-Path -LiteralPath $relaunchExe)) {{\
+                $relaunchInfo = New-Object System.Diagnostics.ProcessStartInfo;\
+                $relaunchInfo.FileName = $relaunchExe;\
+                $relaunchInfo.WorkingDirectory = Split-Path -Parent $relaunchExe;\
+                $relaunchInfo.UseShellExecute = $false;\
+                if ($versionProbe) {{\
+                    $relaunchInfo.EnvironmentVariables['CERBENA_SELFTEST_REPORT_VERSION_FILE'] = $versionProbe;\
+                    $relaunchInfo.EnvironmentVariables['{auto_exit_env}'] = $autoExitAfter;\
+                }};\
+                [System.Diagnostics.Process]::Start($relaunchInfo) | Out-Null;\
+            }}\
         }} finally {{\
             if (Test-Path -LiteralPath $temp) {{ Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }}\
         }}",
         pid = pid,
         archive = powershell_quote(archive_path),
         install = powershell_quote(install_root),
-        relaunch = relaunch
+        relaunch = relaunch,
+        auto_exit_env = UPDATER_RELAUNCH_AUTO_EXIT_ENV
     )
 }
 
@@ -1845,6 +1859,7 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         assert!(script.contains("@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe')"));
         assert!(script
             .contains("for ($attempt=0; $attempt -lt 10 -and -not $copySucceeded; $attempt++)"));
+        assert!(script.contains("CERBENA_UPDATER_AUTO_EXIT_AFTER_SECONDS"));
     }
 
     #[test]

@@ -20,6 +20,7 @@ mod network_sandbox_lifecycle;
 mod panic_frame;
 mod process_tracking;
 mod profile_commands;
+mod profile_runtime_logs;
 mod profile_security;
 mod route_runtime;
 mod sensitive_store;
@@ -38,7 +39,49 @@ mod window_commands;
 use state::AppState;
 use tauri::{Manager, WindowEvent};
 
+fn updater_relaunch_auto_exit_after() -> Option<std::time::Duration> {
+    let raw = std::env::var(update_commands::UPDATER_RELAUNCH_AUTO_EXIT_ENV).ok()?;
+    let seconds = raw.trim().parse::<u64>().ok()?;
+    if seconds == 0 {
+        return None;
+    }
+    Some(std::time::Duration::from_secs(seconds))
+}
+
+fn startup_external_link_arg(
+    updater_launch_mode: update_commands::UpdaterLaunchMode,
+) -> Option<String> {
+    if updater_launch_mode.is_active() {
+        return None;
+    }
+    std::env::args().skip(1).find(|value| {
+        !value.trim_start().starts_with("--") && launcher_commands::detect_link_type(value).is_ok()
+    })
+}
+
+fn handle_selftest_version_probe(updater_launch_mode: update_commands::UpdaterLaunchMode) -> bool {
+    if updater_launch_mode.is_active() {
+        return false;
+    }
+    let Ok(path) = std::env::var("CERBENA_SELFTEST_REPORT_VERSION_FILE") else {
+        return false;
+    };
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let target = std::path::PathBuf::from(trimmed);
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&target, env!("CARGO_PKG_VERSION")).is_ok()
+}
+
 fn main() {
+    let updater_launch_mode = update_commands::active_updater_launch_mode();
+    if handle_selftest_version_probe(updater_launch_mode) {
+        return;
+    }
     #[cfg(target_os = "windows")]
     let app_data_root = std::env::var_os("LOCALAPPDATA").map(|local_app_data| {
         std::path::PathBuf::from(local_app_data).join(if cfg!(debug_assertions) {
@@ -47,32 +90,33 @@ fn main() {
             "Cerbena Browser"
         })
     });
-    let startup_link_arg = std::env::args()
-        .skip(1)
-        .find(|value| launcher_commands::detect_link_type(value).is_ok());
+    let startup_link_arg = startup_external_link_arg(updater_launch_mode);
 
     #[cfg(target_os = "windows")]
-    if let Some(app_data_root) = app_data_root.as_deref() {
-        if !instance_handoff::acquire_single_instance_guard(app_data_root).unwrap_or(true) {
-            if let Some(link_arg) = startup_link_arg.as_deref() {
-                let _ =
-                    instance_handoff::forward_link_to_primary_data_root(app_data_root, link_arg);
-            } else {
-                let _ = instance_handoff::signal_primary_activation_data_root(app_data_root);
-            }
-            return;
-        }
-
-        if let Some(link_arg) = startup_link_arg.as_deref() {
-            if instance_handoff::forward_link_to_primary_data_root(app_data_root, link_arg)
-                .unwrap_or(false)
-            {
+    if !updater_launch_mode.is_active() {
+        if let Some(app_data_root) = app_data_root.as_deref() {
+            if !instance_handoff::acquire_single_instance_guard(app_data_root).unwrap_or(true) {
+                if let Some(link_arg) = startup_link_arg.as_deref() {
+                    let _ = instance_handoff::forward_link_to_primary_data_root(
+                        app_data_root,
+                        link_arg,
+                    );
+                } else {
+                    let _ = instance_handoff::signal_primary_activation_data_root(app_data_root);
+                }
                 return;
+            }
+
+            if let Some(link_arg) = startup_link_arg.as_deref() {
+                if instance_handoff::forward_link_to_primary_data_root(app_data_root, link_arg)
+                    .unwrap_or(false)
+                {
+                    return;
+                }
             }
         }
     }
 
-    let updater_launch_mode = update_commands::active_updater_launch_mode();
     tauri::Builder::default()
         .on_window_event(|window, event| {
             if window.label().starts_with("panic-frame-menu-") {
@@ -132,6 +176,13 @@ fn main() {
             } else {
                 main_window.set_title("Cerbena")?;
             }
+            if let Some(delay) = updater_relaunch_auto_exit_after() {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(delay);
+                    let _ = shell_commands::request_exit(&app_handle);
+                });
+            }
             #[cfg(debug_assertions)]
             {
                 let _ = main_window.eval("window.__BROWSER_DEV__ = true;");
@@ -163,8 +214,10 @@ fn main() {
             install_registration::reconcile_install_registration(app.handle());
             shell_commands::setup_system_tray(app)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-            instance_handoff::setup_primary_instance_bridge(app)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            if !updater_launch_mode.is_active() {
+                instance_handoff::setup_primary_instance_bridge(app)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            }
             {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
@@ -203,6 +256,7 @@ fn main() {
             profile_commands::stop_profile,
             profile_commands::acknowledge_wayfern_tos,
             profile_commands::get_wayfern_terms_status,
+            profile_commands::read_profile_logs,
             profile_commands::ensure_engine_binaries,
             profile_commands::copy_profile_cookies,
             profile_commands::set_profile_password,

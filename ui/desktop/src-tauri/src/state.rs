@@ -25,6 +25,7 @@ use crate::network_sandbox::{
     load_network_sandbox_store, migrate_network_sandbox_store, NetworkSandboxStore,
 };
 use crate::network_sandbox_lifecycle::NetworkSandboxLifecycleState;
+use crate::profile_runtime_logs::{load_profile_log_store, ProfileLogStore};
 use crate::route_runtime::RouteRuntimeState;
 use crate::sensitive_store::derive_app_secret_material;
 use crate::service_catalog_seed::build_service_catalog;
@@ -190,6 +191,7 @@ pub struct AppState {
     pub shell_preference_store: Mutex<ShellPreferenceStore>,
     pub updater_runtime: Arc<Mutex<UpdaterRuntimeState>>,
     pub runtime_logs: Mutex<Vec<String>>,
+    pub profile_logs: Mutex<ProfileLogStore>,
     pub pending_external_link: Mutex<Option<String>>,
     pub launched_processes: Mutex<BTreeMap<Uuid, u32>>,
     pub active_panic_frames: Mutex<BTreeSet<Uuid>>,
@@ -250,6 +252,7 @@ impl AppState {
         let updater_launch_mode = UpdaterLaunchMode::from_args(std::env::args().skip(1));
         let traffic_rules = load_rules_store(&app_data.join("traffic_gateway_rules.json"))?;
         let traffic_log = load_traffic_log(&app_data.join("traffic_gateway_log.json"))?;
+        let profile_logs = load_profile_log_store(&app_data.join("profile_runtime_logs.json"))?;
         if sandbox_changed {
             persist_network_sandbox_store(
                 &app_data.join("network_sandbox_store.json"),
@@ -283,6 +286,7 @@ impl AppState {
             shell_preference_store: Mutex::new(shell_preference_store),
             updater_runtime: Arc::new(Mutex::new(UpdaterRuntimeState::new(updater_launch_mode))),
             runtime_logs: Mutex::new(Vec::new()),
+            profile_logs: Mutex::new(profile_logs),
             pending_external_link: Mutex::new(None),
             launched_processes: Mutex::new(BTreeMap::new()),
             active_panic_frames: Mutex::new(BTreeSet::new()),
@@ -315,6 +319,10 @@ impl AppState {
     pub fn traffic_gateway_log_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
         let app_data = app_local_data_root(app)?;
         Ok(app_data.join("traffic_gateway_log.json"))
+    }
+
+    pub fn profile_log_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
+        crate::profile_runtime_logs::profile_log_store_path(app)
     }
 
     pub fn network_store_path(&self, app: &AppHandle) -> Result<PathBuf, String> {

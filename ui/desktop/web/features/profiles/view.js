@@ -4,10 +4,12 @@ import {
   createProfile,
   deleteProfile,
   exportProfile,
+  getWayfernTermsStatus,
   importProfile,
   launchProfile,
   listProfiles,
   pickCertificateFiles,
+  readProfileLogs,
   setProfilePassword,
   stopProfile,
   updateProfile,
@@ -98,6 +100,10 @@ function playIcon() {
 
 function stopIcon() {
   return `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>`;
+}
+
+function terminalIcon() {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16v12H4z"/><path d="m7 10 3 2-3 2"/><path d="M12 14h5"/></svg>`;
 }
 
 function usersIcon() {
@@ -243,6 +249,45 @@ function selectionState(model) {
   return model.selectedProfileIds;
 }
 
+function wayfernTermsDescriptionHtml(t) {
+  return `${escapeHtml(t("profile.wayfernTerms.description"))} <a href="https://wayfern.com/terms-and-conditions" target="_blank" rel="noreferrer">${escapeHtml(t("profile.wayfernTerms.linkLabel"))}</a>`;
+}
+
+async function refreshWayfernTermsStatus(model) {
+  const result = await getWayfernTermsStatus();
+  if (result.ok) {
+    model.wayfernTermsStatus = result.data ?? { pendingProfileIds: [] };
+  }
+  return result;
+}
+
+async function ensureWayfernTermsAcceptedForLaunch(model, profile, t) {
+  if (profile?.engine !== "wayfern" || !profile?.id) {
+    return true;
+  }
+  await refreshWayfernTermsStatus(model);
+  const pending = new Set(model.wayfernTermsStatus?.pendingProfileIds ?? []);
+  if (!pending.has(profile.id)) {
+    return true;
+  }
+  const accepted = await askConfirm(
+    document.body,
+    t,
+    t("profile.wayfernTerms.title"),
+    t("profile.wayfernTerms.description"),
+    wayfernTermsDescriptionHtml(t)
+  );
+  if (!accepted) {
+    return false;
+  }
+  const ackResult = await acknowledgeWayfernTos(profile.id);
+  if (!ackResult.ok) {
+    return false;
+  }
+  await refreshWayfernTermsStatus(model);
+  return !(new Set(model.wayfernTermsStatus?.pendingProfileIds ?? [])).has(profile.id);
+}
+
 function rowHtml(profile, isSelected, t) {
   const tags = profileTags(profile);
   const firstTag = tags[0] ?? null;
@@ -288,6 +333,7 @@ function rowHtml(profile, isSelected, t) {
             aria-label="${running ? t("profile.action.stop") : t("profile.action.launch")}"
             title="${running ? t("profile.action.stop") : t("profile.action.launch")}"
           >${running ? stopIcon() : playIcon()}</button>
+          <button class="profiles-icon-btn" data-action="logs" aria-label="${t("profile.action.logs")}" title="${t("profile.action.logs")}">${terminalIcon()}</button>
           <button class="profiles-icon-btn" data-action="edit" aria-label="${t("profile.action.edit")}">${pencilIcon()}</button>
           <button class="profiles-icon-btn danger" data-action="delete" aria-label="${t("profile.action.delete")}">${trashIcon()}</button>
         </div>
@@ -1001,10 +1047,64 @@ async function askInput(root, t, title, label, defaultValue = "") {
   });
 }
 
-async function askConfirm(root, t, title, description) {
+async function askConfirm(root, t, title, description, descriptionHtml = "") {
   return askConfirmModal(t, {
     title,
-    description
+    description,
+    descriptionHtml
+  });
+}
+
+function profileLogsModalHtml(t, profile, lines) {
+  const content = Array.isArray(lines) && lines.length
+    ? lines.join("\n")
+    : t("profile.logs.empty");
+  return `
+    <div class="profiles-modal-overlay" id="profile-logs-overlay">
+      <div class="profiles-modal-window profiles-modal-window-md action-modal profile-logs-modal">
+        <div class="profiles-cookie-head">
+          <h3>${escapeHtml(t("profile.logs.title"))}: ${escapeHtml(profile?.name ?? t("profile.launchProgress.profileFallback"))}</h3>
+          <button type="button" class="profiles-icon-btn" id="profile-logs-close" aria-label="${t("action.close")}">${closeIcon()}</button>
+        </div>
+        <div class="profile-logs-console-shell">
+          <pre class="preview-box profile-logs-pre">${escapeHtml(content)}</pre>
+        </div>
+        <footer class="modal-actions">
+          <button type="button" id="profile-logs-refresh">${t("action.refresh")}</button>
+          <button type="button" id="profile-logs-dismiss">${t("action.close")}</button>
+        </footer>
+      </div>
+    </div>`;
+}
+
+async function openProfileLogsModal(profile, t) {
+  const existing = document.body.querySelector("#profile-logs-overlay");
+  if (existing) {
+    closeModalOverlay(existing);
+  }
+  const initial = await readProfileLogs(profile.id);
+  const lines = initial.ok ? initial.data : [String(initial.data.error)];
+  document.body.insertAdjacentHTML("beforeend", profileLogsModalHtml(t, profile, lines));
+  const overlay = document.body.querySelector("#profile-logs-overlay");
+  if (!overlay) return;
+
+  const reload = async () => {
+    const result = await readProfileLogs(profile.id);
+    const text = result.ok
+      ? ((result.data ?? []).join("\n") || t("profile.logs.empty"))
+      : String(result.data.error);
+    const pre = overlay.querySelector(".profile-logs-pre");
+    if (pre) pre.textContent = text;
+  };
+  const close = () => closeModalOverlay(overlay);
+  showModalOverlay(overlay);
+  overlay.querySelector("#profile-logs-close")?.addEventListener("click", close);
+  overlay.querySelector("#profile-logs-dismiss")?.addEventListener("click", close);
+  overlay.querySelector("#profile-logs-refresh")?.addEventListener("click", reload);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      close();
+    }
   });
 }
 
@@ -1238,6 +1338,11 @@ export function wireProfiles(root, model, rerender, t) {
         };
         rerender();
         try {
+          if (!(await ensureWayfernTermsAcceptedForLaunch(model, profile, t))) {
+            model.profileLaunchOverlay = null;
+            rerender();
+            return;
+          }
           const launchResult = await launchProfile(profileId);
           if (!launchResult.ok) {
             model.profileLaunchOverlay = null;
@@ -1270,13 +1375,19 @@ export function wireProfiles(root, model, rerender, t) {
                 );
               }
             } else if (errorText.includes("wayfern_terms_not_acknowledged") || errorText.includes("wayfern_terms_ack_stale")) {
-              const accepted = await askConfirm(root, t, t("profile.wayfernTerms.title"), t("profile.wayfernTerms.description"));
+              const accepted = await askConfirm(
+                root,
+                t,
+                t("profile.wayfernTerms.title"),
+                t("profile.wayfernTerms.description"),
+                wayfernTermsDescriptionHtml(t)
+              );
               if (accepted) {
                 const ackResult = await acknowledgeWayfernTos(profileId);
                 if (!ackResult.ok) {
                   setNotice(model, "error", resolveProfileErrorMessage(t, ackResult.data.error));
                 } else {
-                  model.wayfernTermsStatus = { pendingProfileIds: [] };
+                  await refreshWayfernTermsStatus(model);
                   const relaunched = await launchProfile(profileId);
                   setNotice(model, relaunched.ok ? "success" : "error", relaunched.ok ? t("profile.notice.launched") : resolveProfileErrorMessage(t, relaunched.data.error));
                 }
@@ -1312,6 +1423,10 @@ export function wireProfiles(root, model, rerender, t) {
         } finally {
           model.profileActionPendingIds.delete(profileId);
         }
+      }
+
+      if (action === "logs") {
+        return openProfileLogsModal(profile, t);
       }
 
       if (action === "edit") {

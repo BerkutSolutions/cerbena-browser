@@ -1,6 +1,6 @@
 import { SEARCH_PROVIDER_PRESETS } from "../../core/catalogs.js";
 import { askConfirmModal } from "../../core/modal.js";
-import { acknowledgeWayfernTos, launchProfile } from "../profiles/api.js";
+import { acknowledgeWayfernTos, getWayfernTermsStatus, launchProfile } from "../profiles/api.js";
 import { saveGlobalSecuritySettings } from "../security/api.js";
 import {
   buildGlobalSecuritySaveRequest,
@@ -104,13 +104,25 @@ function pendingWayfernProfileIds(model) {
   return new Set(model.wayfernTermsStatus?.pendingProfileIds ?? []);
 }
 
+function wayfernTermsDescriptionHtml(t) {
+  return `${t("profile.wayfernTerms.description")} <a href="https://wayfern.com/terms-and-conditions" target="_blank" rel="noreferrer">${t("profile.wayfernTerms.linkLabel")}</a>`;
+}
+
 async function ensureWayfernTermsAcceptedForProfile(model, profileId, rerender, t) {
-  if (!profileId || !pendingWayfernProfileIds(model).has(profileId)) {
+  if (!profileId) {
+    return true;
+  }
+  const statusResult = await getWayfernTermsStatus();
+  if (statusResult.ok) {
+    model.wayfernTermsStatus = statusResult.data ?? { pendingProfileIds: [] };
+  }
+  if (!pendingWayfernProfileIds(model).has(profileId)) {
     return true;
   }
   const accepted = await askConfirmModal(t, {
     title: t("profile.wayfernTerms.title"),
     description: t("profile.wayfernTerms.description"),
+    descriptionHtml: wayfernTermsDescriptionHtml(t),
     submitLabel: t("action.confirm"),
     cancelLabel: t("action.cancel")
   });
@@ -123,7 +135,8 @@ async function ensureWayfernTermsAcceptedForProfile(model, profileId, rerender, 
     await rerender();
     return false;
   }
-  model.wayfernTermsStatus = { pendingProfileIds: [] };
+  const refreshedStatus = await getWayfernTermsStatus();
+  model.wayfernTermsStatus = refreshedStatus.ok ? refreshedStatus.data : { pendingProfileIds: [] };
   return true;
 }
 
@@ -144,7 +157,7 @@ function renderUpdateCard(t, model) {
       </div>
       <div class="grid-two">
         <label>${t("settings.updates.currentVersion")}
-          <input value="${escapeHtml(updateState.currentVersion ?? "1.0.11")}" disabled />
+          <input value="${escapeHtml(updateState.currentVersion ?? "1.0.12")}" disabled />
         </label>
         <label>${t("settings.updates.latestVersion")}
           <input value="${escapeHtml(updateState.latestVersion ?? t("settings.updates.notChecked"))}" disabled />

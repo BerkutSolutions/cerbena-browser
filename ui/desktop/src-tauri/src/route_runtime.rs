@@ -30,6 +30,7 @@ use crate::{
         launch_openvpn_container_runtime, launch_sing_box_container_runtime,
         stop_container_runtime, CONTAINER_PROXY_PORT,
     },
+    profile_runtime_logs::append_profile_log,
     process_tracking::is_process_running,
     state::AppState,
 };
@@ -86,6 +87,7 @@ pub struct RouteRuntimeSessionSnapshot {
     pub config_path: PathBuf,
     pub cleanup_paths: Vec<PathBuf>,
     pub tunnel_name: Option<String>,
+    pub container_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +144,7 @@ pub fn runtime_session_snapshot(
         config_path: session.config_path,
         cleanup_paths: session.cleanup_paths,
         tunnel_name: session.tunnel_name,
+        container_name: session.container_name,
     })
 }
 
@@ -205,6 +208,12 @@ pub fn stop_profile_route_runtime(app_handle: &AppHandle, profile_id: Uuid) {
         runtime.sessions.remove(&key)
     };
     if let Some(session) = session {
+        append_profile_log(
+            app_handle,
+            profile_id,
+            "route-runtime",
+            format!("Stopping route runtime backend={}", route_runtime_backend_label(session.backend)),
+        );
         if let Some(pid) = session.pid {
             terminate_pid(pid);
         }
@@ -226,6 +235,15 @@ pub fn stop_profile_route_runtime(app_handle: &AppHandle, profile_id: Uuid) {
         for path in session.cleanup_paths {
             let _ = fs::remove_file(path);
         }
+    }
+}
+
+fn route_runtime_backend_label(backend: RouteRuntimeBackend) -> &'static str {
+    match backend {
+        RouteRuntimeBackend::SingBox => "sing-box",
+        RouteRuntimeBackend::OpenVpn => "openvpn",
+        RouteRuntimeBackend::AmneziaWg => "amneziawg",
+        RouteRuntimeBackend::ContainerSocks => "container-socks",
     }
 }
 

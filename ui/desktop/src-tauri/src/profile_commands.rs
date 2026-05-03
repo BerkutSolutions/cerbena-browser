@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use browser_engine::{EngineDownloadProgress, EngineInstallation, EngineKind, EngineRuntime};
@@ -31,12 +31,13 @@ use crate::{
     },
     launcher_commands::{load_global_security_record, persist_global_security_record},
     network_sandbox_lifecycle::{ensure_profile_network_stack, stop_profile_network_stack},
-    panic_frame::maybe_start_panic_frame,
+    panic_frame::{close_panic_frame, maybe_start_panic_frame},
     process_tracking::{
         clear_profile_process, find_profile_main_window_pid_for_dir,
         find_profile_process_pid_for_dir, is_process_running as is_pid_running,
         terminate_process_tree, terminate_profile_processes, track_profile_process,
     },
+    profile_runtime_logs::{append_profile_log, read_profile_log_lines},
     profile_security::{
         assess_profile, cookies_copy_allowed, first_launch_blocker, tags_allow_keepassxc,
         tags_allow_system_access, tags_disable_extension_launch, ERR_COOKIES_COPY_BLOCKED,
@@ -359,120 +360,151 @@ pub async fn launch_profile(
 ) -> Result<UiEnvelope<ProfileMetadata>, String> {
     let profile_id =
         Uuid::parse_str(&request.profile_id).map_err(|e| format!("profile id: {e}"))?;
-    let launch_url_requested = request
-        .launch_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some();
-    let profile = {
-        let manager = state
-            .manager
-            .lock()
-            .map_err(|_| "lock poisoned".to_string())?;
-        manager
-            .ensure_unlocked(profile_id)
-            .map_err(|_| ERR_LOCKED_REQUIRES_UNLOCK.to_string())?;
-        manager.get_profile(profile_id).map_err(|e| e.to_string())?
-    };
-    let profile_key = profile.id.to_string();
-    let _ = crate::extensions_commands::refresh_extension_library_updates_impl(
-        state.inner(),
-        Some(profile_key.as_str()),
-    );
-    if let Some(code) = first_launch_blocker(&profile) {
-        return Err(code.to_string());
-    }
-    ensure_engine_supports_isolated_certificates(
-        &state,
-        Some(profile.id),
-        &profile.engine,
-        &profile.tags,
-    )?;
-    let assessment = assess_profile(&profile);
-    let active_extensions = collect_active_profile_extensions(
-        &state,
-        profile.id,
-        &profile.tags,
-        profile.engine.clone(),
-    );
-    if assessment.policy_level == "maximum" && !active_extensions.is_empty() {
-        return Err(ERR_MAXIMUM_POLICY_EXTENSIONS_FORBIDDEN.to_string());
-    }
-    enforce_launch_posture(&state, &profile, request.device_posture_ack_id.as_deref())?;
+    let result = async {
+        let launch_url_requested = request
+            .launch_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some();
+        let profile = {
+            let manager = state
+                .manager
+                .lock()
+                .map_err(|_| "lock poisoned".to_string())?;
+            manager
+                .ensure_unlocked(profile_id)
+                .map_err(|_| ERR_LOCKED_REQUIRES_UNLOCK.to_string())?;
+            manager.get_profile(profile_id).map_err(|e| e.to_string())?
+        };
+        append_profile_log(
+            &app_handle,
+            profile_id,
+            "launcher",
+            format!("Launch requested for profile '{}' engine={}", profile.name, engine_session_key(&profile.engine)),
+        );
+        let profile_key = profile.id.to_string();
+        let _ = crate::extensions_commands::refresh_extension_library_updates_impl(
+            state.inner(),
+            Some(profile_key.as_str()),
+        );
+        if let Some(code) = first_launch_blocker(&profile) {
+            return Err(code.to_string());
+        }
+        ensure_engine_supports_isolated_certificates(
+            &state,
+            Some(profile.id),
+            &profile.engine,
+            &profile.tags,
+        )?;
+        let assessment = assess_profile(&profile);
+        let active_extensions = collect_active_profile_extensions(
+            &state,
+            profile.id,
+            &profile.tags,
+            profile.engine.clone(),
+        );
+        if assessment.policy_level == "maximum" && !active_extensions.is_empty() {
+            return Err(ERR_MAXIMUM_POLICY_EXTENSIONS_FORBIDDEN.to_string());
+        }
+        enforce_launch_posture(&state, &profile, request.device_posture_ack_id.as_deref())?;
 
-    let profile_root = state.profile_root.join(profile.id.to_string());
-    let user_data_dir = profile_root.join("engine-profile");
-    fs::create_dir_all(&user_data_dir).map_err(|e| e.to_string())?;
-    emit_profile_launch_progress(
-        &app_handle,
-        profile.id,
-        "preflight",
-        "profile.launchProgress.preflight",
-        false,
-        None,
-    );
-    let session_engine = engine_session_key(&profile.engine);
-    {
-        let launched = state
-            .launched_processes
-            .lock()
-            .map_err(|_| "launch map lock poisoned".to_string())?;
-        if let Some(existing_pid) = launched.get(&profile_id).copied() {
+        let profile_root = state.profile_root.join(profile.id.to_string());
+        let user_data_dir = profile_root.join("engine-profile");
+        fs::create_dir_all(&user_data_dir).map_err(|e| e.to_string())?;
+        emit_profile_launch_progress(
+            &app_handle,
+            profile.id,
+            "preflight",
+            "profile.launchProgress.preflight",
+            false,
+            None,
+        );
+        let session_engine = engine_session_key(&profile.engine);
+        {
+            let launched = state
+                .launched_processes
+                .lock()
+                .map_err(|_| "launch map lock poisoned".to_string())?;
+            if let Some(existing_pid) = launched.get(&profile_id).copied() {
+                let trusted = trusted_session_for_profile(
+                    &state,
+                    profile_id,
+                    existing_pid,
+                    session_engine,
+                    &profile_root,
+                    &user_data_dir,
+                )?;
+                if trusted.is_some() && is_pid_running(existing_pid) && !launch_url_requested {
+                    append_profile_log(
+                        &app_handle,
+                        profile_id,
+                        "launcher",
+                        format!("Trusted running session reused pid={existing_pid}"),
+                    );
+                    return Ok(ok(correlation_id, profile.clone()));
+                }
+                if trusted.is_some() && is_pid_running(existing_pid) && launch_url_requested {
+                    append_profile_log(
+                        &app_handle,
+                        profile_id,
+                        "launcher",
+                        format!("Forwarding URL into running session pid={existing_pid}"),
+                    );
+                    open_url_in_running_profile(
+                        state.inner(),
+                        &profile,
+                        &profile_root,
+                        request.launch_url.as_deref().unwrap_or_default(),
+                    )?;
+                    let _ = app_handle.emit(
+                        "profile-state-changed",
+                        serde_json::json!({
+                            "profileId": profile_id.to_string(),
+                            "state": "running"
+                        }),
+                    );
+                    return patch_state(&state, &request, correlation_id, ProfileState::Running);
+                }
+                if trusted.is_none() && !launch_url_requested && is_pid_running(existing_pid) {
+                    append_profile_log(
+                        &app_handle,
+                        profile_id,
+                        "launcher",
+                        format!("Terminating untrusted lingering process pid={existing_pid}"),
+                    );
+                    terminate_process_tree(existing_pid);
+                    let _ = revoke_launch_session(&state, profile_id, Some(existing_pid));
+                }
+            }
+        }
+        eprintln!(
+            "[profile-launch] start profile={} engine={:?} profile_root={} user_data_dir={}",
+            profile.id,
+            profile.engine,
+            profile_root.display(),
+            user_data_dir.display()
+        );
+        if let Some(existing_pid) = find_profile_process_pid_for_dir(&user_data_dir) {
             let trusted = trusted_session_for_profile(
                 &state,
                 profile_id,
-                existing_pid,
-                session_engine,
-                &profile_root,
-                &user_data_dir,
-            )?;
-            if trusted.is_some() && is_pid_running(existing_pid) && !launch_url_requested {
-                return Ok(ok(correlation_id, profile.clone()));
-            }
-            if trusted.is_some() && is_pid_running(existing_pid) && launch_url_requested {
-                open_url_in_running_profile(
-                    state.inner(),
-                    &profile,
-                    &profile_root,
-                    request.launch_url.as_deref().unwrap_or_default(),
-                )?;
-                let _ = app_handle.emit(
-                    "profile-state-changed",
-                    serde_json::json!({
-                        "profileId": profile_id.to_string(),
-                        "state": "running"
-                    }),
-                );
-                return patch_state(&state, &request, correlation_id, ProfileState::Running);
-            }
-            if trusted.is_none() && !launch_url_requested && is_pid_running(existing_pid) {
-                terminate_process_tree(existing_pid);
-                let _ = revoke_launch_session(&state, profile_id, Some(existing_pid));
-            }
-        }
-    }
-    eprintln!(
-        "[profile-launch] start profile={} engine={:?} profile_root={} user_data_dir={}",
-        profile.id,
-        profile.engine,
-        profile_root.display(),
-        user_data_dir.display()
-    );
-    if let Some(existing_pid) = find_profile_process_pid_for_dir(&user_data_dir) {
-        let trusted = trusted_session_for_profile(
-            &state,
-            profile_id,
             existing_pid,
             session_engine,
             &profile_root,
             &user_data_dir,
         )?;
-        if trusted.is_some() {
-            if launch_url_requested {
-                eprintln!(
-                    "[profile-launch] forwarding url to trusted running session pid={existing_pid}"
-                );
+            if trusted.is_some() {
+                if launch_url_requested {
+                    append_profile_log(
+                        &app_handle,
+                        profile_id,
+                        "launcher",
+                        format!("Forwarding URL to discovered session pid={existing_pid}"),
+                    );
+                    eprintln!(
+                        "[profile-launch] forwarding url to trusted running session pid={existing_pid}"
+                    );
                 open_url_in_running_profile(
                     state.inner(),
                     &profile,
@@ -492,11 +524,17 @@ pub async fn launch_profile(
                         "state": "running"
                     }),
                 );
-                return patch_state(&state, &request, correlation_id, ProfileState::Running);
-            } else {
-                let mut launched = state
-                    .launched_processes
-                    .lock()
+                    return patch_state(&state, &request, correlation_id, ProfileState::Running);
+                } else {
+                    append_profile_log(
+                        &app_handle,
+                        profile_id,
+                        "launcher",
+                        format!("Discovered trusted running process pid={existing_pid}"),
+                    );
+                    let mut launched = state
+                        .launched_processes
+                        .lock()
                     .map_err(|_| "launch map lock poisoned".to_string())?;
                 launched.insert(profile_id, existing_pid);
                 drop(launched);
@@ -508,11 +546,17 @@ pub async fn launch_profile(
                     }),
                 );
                 return patch_state(&state, &request, correlation_id, ProfileState::Running);
-            }
-        } else {
-            eprintln!(
-                "[profile-launch] untrusted process detected for workspace, terminating pid={} profile_dir={}",
-                existing_pid,
+                }
+            } else {
+                append_profile_log(
+                    &app_handle,
+                    profile_id,
+                    "launcher",
+                    format!("Terminating untrusted process discovered in workspace pid={existing_pid}"),
+                );
+                eprintln!(
+                    "[profile-launch] untrusted process detected for workspace, terminating pid={} profile_dir={}",
+                    existing_pid,
                 user_data_dir.display()
             );
             terminate_process_tree(existing_pid);
@@ -520,56 +564,62 @@ pub async fn launch_profile(
         }
     }
 
-    let runtime =
-        EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
-    let engine = engine_kind(profile.engine.clone());
-    emit_profile_launch_progress(
-        &app_handle,
-        profile.id,
-        "policy",
-        "profile.launchProgress.policy",
-        false,
-        None,
-    );
-    write_profile_blocked_domains(&state, &profile.id, &profile_root).map_err(|e| e.to_string())?;
-    write_locked_app_policy(&profile, &profile_root).map_err(|e| e.to_string())?;
-    if matches!(engine, EngineKind::Wayfern) {
+        let runtime =
+            EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
+        let engine = engine_kind(profile.engine.clone());
         emit_profile_launch_progress(
             &app_handle,
             profile.id,
-            "extensions",
-            "profile.launchProgress.extensions",
+            "policy",
+            "profile.launchProgress.policy",
             false,
             None,
         );
-        prepare_profile_wayfern_extensions(&state, &profile, &profile_root)?;
+        write_profile_blocked_domains(&state, &profile.id, &profile_root).map_err(|e| e.to_string())?;
+        write_locked_app_policy(&profile, &profile_root).map_err(|e| e.to_string())?;
+        if matches!(engine, EngineKind::Wayfern) {
+            emit_profile_launch_progress(
+                &app_handle,
+                profile.id,
+                "extensions",
+                "profile.launchProgress.extensions",
+                false,
+                None,
+            );
+            prepare_profile_wayfern_extensions(&state, &profile, &profile_root)?;
+            emit_profile_launch_progress(
+                &app_handle,
+                profile.id,
+                "keepassxc",
+                "profile.launchProgress.keepassxc",
+                false,
+                None,
+            );
+            ensure_keepassxc_bridge_for_profile(state.inner(), &profile, &profile_root)?;
+        }
         emit_profile_launch_progress(
             &app_handle,
             profile.id,
-            "keepassxc",
-            "profile.launchProgress.keepassxc",
+            "network",
+            "profile.launchProgress.network",
             false,
             None,
         );
-        ensure_keepassxc_bridge_for_profile(state.inner(), &profile, &profile_root)?;
-    }
-    emit_profile_launch_progress(
-        &app_handle,
-        profile.id,
-        "network",
-        "profile.launchProgress.network",
-        false,
-        None,
-    );
-    let network_handle = app_handle.clone();
-    let network_profile_id = profile.id;
-    let gateway = tauri::async_runtime::spawn_blocking(move || {
-        ensure_profile_network_stack(&network_handle, network_profile_id)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    let runtime_hardening = assess_profile(&profile).runtime_hardening;
-    if matches!(engine, EngineKind::Camoufox) {
+        let network_handle = app_handle.clone();
+        let network_profile_id = profile.id;
+        let gateway = tauri::async_runtime::spawn_blocking(move || {
+            ensure_profile_network_stack(&network_handle, network_profile_id)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        append_profile_log(
+            &app_handle,
+            profile_id,
+            "network",
+            format!("Profile gateway ready on 127.0.0.1:{}", gateway.port),
+        );
+        let runtime_hardening = assess_profile(&profile).runtime_hardening;
+        if matches!(engine, EngineKind::Camoufox) {
         emit_profile_launch_progress(
             &app_handle,
             profile.id,
@@ -610,122 +660,183 @@ pub async fn launch_profile(
             }
         }
     }
-    emit_profile_launch_progress(
-        &app_handle,
-        profile.id,
-        "engine",
-        if runtime
-            .installed(engine)
-            .map_err(|e| e.to_string())?
-            .is_some()
-        {
-            "profile.launchProgress.engine"
-        } else {
-            "profile.launchProgress.engineDownload"
-        },
-        false,
-        None,
-    );
-    let installation = ensure_engine_ready(&app_handle, &state, &runtime, engine).await?;
-    if matches!(engine, EngineKind::Camoufox) {
-        neutralize_camoufox_builtin_theme(&installation.binary_path).map_err(|e| e.to_string())?;
-        apply_camoufox_website_filter(&state, &profile.id, &installation.binary_path)
-            .map_err(|e| e.to_string())?;
-    }
-    let start_page = profile
-        .default_start_page
-        .clone()
-        .unwrap_or_else(|| "https://duckduckgo.com".to_string());
-    let start_page = request
-        .launch_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .unwrap_or(start_page);
-    let private_mode = profile.ephemeral_mode
-        && profile
-            .tags
-            .iter()
-            .any(|tag| tag.eq_ignore_ascii_case("private"));
+        emit_profile_launch_progress(
+            &app_handle,
+            profile.id,
+            "engine",
+            if runtime
+                .installed(engine)
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                "profile.launchProgress.engine"
+            } else {
+                "profile.launchProgress.engineDownload"
+            },
+            false,
+            None,
+        );
+        let installation = ensure_engine_ready(&app_handle, &state, &runtime, engine).await?;
+        if matches!(engine, EngineKind::Camoufox) {
+            neutralize_camoufox_builtin_theme(&installation.binary_path).map_err(|e| e.to_string())?;
+            apply_camoufox_website_filter(&state, &profile.id, &installation.binary_path)
+                .map_err(|e| e.to_string())?;
+        }
+        let start_page = profile
+            .default_start_page
+            .clone()
+            .unwrap_or_else(|| "https://duckduckgo.com".to_string());
+        let start_page = request
+            .launch_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or(start_page);
+        let private_mode = profile.ephemeral_mode
+            && profile
+                .tags
+                .iter()
+                .any(|tag| tag.eq_ignore_ascii_case("private"));
 
-    let launch_runtime = runtime.clone();
-    let launch_root = profile_root.clone();
-    let gateway_port = Some(gateway.port);
-    emit_profile_launch_progress(
-        &app_handle,
-        profile.id,
-        "browser",
-        "profile.launchProgress.browser",
-        false,
-        None,
-    );
-    let pid_result = tauri::async_runtime::spawn_blocking(move || {
-        launch_runtime.launch(
-            engine,
-            launch_root,
+        let launch_runtime = runtime.clone();
+        let launch_root = profile_root.clone();
+        let gateway_port = Some(gateway.port);
+        emit_profile_launch_progress(
+            &app_handle,
+            profile.id,
+            "browser",
+            "profile.launchProgress.browser",
+            false,
+            None,
+        );
+        let pid_result = tauri::async_runtime::spawn_blocking(move || {
+            launch_runtime.launch(
+                engine,
+                launch_root,
+                profile_id,
+                start_page,
+                private_mode,
+                gateway_port,
+                runtime_hardening,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string());
+        if pid_result.is_err() && matches!(engine, EngineKind::Wayfern) {
+            clear_wayfern_profile_certificates(&app_handle, profile_id);
+        }
+        let pid = pid_result?;
+        let tracked_pid =
+            wait_for_profile_process_startup(&user_data_dir, pid, engine).map_err(|error| {
+                append_profile_log(&app_handle, profile_id, "launcher", error.clone());
+                error
+            })?;
+        let mut launched = state
+            .launched_processes
+            .lock()
+            .map_err(|_| "launch map lock poisoned".to_string())?;
+        launched.insert(profile_id, tracked_pid);
+        drop(launched);
+
+        track_profile_process(
+            app_handle.clone(),
             profile_id,
-            start_page,
-            private_mode,
-            gateway_port,
-            runtime_hardening,
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string());
-    if pid_result.is_err() && matches!(engine, EngineKind::Wayfern) {
-        clear_wayfern_profile_certificates(&app_handle, profile_id);
+            tracked_pid,
+            user_data_dir.clone(),
+        );
+        maybe_start_panic_frame(&app_handle, profile_id, tracked_pid);
+        issue_launch_session(
+            &state,
+            profile_id,
+            tracked_pid,
+            session_engine,
+            &profile_root,
+            &user_data_dir,
+        )?;
+
+        append_profile_log(
+            &app_handle,
+            profile_id,
+            "launcher",
+            format!("Browser launched successfully pid={tracked_pid}"),
+        );
+
+        let _ = installation;
+        let _ = app_handle.emit(
+            "profile-state-changed",
+            serde_json::json!({
+                "profileId": profile_id.to_string(),
+                "state": "running"
+            }),
+        );
+        emit_profile_launch_progress(
+            &app_handle,
+            profile.id,
+            "done",
+            "profile.launchProgress.done",
+            true,
+            None,
+        );
+
+        patch_state(&state, &request, correlation_id, ProfileState::Running)
     }
-    let pid = pid_result?;
-    let tracked_pid = if matches!(engine, EngineKind::Camoufox | EngineKind::Wayfern) {
-        find_profile_main_window_pid_for_dir(&user_data_dir)
-            .or_else(|| find_profile_process_pid_for_dir(&user_data_dir))
-            .unwrap_or(pid)
+    .await;
+    if let Err(error) = &result {
+        append_profile_log(
+            &app_handle,
+            profile_id,
+            "launcher",
+            format!("Launch failed: {error}"),
+        );
+    }
+    result
+}
+
+fn wait_for_profile_process_startup(
+    user_data_dir: &Path,
+    spawned_pid: u32,
+    engine: EngineKind,
+) -> Result<u32, String> {
+    let startup_timeout = if matches!(engine, EngineKind::Wayfern) {
+        Duration::from_millis(2600)
     } else {
-        pid
+        Duration::from_millis(1400)
     };
-    let mut launched = state
-        .launched_processes
-        .lock()
-        .map_err(|_| "launch map lock poisoned".to_string())?;
-    launched.insert(profile_id, tracked_pid);
-    drop(launched);
+    let poll_interval = Duration::from_millis(200);
+    let started_at = Instant::now();
+    let mut last_seen_pid = spawned_pid;
 
-    track_profile_process(
-        app_handle.clone(),
-        profile_id,
-        tracked_pid,
-        user_data_dir.clone(),
-    );
-    maybe_start_panic_frame(&app_handle, profile_id, tracked_pid);
-    issue_launch_session(
-        &state,
-        profile_id,
-        tracked_pid,
-        session_engine,
-        &profile_root,
-        &user_data_dir,
-    )?;
+    while started_at.elapsed() < startup_timeout {
+        if let Some(actual_pid) = find_profile_main_window_pid_for_dir(user_data_dir)
+            .or_else(|| find_profile_process_pid_for_dir(user_data_dir))
+        {
+            last_seen_pid = actual_pid;
+            if is_pid_running(actual_pid) {
+                return Ok(actual_pid);
+            }
+        } else if is_pid_running(last_seen_pid) {
+            return Ok(last_seen_pid);
+        }
+        thread::sleep(poll_interval);
+    }
 
-    let _ = installation;
-    let _ = app_handle.emit(
-        "profile-state-changed",
-        serde_json::json!({
-            "profileId": profile_id.to_string(),
-            "state": "running"
-        }),
-    );
-    emit_profile_launch_progress(
-        &app_handle,
-        profile.id,
-        "done",
-        "profile.launchProgress.done",
-        true,
-        None,
-    );
+    if let Some(actual_pid) = find_profile_main_window_pid_for_dir(user_data_dir)
+        .or_else(|| find_profile_process_pid_for_dir(user_data_dir))
+    {
+        last_seen_pid = actual_pid;
+        if is_pid_running(actual_pid) {
+            return Ok(actual_pid);
+        }
+    }
+    if is_pid_running(last_seen_pid) {
+        return Ok(last_seen_pid);
+    }
 
-    patch_state(&state, &request, correlation_id, ProfileState::Running)
+    Err(format!(
+        "Browser process exited during startup pid={last_seen_pid}"
+    ))
 }
 
 fn prepare_camoufox_profile_runtime(
@@ -1720,10 +1831,17 @@ pub fn stop_profile(
         launched.get(&profile_id).copied()
     });
     let pid = tracked_pid.or_else(|| find_profile_process_pid_for_dir(&user_data_dir));
+    append_profile_log(
+        &state.app_handle,
+        profile_id,
+        "launcher",
+        format!("Stop requested pid={}", pid.unwrap_or_default()),
+    );
     terminate_profile_processes(&user_data_dir);
     if let Some(pid) = pid {
         terminate_process_tree(pid);
     }
+    close_panic_frame(&state.app_handle, profile_id);
     revoke_launch_session(&state, profile_id, tracked_pid)?;
     stop_profile_network_stack(&state.app_handle, profile_id);
     clear_wayfern_profile_certificates(&state.app_handle, profile_id);
@@ -1771,7 +1889,27 @@ pub fn acknowledge_wayfern_tos(
     runtime
         .acknowledge_wayfern_tos(&state.profile_root.join(profile_id.to_string()), profile_id)
         .map_err(|e| e.to_string())?;
+    append_profile_log(
+        &state.app_handle,
+        profile_id,
+        "launcher",
+        "Wayfern terms accepted in launcher state",
+    );
     Ok(ok(correlation_id, true))
+}
+
+#[tauri::command]
+pub fn read_profile_logs(
+    app_handle: tauri::AppHandle,
+    request: ActionProfileRequest,
+    correlation_id: String,
+) -> Result<UiEnvelope<Vec<String>>, String> {
+    let profile_id =
+        Uuid::parse_str(&request.profile_id).map_err(|e| format!("profile id: {e}"))?;
+    Ok(ok(
+        correlation_id,
+        read_profile_log_lines(&app_handle, profile_id)?,
+    ))
 }
 
 #[tauri::command]

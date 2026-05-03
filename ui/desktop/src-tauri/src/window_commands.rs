@@ -7,6 +7,7 @@ use crate::instance_handoff;
 use crate::network_sandbox_lifecycle::{
     cleanup_network_sandbox_janitor, stop_all_profile_network_stacks,
 };
+use crate::panic_frame::close_panic_frame;
 use crate::process_tracking::stop_all_profile_processes;
 use crate::state::AppState;
 use crate::update_commands;
@@ -72,6 +73,16 @@ pub fn perform_shutdown_cleanup(app: &AppHandle) {
         "app.lifecycle.shutdown.processes",
         false,
     );
+    if let Ok(launched) = app
+        .state::<AppState>()
+        .launched_processes
+        .lock()
+        .map(|guard| guard.keys().copied().collect::<Vec<_>>())
+    {
+        for profile_id in launched {
+            close_panic_frame(app, profile_id);
+        }
+    }
     stop_all_profile_processes(app);
 
     emit_app_lifecycle_progress(

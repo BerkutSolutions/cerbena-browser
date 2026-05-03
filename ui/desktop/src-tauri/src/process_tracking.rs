@@ -10,6 +10,7 @@ use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
+use crate::profile_runtime_logs::append_profile_log;
 use crate::launch_sessions::revoke_launch_session;
 use crate::network_sandbox_lifecycle::stop_profile_network_stack;
 use crate::panic_frame::close_panic_frame;
@@ -85,6 +86,12 @@ pub fn clear_profile_process(app_handle: &AppHandle, profile_id: Uuid, pid: u32,
     eprintln!(
         "[process-tracking] clearing profile={} pid={} emit_event={}",
         profile_id, pid, emit_event
+    );
+    append_profile_log(
+        app_handle,
+        profile_id,
+        "launcher",
+        format!("Browser process stopped pid={pid}"),
     );
     let _ = revoke_launch_session(state.inner(), profile_id, Some(pid));
     stop_profile_network_stack(app_handle, profile_id);

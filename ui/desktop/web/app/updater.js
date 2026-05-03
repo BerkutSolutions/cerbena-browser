@@ -24,6 +24,33 @@ function translateMaybe(value, t, values) {
   return interpolate(t(text.slice(5)), values);
 }
 
+const AUTO_APPLY_DELAY_MS = 5000;
+const countdownState = {
+  deadlineMs: null,
+  activeStatus: null,
+  triggered: false
+};
+
+function resetAutoApplyCountdown() {
+  countdownState.deadlineMs = null;
+  countdownState.activeStatus = null;
+  countdownState.triggered = false;
+}
+
+function updaterAutoApplySeconds(overview) {
+  if (!overview?.canClose || overview?.status !== "ready_to_restart") {
+    resetAutoApplyCountdown();
+    return null;
+  }
+  if (countdownState.activeStatus !== overview.status || !countdownState.deadlineMs) {
+    countdownState.activeStatus = overview.status;
+    countdownState.deadlineMs = Date.now() + AUTO_APPLY_DELAY_MS;
+    countdownState.triggered = false;
+  }
+  const remainingMs = Math.max(0, countdownState.deadlineMs - Date.now());
+  return Math.max(0, Math.ceil(remainingMs / 1000));
+}
+
 function stepMarkup(step, t) {
   return `
     <li class="healthcheck-step" data-status="${escapeHtml(step.status || "idle")}">
@@ -42,6 +69,7 @@ function render(root, i18n, overview) {
   const closeLabel = overview?.canClose
     ? t(overview?.closeLabelKey || "action.close")
     : t("updater.running");
+  const autoApplySeconds = updaterAutoApplySeconds(overview);
   root.innerHTML = `
     <div class="healthcheck-container updater-shell">
       <div class="panel updater-hero">
@@ -58,7 +86,7 @@ function render(root, i18n, overview) {
         <div class="updater-version-grid">
           <div class="updater-version-card">
             <span class="meta">${escapeHtml(t("updater.currentVersion"))}</span>
-          <strong>${escapeHtml(overview?.currentVersion || "1.0.11")}</strong>
+          <strong>${escapeHtml(overview?.currentVersion || "1.0.12")}</strong>
           </div>
           <div class="updater-version-card">
             <span class="meta">${escapeHtml(t("updater.targetVersion"))}</span>
@@ -76,6 +104,7 @@ function render(root, i18n, overview) {
         </ul>
       </div>
       <div class="healthcheck-actions">
+        ${autoApplySeconds !== null ? `<p class="meta">${escapeHtml(interpolate(t("updater.autoApplyCountdown"), { seconds: autoApplySeconds }))}</p>` : ""}
         <button id="updater-close"${overview?.canClose ? "" : " disabled"}>${escapeHtml(closeLabel)}</button>
       </div>
     </div>
@@ -134,3 +163,14 @@ init().catch((error) => {
     </div>
   `;
 });
+
+window.setInterval(async () => {
+  const root = document.getElementById("app");
+  if (!root) return;
+  const shouldAutoApply = countdownState.deadlineMs && !countdownState.triggered;
+  if (!shouldAutoApply) return;
+  const remainingSeconds = Math.max(0, Math.ceil((countdownState.deadlineMs - Date.now()) / 1000));
+  if (remainingSeconds > 0) return;
+  countdownState.triggered = true;
+  await callCommand("window_close");
+}, 250);

@@ -1,4 +1,9 @@
-use std::{thread, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    thread,
+    time::{Duration, Instant},
+};
 
 use serde::Deserialize;
 use tauri::{
@@ -26,13 +31,17 @@ const CONTROL_RIGHT_GAP: f64 = 150.0;
 const MENU_WIDTH: f64 = 360.0;
 const MENU_HEIGHT: f64 = 520.0;
 const MENU_OFFSET_Y: f64 = 8.0;
-const POLL_MS: u64 = 24;
+const POLL_MS: u64 = 8;
+const PROCESS_CHECK_MS: u64 = 500;
+const PID_REFRESH_MS: u64 = 1200;
 
 #[cfg(target_os = "windows")]
 use std::{ffi::c_void, mem::size_of, ptr};
 
 #[derive(Debug, Clone, Copy)]
 struct WindowBounds {
+    #[cfg(target_os = "windows")]
+    hwnd: Hwnd,
     x: f64,
     y: f64,
     width: f64,
@@ -41,7 +50,6 @@ struct WindowBounds {
     work_top: f64,
     work_right: f64,
     work_bottom: f64,
-    is_foreground: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,12 +83,18 @@ pub fn maybe_start_panic_frame(app_handle: &AppHandle, profile_id: Uuid, pid: u3
     }
 
     let handle = app_handle.clone();
-    let app_pid = std::process::id();
     thread::spawn(move || {
         let border_label = panic_frame_border_label(profile_id);
         let label_label = panic_frame_label_label(profile_id);
         let controls_label = panic_frame_controls_label(profile_id);
         let menu_label = panic_frame_menu_label(profile_id);
+        let mut target_pid = pid;
+        let mut last_process_check = Instant::now()
+            .checked_sub(Duration::from_millis(PROCESS_CHECK_MS))
+            .unwrap_or_else(Instant::now);
+        let mut last_pid_refresh = Instant::now()
+            .checked_sub(Duration::from_millis(PID_REFRESH_MS))
+            .unwrap_or_else(Instant::now);
         let user_data_dir = handle
             .state::<AppState>()
             .profile_root
@@ -103,25 +117,57 @@ pub fn maybe_start_panic_frame(app_handle: &AppHandle, profile_id: Uuid, pid: u3
                     launched.get(&profile_id).copied().unwrap_or(pid),
                 )
             };
-            if !should_continue || !is_process_running(current_pid) {
+            if !should_continue {
                 break;
             }
 
-            let mut target_pid = current_pid;
-            if let Some(main_window_pid) = find_profile_main_window_pid_for_dir(&user_data_dir) {
-                target_pid = main_window_pid;
-                if target_pid != current_pid {
-                    if let Ok(mut launched) = handle.state::<AppState>().launched_processes.lock() {
-                        launched.insert(profile_id, target_pid);
+            if current_pid != target_pid {
+                target_pid = current_pid;
+            }
+
+            if last_process_check.elapsed() >= Duration::from_millis(PROCESS_CHECK_MS) {
+                last_process_check = Instant::now();
+                if !is_process_running(target_pid) {
+                    break;
+                }
+            }
+
+            if last_pid_refresh.elapsed() >= Duration::from_millis(PID_REFRESH_MS) {
+                last_pid_refresh = Instant::now();
+                if let Some(main_window_pid) = find_profile_main_window_pid_for_dir(&user_data_dir)
+                {
+                    if main_window_pid != target_pid {
+                        target_pid = main_window_pid;
+                        if let Ok(mut launched) =
+                            handle.state::<AppState>().launched_processes.lock()
+                        {
+                            launched.insert(profile_id, target_pid);
+                        }
                     }
                 }
             }
 
-            if let Some(bounds) = query_main_window_bounds(target_pid, app_pid) {
-                let _ = update_panic_frame_window(&handle, &border_label, bounds, "border");
-                let _ = update_panic_frame_window(&handle, &label_label, bounds, "label");
-                let _ = update_panic_frame_window(&handle, &controls_label, bounds, "controls");
-                let _ = update_panic_frame_window(&handle, &menu_label, bounds, "menu");
+            if let Some(bounds) = query_main_window_bounds(target_pid) {
+                #[cfg(target_os = "windows")]
+                let _ = apply_native_overlay_group(
+                    &handle,
+                    bounds,
+                    &[
+                        (&border_label, "border"),
+                        (&label_label, "label"),
+                        (&controls_label, "controls"),
+                        (&menu_label, "menu"),
+                    ],
+                );
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = update_panic_frame_window(&handle, &border_label, bounds, "border");
+                    let _ = update_panic_frame_window(&handle, &label_label, bounds, "label");
+                    let _ = update_panic_frame_window(&handle, &controls_label, bounds, "controls");
+                    let _ = update_panic_frame_window(&handle, &menu_label, bounds, "menu");
+                }
+            } else {
+                hide_panic_frame_windows(&handle, profile_id);
             }
             thread::sleep(Duration::from_millis(POLL_MS));
         }
@@ -133,17 +179,49 @@ pub fn close_panic_frame(app_handle: &AppHandle, profile_id: Uuid) {
     if let Ok(mut active) = app_handle.state::<AppState>().active_panic_frames.lock() {
         active.remove(&profile_id);
     }
+    #[cfg(target_os = "windows")]
+    if let Ok(mut cache) = overlay_placement_cache().lock() {
+        let profile_key = profile_id.to_string();
+        cache.retain(|label, _| !label.contains(&profile_key));
+    }
     if let Some(window) = app_handle.get_webview_window(&panic_frame_border_label(profile_id)) {
+        hide_native_overlay_window(&window);
+        let _ = window.hide();
         let _ = window.close();
     }
     if let Some(window) = app_handle.get_webview_window(&panic_frame_label_label(profile_id)) {
+        hide_native_overlay_window(&window);
+        let _ = window.hide();
         let _ = window.close();
     }
     if let Some(window) = app_handle.get_webview_window(&panic_frame_controls_label(profile_id)) {
+        hide_native_overlay_window(&window);
+        let _ = window.hide();
         let _ = window.close();
     }
     if let Some(window) = app_handle.get_webview_window(&panic_frame_menu_label(profile_id)) {
+        hide_native_overlay_window(&window);
+        let _ = window.hide();
         let _ = window.close();
+    }
+}
+
+fn hide_panic_frame_windows(app_handle: &AppHandle, profile_id: Uuid) {
+    if let Some(window) = app_handle.get_webview_window(&panic_frame_border_label(profile_id)) {
+        hide_native_overlay_window(&window);
+        let _ = window.hide();
+    }
+    if let Some(window) = app_handle.get_webview_window(&panic_frame_label_label(profile_id)) {
+        hide_native_overlay_window(&window);
+        let _ = window.hide();
+    }
+    if let Some(window) = app_handle.get_webview_window(&panic_frame_controls_label(profile_id)) {
+        hide_native_overlay_window(&window);
+        let _ = window.hide();
+    }
+    if let Some(window) = app_handle.get_webview_window(&panic_frame_menu_label(profile_id)) {
+        hide_native_overlay_window(&window);
+        let _ = window.hide();
     }
 }
 
@@ -227,6 +305,7 @@ fn ensure_panic_frame_window(
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn update_panic_frame_window(
     app_handle: &AppHandle,
     label: &str,
@@ -236,17 +315,6 @@ fn update_panic_frame_window(
     let Some(window) = app_handle.get_webview_window(label) else {
         return Ok(());
     };
-
-    if !bounds.is_foreground {
-        if mode == "border" {
-            window.set_always_on_top(true).map_err(|e| e.to_string())?;
-        } else {
-            window.set_always_on_top(false).map_err(|e| e.to_string())?;
-            if window.is_visible().map_err(|e| e.to_string())? {
-                window.hide().map_err(|e| e.to_string())?;
-            }
-        }
-    }
 
     let (x, y, width, height) = match mode {
         "label" => {
@@ -284,27 +352,83 @@ fn update_panic_frame_window(
     if mode == "menu" && !window.is_visible().map_err(|e| e.to_string())? {
         return Ok(());
     }
-    window
-        .set_always_on_top(mode == "border" || bounds.is_foreground)
-        .map_err(|e| e.to_string())?;
-    window
-        .set_position(Position::Physical(PhysicalPosition::new(
-            x.round() as i32,
-            y.round() as i32,
-        )))
-        .map_err(|e| e.to_string())?;
-    window
-        .set_size(Size::Physical(PhysicalSize::new(
-            width.max(24.0).round() as u32,
-            height.max(24.0).round() as u32,
-        )))
-        .map_err(|e| e.to_string())?;
-    if mode == "border" {
-        window.show().map_err(|e| e.to_string())?;
-    } else if !window.is_visible().map_err(|e| e.to_string())? {
-        window.show().map_err(|e| e.to_string())?;
+    let rounded_x = x.round() as i32;
+    let rounded_y = y.round() as i32;
+    let rounded_width = width.max(24.0).round() as u32;
+    let rounded_height = height.max(24.0).round() as u32;
+    #[cfg(target_os = "windows")]
+    {
+        apply_native_overlay_bounds(
+            &window,
+            label,
+            bounds.hwnd,
+            rounded_x,
+            rounded_y,
+            rounded_width,
+            rounded_height,
+            true,
+        )?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        window
+            .set_position(Position::Physical(PhysicalPosition::new(
+                rounded_x, rounded_y,
+            )))
+            .map_err(|e| e.to_string())?;
+        window
+            .set_size(Size::Physical(PhysicalSize::new(
+                rounded_width,
+                rounded_height,
+            )))
+            .map_err(|e| e.to_string())?;
+        if mode == "border" || !window.is_visible().map_err(|e| e.to_string())? {
+            window.show().map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
+}
+
+fn overlay_geometry(bounds: WindowBounds, mode: &str) -> (i32, i32, u32, u32) {
+    let (x, y, width, height) = match mode {
+        "label" => {
+            let width = (bounds.width * 0.34).clamp(LABEL_MIN_WIDTH, LABEL_MAX_WIDTH);
+            (
+                bounds.x + (bounds.width - width) / 2.0,
+                bounds.y - LABEL_LIFT,
+                width,
+                LABEL_HEIGHT,
+            )
+        }
+        "controls" => (
+            bounds.x + bounds.width - CONTROL_RIGHT_GAP - CONTROL_SIZE,
+            (bounds.y + CONTROL_TOP_OFFSET).max(bounds.work_top),
+            CONTROL_SIZE,
+            CONTROL_SIZE,
+        ),
+        "menu" => {
+            let max_x = (bounds.work_right - MENU_WIDTH).max(bounds.work_left);
+            let preferred_x =
+                bounds.x + bounds.width - CONTROL_RIGHT_GAP - MENU_WIDTH + CONTROL_SIZE;
+            let x = preferred_x.clamp(bounds.work_left, max_x);
+            let max_y = (bounds.work_bottom - MENU_HEIGHT).max(bounds.work_top);
+            let preferred_y = bounds.y + CONTROL_SIZE + MENU_OFFSET_Y;
+            let y = preferred_y.clamp(bounds.work_top, max_y);
+            (x, y, MENU_WIDTH, MENU_HEIGHT)
+        }
+        _ => (
+            bounds.x - FRAME_SIDE_BLEED,
+            bounds.y - FRAME_TOP_BLEED,
+            bounds.width + FRAME_SIDE_BLEED * 2.0,
+            bounds.height + FRAME_TOP_BLEED + FRAME_BOTTOM_BLEED,
+        ),
+    };
+    (
+        x.round() as i32,
+        y.round() as i32,
+        width.max(24.0).round() as u32,
+        height.max(24.0).round() as u32,
+    )
 }
 
 pub fn show_panic_frame_menu(app_handle: &AppHandle, profile_id: Uuid) -> Result<(), String> {
@@ -365,7 +489,7 @@ pub fn panic_frame_hide_menu(
 }
 
 #[cfg(target_os = "windows")]
-fn query_main_window_bounds(pid: u32, app_pid: u32) -> Option<WindowBounds> {
+fn query_main_window_bounds(pid: u32) -> Option<WindowBounds> {
     let hwnd = find_main_window_for_pid(pid)?;
     unsafe {
         if is_window_visible(hwnd) == 0 {
@@ -373,16 +497,11 @@ fn query_main_window_bounds(pid: u32, app_pid: u32) -> Option<WindowBounds> {
         }
 
         let rect = query_window_rect(hwnd)?;
-        let foreground = get_foreground_window();
-        let foreground_pid = foreground
-            .and_then(|value| window_process_id(value))
-            .unwrap_or_default();
         let monitor = monitor_from_window(hwnd, MONITOR_DEFAULTTONEAREST)?;
-        let foreground_monitor =
-            foreground.and_then(|value| monitor_from_window(value, MONITOR_DEFAULTTONEAREST));
         let info = get_monitor_info(monitor)?;
 
         Some(WindowBounds {
+            hwnd,
             x: rect.left as f64,
             y: rect.top as f64,
             width: (rect.right - rect.left) as f64,
@@ -391,15 +510,12 @@ fn query_main_window_bounds(pid: u32, app_pid: u32) -> Option<WindowBounds> {
             work_top: info.rc_work.top as f64,
             work_right: info.rc_work.right as f64,
             work_bottom: info.rc_work.bottom as f64,
-            is_foreground: foreground == Some(hwnd)
-                || foreground_pid == app_pid
-                || foreground_monitor != Some(monitor),
         })
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn query_main_window_bounds(_pid: u32, _app_pid: u32) -> Option<WindowBounds> {
+fn query_main_window_bounds(_pid: u32) -> Option<WindowBounds> {
     None
 }
 
@@ -412,6 +528,49 @@ type Hmonitor = *mut c_void;
 const MONITOR_DEFAULTTONEAREST: u32 = 2;
 #[cfg(target_os = "windows")]
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
+#[cfg(target_os = "windows")]
+const GWL_HWNDPARENT: i32 = -8;
+#[cfg(target_os = "windows")]
+const SWP_NOACTIVATE: u32 = 0x0010;
+#[cfg(target_os = "windows")]
+const SWP_SHOWWINDOW: u32 = 0x0040;
+#[cfg(target_os = "windows")]
+const SWP_HIDEWINDOW: u32 = 0x0080;
+#[cfg(target_os = "windows")]
+const SW_HIDE: i32 = 0;
+#[cfg(target_os = "windows")]
+const SW_SHOWNOACTIVATE: i32 = 4;
+#[cfg(target_os = "windows")]
+type Hdwp = *mut c_void;
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OverlayPlacement {
+    owner_hwnd: isize,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    visible: bool,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone)]
+struct OverlayUpdate {
+    label: String,
+    hwnd: Hwnd,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    visible: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_placement_cache() -> &'static Mutex<HashMap<String, OverlayPlacement>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, OverlayPlacement>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
@@ -448,10 +607,9 @@ unsafe extern "system" {
         l_param: isize,
     ) -> i32;
     fn GetWindowRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
+    fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     fn IsWindowVisible(hwnd: Hwnd) -> i32;
     fn MonitorFromWindow(hwnd: Hwnd, dw_flags: u32) -> Hmonitor;
-    fn GetForegroundWindow() -> Hwnd;
-    fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     fn GetMonitorInfoW(monitor: Hmonitor, monitor_info: *mut MonitorInfo) -> i32;
     fn DwmGetWindowAttribute(
         hwnd: Hwnd,
@@ -459,6 +617,30 @@ unsafe extern "system" {
         value: *mut c_void,
         value_size: u32,
     ) -> i32;
+    fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize;
+    fn SetWindowLongPtrW(hwnd: Hwnd, index: i32, new_long: isize) -> isize;
+    fn SetWindowPos(
+        hwnd: Hwnd,
+        hwnd_insert_after: Hwnd,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+    ) -> i32;
+    fn ShowWindow(hwnd: Hwnd, cmd_show: i32) -> i32;
+    fn BeginDeferWindowPos(num_windows: i32) -> Hdwp;
+    fn DeferWindowPos(
+        win_pos_info: Hdwp,
+        hwnd: Hwnd,
+        hwnd_insert_after: Hwnd,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+    ) -> Hdwp;
+    fn EndDeferWindowPos(win_pos_info: Hdwp) -> i32;
 }
 
 #[cfg(target_os = "windows")]
@@ -518,19 +700,6 @@ unsafe fn query_window_rect(hwnd: Hwnd) -> Option<Rect> {
 }
 
 #[cfg(target_os = "windows")]
-unsafe fn get_foreground_window() -> Option<Hwnd> {
-    let hwnd = GetForegroundWindow();
-    (!hwnd.is_null()).then_some(hwnd)
-}
-
-#[cfg(target_os = "windows")]
-unsafe fn window_process_id(hwnd: Hwnd) -> Option<u32> {
-    let mut process_id = 0u32;
-    GetWindowThreadProcessId(hwnd, &mut process_id);
-    (process_id != 0).then_some(process_id)
-}
-
-#[cfg(target_os = "windows")]
 unsafe fn monitor_from_window(hwnd: Hwnd, flags: u32) -> Option<Hmonitor> {
     let monitor = MonitorFromWindow(hwnd, flags);
     (!monitor.is_null()).then_some(monitor)
@@ -548,4 +717,141 @@ unsafe fn get_monitor_info(monitor: Hmonitor) -> Option<MonitorInfo> {
 #[cfg(target_os = "windows")]
 unsafe fn is_window_visible(hwnd: Hwnd) -> i32 {
     IsWindowVisible(hwnd)
+}
+
+#[cfg(target_os = "windows")]
+fn hide_native_overlay_window(window: &tauri::WebviewWindow) {
+    let Ok(overlay_hwnd) = window.hwnd() else {
+        return;
+    };
+    let overlay_hwnd = overlay_hwnd.0 as Hwnd;
+    unsafe {
+        let _ = SetWindowPos(
+            overlay_hwnd,
+            ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_HIDEWINDOW,
+        );
+        let _ = ShowWindow(overlay_hwnd, SW_HIDE);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_native_overlay_window(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "windows")]
+fn apply_native_overlay_group(
+    app_handle: &AppHandle,
+    bounds: WindowBounds,
+    entries: &[(&str, &str)],
+) -> Result<(), String> {
+    let mut updates = Vec::with_capacity(entries.len());
+    for (label, mode) in entries {
+        let Some(window) = app_handle.get_webview_window(label) else {
+            continue;
+        };
+        let visible = if *mode == "menu" {
+            window.is_visible().map_err(|e| e.to_string())?
+        } else {
+            true
+        };
+        let overlay_hwnd = window
+            .hwnd()
+            .map_err(|e| format!("resolve panic overlay hwnd: {e}"))?;
+        let overlay_hwnd = overlay_hwnd.0 as Hwnd;
+        let (x, y, width, height) = overlay_geometry(bounds, mode);
+        updates.push(OverlayUpdate {
+            label: (*label).to_string(),
+            hwnd: overlay_hwnd,
+            x,
+            y,
+            width,
+            height,
+            visible,
+        });
+    }
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    let mut changed = Vec::with_capacity(updates.len());
+    if let Ok(cache) = overlay_placement_cache().lock() {
+        for update in updates {
+            let placement = OverlayPlacement {
+                owner_hwnd: bounds.hwnd as isize,
+                x: update.x,
+                y: update.y,
+                width: update.width,
+                height: update.height,
+                visible: update.visible,
+            };
+            if cache.get(&update.label).copied() != Some(placement) {
+                changed.push((update, placement));
+            }
+        }
+    } else {
+        for update in updates {
+            changed.push((
+                update.clone(),
+                OverlayPlacement {
+                    owner_hwnd: bounds.hwnd as isize,
+                    x: update.x,
+                    y: update.y,
+                    width: update.width,
+                    height: update.height,
+                    visible: update.visible,
+                },
+            ));
+        }
+    }
+    if changed.is_empty() {
+        return Ok(());
+    }
+
+    unsafe {
+        let mut batch = BeginDeferWindowPos(changed.len() as i32);
+        if batch.is_null() {
+            return Err("BeginDeferWindowPos failed for panic overlay".to_string());
+        }
+        let mut insert_after = bounds.hwnd;
+        for (update, _) in &changed {
+            if GetWindowLongPtrW(update.hwnd, GWL_HWNDPARENT) != bounds.hwnd as isize {
+                SetWindowLongPtrW(update.hwnd, GWL_HWNDPARENT, bounds.hwnd as isize);
+            }
+            let flags =
+                SWP_NOACTIVATE | if update.visible { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
+            batch = DeferWindowPos(
+                batch,
+                update.hwnd,
+                insert_after,
+                update.x,
+                update.y,
+                update.width as i32,
+                update.height as i32,
+                flags,
+            );
+            if batch.is_null() {
+                return Err("DeferWindowPos failed for panic overlay".to_string());
+            }
+            insert_after = update.hwnd;
+        }
+        if EndDeferWindowPos(batch) == 0 {
+            return Err("EndDeferWindowPos failed for panic overlay".to_string());
+        }
+        for (update, _) in &changed {
+            if update.visible {
+                ShowWindow(update.hwnd, SW_SHOWNOACTIVATE);
+            }
+        }
+    }
+
+    if let Ok(mut cache) = overlay_placement_cache().lock() {
+        for (update, placement) in changed {
+            cache.insert(update.label, placement);
+        }
+    }
+    Ok(())
 }

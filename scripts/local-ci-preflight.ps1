@@ -3,6 +3,7 @@ param(
     [switch]$SkipDesktopRust,
     [switch]$SkipDocs,
     [switch]$SkipUi,
+    [switch]$SkipPublishedUpdaterE2E,
     [switch]$SkipGitHygiene,
     [switch]$SkipDockerPreflight,
     [switch]$SkipSecurityGates,
@@ -181,6 +182,15 @@ try {
             } finally {
                 Pop-Location
             }
+        }
+    }
+
+    if (-not $SkipPublishedUpdaterE2E) {
+        Step "Published updater end-to-end test" {
+            Invoke-Native "powershell" @(
+                "-ExecutionPolicy", "Bypass",
+                "-File", "scripts/published-updater-e2e.ps1"
+            ) -Quiet:$CompactOutput
         }
     }
 

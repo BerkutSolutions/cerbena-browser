@@ -556,6 +556,9 @@ pub(crate) fn detect_link_type(raw_url: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("link URL is required".to_string());
     }
+    if trimmed.starts_with("--") {
+        return Err("CLI flags are not external links".to_string());
+    }
     if let Ok(parsed) = reqwest::Url::parse(trimmed) {
         if parsed.scheme().eq_ignore_ascii_case("file") {
             let path = parsed.path().trim();
@@ -1729,6 +1732,12 @@ mod tests {
             .expect("default list is present");
         assert!(item.active);
         assert_eq!(item.domains, vec!["example.com".to_string()]);
+    }
+
+    #[test]
+    fn detect_link_type_rejects_cli_flags() {
+        assert!(detect_link_type("--updater").is_err());
+        assert!(detect_link_type("--updater-preview").is_err());
     }
 
     #[test]

@@ -238,9 +238,19 @@ impl EngineRuntime {
             .ok_or_else(|| EngineError::Launch("engine is not installed".to_string()))?;
         let binary_path = if matches!(engine, EngineKind::Camoufox) {
             prefer_camoufox_browser_binary(&installation.binary_path)
+        } else if matches!(engine, EngineKind::Wayfern) {
+            ensure_wayfern_launch_binary(&installation.binary_path)
         } else {
             installation.binary_path
         };
+        if matches!(engine, EngineKind::Wayfern) {
+            self.wayfern_adapter().finalize_runtime_acceptance(
+                &profile_root,
+                profile_id,
+                &binary_path,
+                &installation.version,
+            )?;
+        }
         let request = crate::contract::LaunchRequest {
             profile_id,
             profile_root: profile_root.clone(),
@@ -279,6 +289,8 @@ impl EngineRuntime {
             .ok_or_else(|| EngineError::Launch("engine is not installed".to_string()))?;
         let binary_path = if matches!(engine, EngineKind::Camoufox) {
             prefer_camoufox_browser_binary(&installation.binary_path)
+        } else if matches!(engine, EngineKind::Wayfern) {
+            ensure_wayfern_launch_binary(&installation.binary_path)
         } else {
             installation.binary_path
         };
@@ -677,9 +689,13 @@ impl EngineRuntime {
 
     fn locate_binary(&self, engine: EngineKind, root: &Path) -> Result<PathBuf, EngineError> {
         let candidates = match engine {
-            EngineKind::Wayfern => {
-                candidate_names(&["wayfern.exe", "wayfern", "chrome.exe", "chrome"])
-            }
+            EngineKind::Wayfern => candidate_names(&[
+                "wayfern-browser.exe",
+                "wayfern.exe",
+                "wayfern",
+                "chrome.exe",
+                "chrome",
+            ]),
             EngineKind::Camoufox => candidate_names(&[
                 "camoufox.exe",
                 "camoufox-bin.exe",
@@ -689,13 +705,17 @@ impl EngineRuntime {
                 "firefox",
             ]),
         };
-        find_first_match(root, &candidates).ok_or_else(|| {
+        let binary = find_first_match(root, &candidates).ok_or_else(|| {
             EngineError::Install(format!(
                 "unable to locate {} executable under {}",
                 engine.as_key(),
                 root.display()
             ))
-        })
+        })?;
+        if matches!(engine, EngineKind::Wayfern) {
+            return Ok(ensure_wayfern_launch_binary(&binary));
+        }
+        Ok(binary)
     }
 
     fn wayfern_adapter(&self) -> WayfernAdapter {
@@ -949,6 +969,36 @@ fn prefer_camoufox_browser_binary(current: &Path) -> PathBuf {
     current.to_path_buf()
 }
 
+fn ensure_wayfern_launch_binary(current: &Path) -> PathBuf {
+    let file_name = current
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if file_name != "chrome.exe" {
+        return current.to_path_buf();
+    }
+    let Some(parent) = current.parent() else {
+        return current.to_path_buf();
+    };
+    let alias = parent.join("wayfern-browser.exe");
+    let needs_refresh = fs::metadata(&alias)
+        .ok()
+        .and_then(|alias_meta| {
+            fs::metadata(current)
+                .ok()
+                .map(|current_meta| alias_meta.len() != current_meta.len())
+        })
+        .unwrap_or(true);
+    if needs_refresh {
+        let _ = fs::copy(current, &alias);
+    }
+    if alias.exists() {
+        return alias;
+    }
+    current.to_path_buf()
+}
+
 fn launch_args(
     engine: EngineKind,
     profile_root: &Path,
@@ -964,12 +1014,17 @@ fn launch_args(
             // Keep launch command size bounded on Windows. Huge domain blocklists can
             // overflow CreateProcess argument limits when passed via host resolver rules.
             const MAX_HOST_RESOLVER_RULES_LEN: usize = 8_192;
+            let log_dir = profile_root.join("tmp");
+            let log_file = log_dir.join("wayfern-debug.log");
+            let _ = fs::create_dir_all(&log_dir);
             let mut args = vec![
                 format!("--user-data-dir={}", runtime_dir.to_string_lossy()),
                 "--no-first-run".to_string(),
                 "--no-default-browser-check".to_string(),
                 "--disable-background-mode".to_string(),
                 "--disable-quic".to_string(),
+                "--enable-logging".to_string(),
+                format!("--log-file={}", log_file.to_string_lossy()),
                 if runtime_hardening {
                     "--disable-features=AsyncDns,DnsHttpssvc,AutofillServerCommunication,AutofillEnableAccountWalletStorage,PasswordManagerOnboarding".to_string()
                 } else {
@@ -1034,8 +1089,15 @@ fn reopen_args(
     let runtime_dir = profile_root.join("engine-profile");
     Ok(match engine {
         EngineKind::Wayfern => {
+            let log_dir = profile_root.join("tmp");
+            let log_file = log_dir.join("wayfern-debug.log");
+            let _ = fs::create_dir_all(&log_dir);
             let locked_app = load_locked_app_config(profile_root)?;
-            let mut args = vec![format!("--user-data-dir={}", runtime_dir.to_string_lossy())];
+            let mut args = vec![
+                format!("--user-data-dir={}", runtime_dir.to_string_lossy()),
+                "--enable-logging".to_string(),
+                format!("--log-file={}", log_file.to_string_lossy()),
+            ];
             if let Some(config) = locked_app {
                 args.push(format!(
                     "--app={}",
@@ -1099,7 +1161,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
     let manifest = serde_json::json!({
         "manifest_version": 3,
         "name": "Cerbena Policy Firewall",
-        "version": "1.0.11",
+        "version": "1.0.12",
         "description": "Profile-scoped outbound policy enforcement for blocked domains.",
         "declarative_net_request": {
             "rule_resources": [
@@ -1259,7 +1321,10 @@ fn blocked_domains_for_profile(profile_root: &Path) -> Result<Vec<String>, Engin
 
 #[cfg(test)]
 mod tests {
-    use super::{blocked_domains_for_profile, prepare_wayfern_blocking_extension};
+    use super::{
+        blocked_domains_for_profile, ensure_wayfern_launch_binary, launch_args,
+        prepare_wayfern_blocking_extension, EngineKind,
+    };
     use std::fs;
 
     #[test]
@@ -1332,6 +1397,43 @@ mod tests {
         assert!(rules_raw.contains("\"regexFilter\": \"^https?://\""));
         assert!(rules_raw.contains("discord.com"));
         assert!(rules_raw.contains("excludedRequestDomains"));
+    }
+
+    #[test]
+    fn wayfern_launch_args_skip_accept_terms_flag() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let args = launch_args(
+            EngineKind::Wayfern,
+            temp.path(),
+            "https://duckduckgo.com",
+            false,
+            None,
+            false,
+        )
+        .expect("launch args");
+
+        assert!(!args
+            .iter()
+            .any(|value| value == "--accept-terms-and-conditions"));
+        assert!(args.iter().any(|value| value == "--enable-logging"));
+        assert!(args
+            .iter()
+            .any(|value| value.contains("--log-file=") && value.contains("wayfern-debug.log")));
+    }
+
+    #[test]
+    fn wayfern_launch_binary_aliases_chrome_name() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let chrome = temp.path().join("chrome.exe");
+        fs::write(&chrome, b"wayfern").expect("write chrome stub");
+
+        let launch_binary = ensure_wayfern_launch_binary(&chrome);
+
+        assert_eq!(
+            launch_binary.file_name().and_then(|value| value.to_str()),
+            Some("wayfern-browser.exe")
+        );
+        assert!(launch_binary.exists());
     }
 }
 

@@ -47,6 +47,10 @@ export async function getWayfernTermsStatus() {
   return callCommand("get_wayfern_terms_status");
 }
 
+export async function readProfileLogs(profileId) {
+  return callCommand("read_profile_logs", { request: { profileId } });
+}
+
 export async function ensureEngineBinaries() {
   return callCommand("ensure_engine_binaries");
 }

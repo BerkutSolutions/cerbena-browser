@@ -1665,6 +1665,28 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   gap: 10px;
 }
 
+.profile-logs-modal {
+  max-width: min(920px, calc(100vw - 48px));
+  max-height: min(88vh, calc(100vh - 40px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.profile-logs-console-shell {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.profile-logs-pre {
+  height: min(62vh, 680px);
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .dns-panel {
   display: grid;
   gap: 14px;
