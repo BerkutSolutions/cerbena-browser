@@ -1,4 +1,4 @@
-﻿import { nextCorrelationId, responseEnvelope } from "./contract.js";
+import { nextCorrelationId, responseEnvelope } from "./contract.js";
 
 let invokeImpl = async () => {
   throw new Error("Tauri invoke is unavailable in browser preview mode.");
@@ -65,10 +65,10 @@ function writeMockSyncStore(value) {
 
 function readMockUpdateState() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.13-2\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
+    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.14\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
   } catch {
     return {
-      currentVersion: "1.0.13-2",
+      currentVersion: "1.0.14",
       repositoryUrl: "https://github.com/BerkutSolutions/cerbena-browser",
       autoUpdateEnabled: false,
       lastCheckedAt: null,

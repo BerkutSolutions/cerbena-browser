@@ -32,6 +32,7 @@ const WAYFERN_VERSION_URLS: [&str; 2] = [
 ];
 const CAMOUFOX_RELEASES_URL: &str =
     "https://api.github.com/repos/daijro/camoufox/releases?per_page=20";
+const WAYFERN_POLICY_EXTENSION_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineInstallation {
@@ -304,12 +305,11 @@ impl EngineRuntime {
             env: launch_environment(engine, &profile_root),
         };
         eprintln!(
-            "[engine-runtime] launch {} profile={} binary={} args={:?} env={:?}",
+            "[engine-runtime] launch {} profile={} binary={} args={:?}",
             engine.as_key(),
             profile_id,
             request.binary_path.display(),
-            request.args,
-            request.env
+            request.args
         );
         match engine {
             EngineKind::Wayfern => self.wayfern_adapter().launch(request),
@@ -1342,10 +1342,43 @@ fn wayfern_host_resolver_rules(profile_root: &Path, max_len: usize) -> Option<St
     (!rules.is_empty()).then_some(rules)
 }
 
+fn chromium_extension_version(raw: &str) -> String {
+    let normalized = raw.trim().trim_start_matches('v');
+    let mut parts = Vec::new();
+    for segment in normalized.split(['.', '-']) {
+        if segment.is_empty() {
+            continue;
+        }
+        if segment.chars().all(|ch| ch.is_ascii_digit()) {
+            parts.push(segment.to_string());
+        } else {
+            break;
+        }
+        if parts.len() == 4 {
+            break;
+        }
+    }
+    if parts.is_empty() {
+        "1".to_string()
+    } else {
+        parts.join(".")
+    }
+}
+
 fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<PathBuf>, EngineError> {
     let blocked_domains = blocked_domains_for_profile(profile_root)?;
     let locked_app = load_locked_app_config(profile_root)?;
-    if blocked_domains.is_empty() && locked_app.is_none() {
+    let identity = load_identity_launch_policy(profile_root);
+    let accept_languages = identity
+        .as_ref()
+        .map(|policy| {
+            normalize_accept_languages(
+                &policy.locale.navigator_language,
+                &policy.locale.languages,
+            )
+        })
+        .unwrap_or_default();
+    if blocked_domains.is_empty() && locked_app.is_none() && accept_languages.is_empty() {
         return Ok(None);
     }
 
@@ -1354,7 +1387,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
     let manifest = serde_json::json!({
         "manifest_version": 3,
         "name": "Cerbena Policy Firewall",
-        "version": "1.0.13-2",
+        "version": chromium_extension_version(WAYFERN_POLICY_EXTENSION_VERSION),
         "description": "Profile-scoped outbound policy enforcement for blocked domains.",
         "declarative_net_request": {
             "rule_resources": [
@@ -1365,15 +1398,53 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
                 }
             ]
         },
-        "permissions": ["declarativeNetRequest", "declarativeNetRequestFeedback"]
+        "permissions": [
+            "declarativeNetRequest",
+            "declarativeNetRequestFeedback",
+            "declarativeNetRequestWithHostAccess"
+        ],
+        "host_permissions": ["<all_urls>"]
     });
-    let mut rules = blocked_domains
-        .into_iter()
-        .enumerate()
-        .map(|(index, domain)| {
+    let mut rules = Vec::new();
+    if !accept_languages.is_empty() {
+        rules.push(serde_json::json!({
+            "id": 1,
+            "priority": 1,
+            "action": {
+                "type": "modifyHeaders",
+                "requestHeaders": [
+                    {
+                        "header": "Accept-Language",
+                        "operation": "set",
+                        "value": accept_languages.join(",")
+                    }
+                ]
+            },
+            "condition": {
+                "regexFilter": "^https?://",
+                "resourceTypes": [
+                    "main_frame",
+                    "sub_frame",
+                    "stylesheet",
+                    "script",
+                    "image",
+                    "font",
+                    "object",
+                    "xmlhttprequest",
+                    "ping",
+                    "media",
+                    "websocket",
+                    "webtransport",
+                    "other"
+                ]
+            }
+        }));
+    }
+    let base_rule_id = rules.len() + 1;
+    rules.extend(blocked_domains.into_iter().enumerate().map(|(index, domain)| {
             serde_json::json!({
-                "id": index + 1,
-                "priority": 1,
+                "id": base_rule_id + index,
+                "priority": 2,
                 "action": { "type": "block" },
                 "condition": {
                     "urlFilter": format!("||{domain}^"),
@@ -1394,8 +1465,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
                     ]
                 }
             })
-        })
-        .collect::<Vec<_>>();
+        }));
     if let Some(config) = locked_app {
         let allowed_hosts = config
             .allowed_hosts
@@ -1406,7 +1476,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
         if !allowed_hosts.is_empty() {
             rules.push(serde_json::json!({
                 "id": rules.len() + 1,
-                "priority": 2,
+                "priority": 3,
                 "action": { "type": "block" },
                 "condition": {
                     "regexFilter": "^https?://",
@@ -1515,8 +1585,8 @@ fn blocked_domains_for_profile(profile_root: &Path) -> Result<Vec<String>, Engin
 #[cfg(test)]
 mod tests {
     use super::{
-        blocked_domains_for_profile, ensure_wayfern_launch_binary, launch_args,
-        prepare_wayfern_blocking_extension, wayfern_launch_environment, EngineKind,
+        blocked_domains_for_profile, chromium_extension_version, ensure_wayfern_launch_binary,
+        launch_args, prepare_wayfern_blocking_extension, wayfern_launch_environment, EngineKind,
     };
     use std::fs;
 
@@ -1544,8 +1614,16 @@ mod tests {
             fs::read_to_string(extension_dir.join("manifest.json")).expect("manifest");
         let rules_raw = fs::read_to_string(extension_dir.join("rules.json")).expect("rules");
         assert!(manifest_raw.contains("\"manifest_version\": 3"));
+        assert!(manifest_raw.contains("\"version\": \"1.0.14\""));
         assert!(rules_raw.contains("||youtube.com^"));
         assert!(rules_raw.contains("||example.com^"));
+    }
+
+    #[test]
+    fn chromium_extension_version_normalizes_hotfix_suffixes() {
+        assert_eq!(chromium_extension_version("1.0.14"), "1.0.14");
+        assert_eq!(chromium_extension_version("v1.2.3"), "1.2.3");
+        assert_eq!(chromium_extension_version("7"), "7");
     }
 
     #[test]
@@ -1590,6 +1668,36 @@ mod tests {
         assert!(rules_raw.contains("\"regexFilter\": \"^https?://\""));
         assert!(rules_raw.contains("discord.com"));
         assert!(rules_raw.contains("excludedRequestDomains"));
+    }
+
+    #[test]
+    fn prepares_accept_language_rule_for_wayfern_extension() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let policy_dir = temp.path().join("policy");
+        fs::create_dir_all(&policy_dir).expect("policy dir");
+        fs::write(
+            policy_dir.join("identity-preset.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "locale": {
+                    "navigator_language": "ru",
+                    "languages": ["ru", "en", "en-US"]
+                }
+            }))
+            .expect("serialize identity policy"),
+        )
+        .expect("write identity policy");
+
+        let extension_dir = prepare_wayfern_blocking_extension(temp.path())
+            .expect("prepare extension")
+            .expect("extension dir");
+        let manifest_raw =
+            fs::read_to_string(extension_dir.join("manifest.json")).expect("manifest");
+        let rules_raw = fs::read_to_string(extension_dir.join("rules.json")).expect("rules");
+        assert!(manifest_raw.contains("declarativeNetRequestWithHostAccess"));
+        assert!(manifest_raw.contains("\"host_permissions\": ["));
+        assert!(rules_raw.contains("\"type\": \"modifyHeaders\""));
+        assert!(rules_raw.contains("\"header\": \"Accept-Language\""));
+        assert!(rules_raw.contains("\"value\": \"ru,en,en-US\""));
     }
 
     #[test]
