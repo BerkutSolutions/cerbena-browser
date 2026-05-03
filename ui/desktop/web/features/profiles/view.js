@@ -18,6 +18,7 @@ import { listExtensionLibrary, setExtensionProfiles } from "../extensions/api.js
 import { generateAutoPreset, getIdentityProfile, saveIdentityProfile } from "../identity/api.js";
 import { getDevicePostureReport } from "../settings/api.js";
 import {
+  buildRealPreset,
   buildManualPreset,
   cloneIdentityPreset,
   firstTemplateKeyForTemplatePlatform,
@@ -728,13 +729,14 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
   const syncServerValue = syncOverview?.controls?.server?.server_url ?? "";
   const syncKeyValue = syncOverview?.controls?.server?.key_id ?? "";
   const syncEnabled = Boolean(syncOverview?.controls?.server?.sync_enabled);
-  const resolvedIdentityPreset = identityPreset ?? buildManualPreset("win_7_edge_109");
+  const resolvedIdentityPreset = identityPreset ?? buildRealPreset();
   const identityState = inferIdentityUiState(resolvedIdentityPreset);
   const identityTemplates = listIdentityTemplates(t);
   const identityPlatforms = listIdentityPlatforms(t);
   const identityTemplatePlatforms = listIdentityTemplatePlatforms(t);
   const filteredIdentityTemplates = listIdentityTemplates(t, { platformFamilies: [identityState.templatePlatform] });
   const isIdentityAuto = identityState.mode === "auto";
+  const isIdentityReal = identityState.mode === "real";
   return `
   <div class="profiles-modal-overlay" id="profile-modal-overlay">
     <div class="profiles-modal-window profile-modal">
@@ -787,9 +789,10 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
           <div class="tab-pane hidden" data-pane="identity">
             <div class="grid-two">
               <label>${t("profile.field.identityMode")}
-                <select name="identityMode" id="profile-identity-mode">
+                <select name="identityMode" id="profile-identity-mode" class="identity-mode-select">
+                  <option value="real" ${isIdentityReal ? "selected" : ""}>${t("identity.mode.real")}</option>
                   <option value="auto" ${isIdentityAuto ? "selected" : ""}>${t("identity.mode.auto")}</option>
-                  <option value="manual" ${!isIdentityAuto ? "selected" : ""}>${t("identity.mode.manual")}</option>
+                  <option value="manual" ${!isIdentityAuto && !isIdentityReal ? "selected" : ""}>${t("identity.mode.manual")}</option>
                 </select>
               </label>
               <label id="profile-identity-platform-row" class="${isIdentityAuto ? "" : "hidden"}">${t("profile.field.platformTarget")}
@@ -798,7 +801,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
                 </select>
               </label>
             </div>
-            <div class="security-frame ${isIdentityAuto ? "hidden" : ""}" id="profile-identity-template-row">
+            <div class="security-frame ${isIdentityAuto || isIdentityReal ? "hidden" : ""}" id="profile-identity-template-row">
               <label>${t("identity.field.platformTemplate")}
                 <select id="profile-identity-template-platform">
                   ${identityTemplatePlatforms.map((item) => `<option value="${item.key}" ${item.key === identityState.templatePlatform ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
@@ -821,6 +824,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
                 </div>
               </div>
             </div>
+            <p class="meta ${isIdentityReal ? "" : "hidden"}" id="profile-identity-real-hint">${t("identity.realHint")}</p>
             <p class="meta ${isIdentityAuto ? "" : "hidden"}" id="profile-identity-auto-hint">${t("identity.autoHint")}</p>
             <div id="profile-identity-state" data-preset="${escapeHtml(JSON.stringify(resolvedIdentityPreset))}" data-ui="${escapeHtml(JSON.stringify(identityState))}"></div>
             <div id="profile-identity-templates" data-templates="${escapeHtml(JSON.stringify(identityTemplates.map((item) => ({ key: item.key, label: item.label, autoPlatform: item.autoPlatform, platformFamily: item.platformFamily }))))}"></div>
@@ -1450,7 +1454,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
     }
   }
   if (!identityPreset) {
-    identityPreset = buildManualPreset("win_7_edge_109");
+    identityPreset = buildRealPreset();
   }
   document.body.insertAdjacentHTML(
     "beforeend",
@@ -1603,6 +1607,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
   const identityTemplateRow = overlay.querySelector("#profile-identity-template-row");
   const identityTemplatePlatformField = overlay.querySelector("#profile-identity-template-platform");
   const identityDisplayNameField = overlay.querySelector("#profile-identity-display-name");
+  const identityRealHint = overlay.querySelector("#profile-identity-real-hint");
   const identityAutoHint = overlay.querySelector("#profile-identity-auto-hint");
   const identityTemplateField = overlay.querySelector("[name='identityTemplate']");
   const identityTemplateToggle = overlay.querySelector("#profile-identity-template-toggle");
@@ -1614,7 +1619,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
     try {
       return JSON.parse(identityStateNode?.dataset?.preset ?? "{}");
     } catch {
-      return buildManualPreset("win_7_edge_109");
+      return buildRealPreset();
     }
   })();
   let identityUiState = (() => {
@@ -1658,8 +1663,9 @@ async function openProfileModal(root, model, rerender, t, existing) {
   };
   const renderIdentityControls = () => {
     const isAuto = identityUiState.mode === "auto";
+    const isReal = identityUiState.mode === "real";
     if (identityModeField) {
-      identityModeField.value = isAuto ? "auto" : "manual";
+      identityModeField.value = isReal ? "real" : isAuto ? "auto" : "manual";
     }
     if (identityPlatformField) {
       identityPlatformField.value = normalizeAutoPlatform(identityUiState.autoPlatform);
@@ -1671,13 +1677,16 @@ async function openProfileModal(root, model, rerender, t, existing) {
       identityPlatformRow.classList.toggle("hidden", !isAuto);
     }
     if (identityTemplateRow) {
-      identityTemplateRow.classList.toggle("hidden", isAuto);
+      identityTemplateRow.classList.toggle("hidden", isAuto || isReal);
+    }
+    if (identityRealHint) {
+      identityRealHint.classList.toggle("hidden", !isReal);
     }
     if (identityAutoHint) {
       identityAutoHint.classList.toggle("hidden", !isAuto);
     }
     if (identityTemplateField) {
-      identityTemplateField.value = isAuto ? "" : identityUiState.templateKey;
+      identityTemplateField.value = isAuto || isReal ? "" : identityUiState.templateKey;
     }
     renderIdentityTemplateOptions();
     if (identityTemplateSummary) {
@@ -1698,12 +1707,18 @@ async function openProfileModal(root, model, rerender, t, existing) {
     renderIdentityControls();
   };
   identityModeField?.addEventListener("change", () => {
-    identityUiState.mode = identityModeField.value === "auto" ? "auto" : "manual";
-    if (identityUiState.mode === "manual") {
+    identityUiState.mode = identityModeField.value === "real"
+      ? "real"
+      : identityModeField.value === "auto"
+        ? "auto"
+        : "manual";
+    if (identityUiState.mode === "real") {
+      identityPresetState = buildRealPreset(Date.now());
+    } else if (identityUiState.mode === "manual") {
       if (!identityUiState.templateKey) {
         identityUiState.templateKey = firstTemplateKeyForTemplatePlatform(identityUiState.templatePlatform);
       }
-      if (identityPresetState?.mode === "auto") {
+      if (identityPresetState?.mode === "auto" || identityPresetState?.mode === "real") {
         identityPresetState = buildManualPreset(identityUiState.templateKey, Date.now());
       }
     }
@@ -2385,7 +2400,11 @@ async function openProfileModal(root, model, rerender, t, existing) {
         return;
       }
     }
-    const identityModeValue = form.identityMode.value === "auto" ? "auto" : "manual";
+    const identityModeValue = form.identityMode.value === "real"
+      ? "real"
+      : form.identityMode.value === "auto"
+        ? "auto"
+        : "manual";
     const identityPlatformTarget = identityModeValue === "auto"
       ? normalizeAutoPlatform(form.platformTarget.value || identityUiState.autoPlatform)
       : null;
@@ -2441,7 +2460,9 @@ async function openProfileModal(root, model, rerender, t, existing) {
     }
     let identityPresetToSave = null;
     try {
-      if (identityModeValue === "auto") {
+      if (identityModeValue === "real") {
+        identityPresetToSave = buildRealPreset(Date.now());
+      } else if (identityModeValue === "auto") {
         const generatedPreset = await generateAutoPreset(identityPlatformTarget, Date.now());
         if (!generatedPreset.ok) {
           throw new Error(String(generatedPreset.data.error));

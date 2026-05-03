@@ -7,6 +7,7 @@ import {
   validateIdentitySave
 } from "./api.js";
 import {
+  buildRealPreset,
   buildManualPreset,
   findTemplateAutoPlatform,
   firstTemplateKeyForPlatform,
@@ -28,7 +29,7 @@ function escapeHtml(value) {
 }
 
 function fallbackPreset() {
-  return buildManualPreset("win_7_edge_109", 123456);
+  return buildRealPreset(123456);
 }
 
 function parseJsonField(value, fallback) {
@@ -51,7 +52,9 @@ function ensureIdentityUi(model) {
     ...inferIdentityUiState(model.identityDraft),
     ...(model.identityUi ?? {})
   };
-  model.identityUi.mode = String(model.identityUi.mode ?? "manual").toLowerCase() === "auto" ? "auto" : "manual";
+  model.identityUi.mode = ["real", "auto", "manual"].includes(String(model.identityUi.mode ?? "").toLowerCase())
+    ? String(model.identityUi.mode).toLowerCase()
+    : "real";
   model.identityUi.autoPlatform = normalizeAutoPlatform(model.identityUi.autoPlatform ?? model.identityDraft?.auto_platform);
   if (!model.identityUi.templateKey) {
     model.identityUi.templateKey = firstTemplateKeyForPlatform(model.identityUi.autoPlatform);
@@ -148,6 +151,11 @@ async function refreshAutoDraft(model, platform, t) {
 
 async function resolveEffectivePreset(root, model, t) {
   const uiState = ensureIdentityUi(model);
+  if (uiState.mode === "real") {
+    const preset = buildRealPreset(Date.now());
+    model.identityDraft = preset;
+    return preset;
+  }
   if (uiState.mode === "auto") {
     const result = await generateAutoPreset(uiState.autoPlatform, Date.now());
     if (!result.ok) {
@@ -237,6 +245,7 @@ export function renderIdentity(t, model) {
   const uiState = ensureIdentityUi(model);
   const preset = model.identityDraft ?? fallbackPreset();
   const isAuto = uiState.mode === "auto";
+  const isReal = uiState.mode === "real";
   const notice = model.identityNotice ? `<p class="notice ${model.identityNotice.type}">${model.identityNotice.text}</p>` : "";
   const templatePlatformOptions = listIdentityTemplatePlatforms(t)
     .map((item) => `<option value="${item.key}" ${item.key === uiState.templatePlatform ? "selected" : ""}>${escapeHtml(item.label)}</option>`)
@@ -260,12 +269,13 @@ export function renderIdentity(t, model) {
       ${notice}
       <div class="grid-two" style="margin-top:10px;">
         <label>${t("identity.field.mode")}
-          <select id="identity-mode">
+          <select id="identity-mode" class="identity-mode-select">
+            <option value="real" ${isReal ? "selected" : ""}>${t("identity.mode.real")}</option>
             <option value="auto" ${isAuto ? "selected" : ""}>${t("identity.mode.auto")}</option>
-            <option value="manual" ${!isAuto ? "selected" : ""}>${t("identity.mode.manual")}</option>
+            <option value="manual" ${!isAuto && !isReal ? "selected" : ""}>${t("identity.mode.manual")}</option>
           </select>
         </label>
-        ${isAuto ? `
+        ${isReal ? `` : isAuto ? `
           <label>${t("identity.field.autoPlatform")}
             <select id="identity-auto-platform">${platformOptions}</select>
           </label>
@@ -278,7 +288,9 @@ export function renderIdentity(t, model) {
           </label>
         `}
       </div>
-      ${isAuto ? `
+      ${isReal ? `
+        <p class="meta" style="margin-top:10px;">${t("identity.realHint")}</p>
+      ` : isAuto ? `
         <p class="meta" style="margin-top:10px;">${t("identity.autoHint")}</p>
       ` : `
         <div class="top-actions" style="margin-top:10px;">
@@ -302,17 +314,21 @@ export async function wireIdentity(root, model, rerender, t) {
     const result = await getIdentityProfile(model.selectedProfileId);
     model.identityDraft = result.ok ? result.data ?? fallbackPreset() : fallbackPreset();
     model.identityUi = inferIdentityUiState(model.identityDraft);
-    if (model.identityUi.mode === "auto") {
+    if (model.identityUi.mode === "real") {
+      model.identityDraft = buildRealPreset(Date.now());
+    } else if (model.identityUi.mode === "auto") {
       await refreshAutoDraft(model, model.identityUi.autoPlatform, t);
     }
     rerender();
   });
 
   root.querySelector("#identity-mode")?.addEventListener("change", async (event) => {
-    const mode = event.target.value === "auto" ? "auto" : "manual";
+    const mode = event.target.value === "real" ? "real" : event.target.value === "auto" ? "auto" : "manual";
     const uiState = ensureIdentityUi(model);
     uiState.mode = mode;
-    if (mode === "auto") {
+    if (mode === "real") {
+      model.identityDraft = buildRealPreset(Date.now());
+    } else if (mode === "auto") {
       await refreshAutoDraft(model, uiState.autoPlatform, t);
     } else {
       model.identityDraft = buildManualPreset(uiState.templateKey, Date.now());

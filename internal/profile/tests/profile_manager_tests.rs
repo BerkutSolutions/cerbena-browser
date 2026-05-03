@@ -213,8 +213,8 @@ fn profile_modal_payload_validation_works() {
             default_search_provider: None,
         },
         identity: browser_profile::profile_modal::IdentityTab {
-            mode: "auto".to_string(),
-            platform_target: Some("windows".to_string()),
+            mode: "real".to_string(),
+            platform_target: None,
             template_key: None,
         },
         vpn_proxy: browser_profile::profile_modal::VpnProxyTab {

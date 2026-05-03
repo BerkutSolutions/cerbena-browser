@@ -131,6 +131,7 @@
   border-radius: 14px;
   background: rgba(11, 16, 27, 0.74);
   padding: 14px;
+  min-width: 0;
 }
 
 .panel > h2,
@@ -339,6 +340,12 @@ textarea {
   box-sizing: border-box;
 }
 
+.identity-mode-select {
+  width: fit-content;
+  min-width: 160px;
+  max-width: 220px;
+}
+
 input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
@@ -532,6 +539,7 @@ button.danger:hover {
   padding: 12px;
   background: rgba(10, 14, 24, 0.55);
   margin-bottom: 8px;
+  min-width: 0;
 }
 
 .profile-pane-plain {
@@ -1329,6 +1337,23 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   border-radius: 10px;
   display: grid;
   gap: 8px;
+  min-width: 0;
+}
+
+:where(.panel, .security-frame, .tab-pane, .profiles-modal-window, .profile-card, .settings-card, .feature-page, .feature-page-head) > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+:where(.panel, .security-frame, .tab-pane, .profiles-modal-window, .profile-card, .settings-card, .feature-page, .feature-page-head) :where(p, span, strong, small, div, li, dd, dt, a, h1, h2, h3, h4, h5, h6, pre, code) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+:where(.panel, .security-frame, .tab-pane, .profiles-modal-window, .profile-card, .settings-card, .feature-page, .feature-page-head) :where(pre, code) {
+  white-space: pre-wrap;
 }
 
 .profiles-tag {

@@ -67,7 +67,7 @@ pub fn validate_modal_payload(payload: &ProfileModalPayload) -> Result<(), Profi
     }
 
     let identity_mode = payload.identity.mode.trim().to_ascii_lowercase();
-    if !matches!(identity_mode.as_str(), "auto" | "manual") {
+    if !matches!(identity_mode.as_str(), "real" | "auto" | "manual") {
         return Err(ProfileError::Validation(
             "profile modal: invalid identity mode".to_string(),
         ));
