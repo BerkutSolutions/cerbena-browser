@@ -15,6 +15,7 @@ use crate::{
 
 const KEEPASSXC_PROXY_FILE: &str = "keepassxc-proxy.exe";
 const KEEPASSXC_HOST_NAME: &str = "org.keepassxc.keepassxc_browser";
+const KEEPASSXC_STORE_EXTENSION_ID: &str = "oboonakemofpalcgghocfoadofidjkkk";
 const KEEPASSXC_STORE_EXTENSION_ORIGIN: &str =
     "chrome-extension://oboonakemofpalcgghocfoadofidjkkk/";
 const KEEPASSXC_DEBUG_FLAG_FILE: &str = "keepassxc-native-messaging-debug.flag";
@@ -148,10 +149,7 @@ fn read_keepassxc_origins_from_secure_preferences(
         .join("engine-profile")
         .join("Default")
         .join("Secure Preferences");
-    let keepassxc_path = profile_root
-        .join("policy")
-        .join("wayfern-extensions")
-        .join("oboonakemofpalcgghocfoadofidjkkk");
+    let keepassxc_paths = resolve_keepassxc_extension_paths(profile_root);
     if !secure_preferences_path.exists() {
         write_keepassxc_log(
             state,
@@ -159,6 +157,17 @@ fn read_keepassxc_origins_from_secure_preferences(
             &format!(
                 "KeePassXC secure preferences were not found yet at {}",
                 secure_preferences_path.display()
+            ),
+        );
+        return Vec::new();
+    }
+    if keepassxc_paths.is_empty() {
+        write_keepassxc_log(
+            state,
+            profile,
+            &format!(
+                "KeePassXC extension directory was not found under {}",
+                profile_root.join("policy").join("wayfern-extensions").display()
             ),
         );
         return Vec::new();
@@ -194,7 +203,10 @@ fn read_keepassxc_origins_from_secure_preferences(
             return Vec::new();
         }
     };
-    let expected_path = keepassxc_path.to_string_lossy().to_string();
+    let expected_paths = keepassxc_paths
+        .iter()
+        .map(|path| normalize_windowsish_path(path))
+        .collect::<BTreeSet<_>>();
     let mut origins = Vec::new();
     if let Some(settings) = value
         .get("extensions")
@@ -205,7 +217,7 @@ fn read_keepassxc_origins_from_secure_preferences(
             let Some(path) = item.get("path").and_then(Value::as_str) else {
                 continue;
             };
-            if path.eq_ignore_ascii_case(&expected_path) {
+            if expected_paths.contains(&normalize_windowsish_path(Path::new(path))) {
                 let origin = format!("chrome-extension://{extension_id}/");
                 write_keepassxc_log(
                     state,
@@ -225,13 +237,62 @@ fn read_keepassxc_origins_from_secure_preferences(
             state,
             profile,
             &format!(
-                "KeePassXC runtime origin was not found in {} for path {}",
+                "KeePassXC runtime origin was not found in {} for paths {:?}",
                 secure_preferences_path.display(),
-                expected_path
+                keepassxc_paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
             ),
         );
     }
     origins
+}
+
+fn resolve_keepassxc_extension_paths(profile_root: &Path) -> Vec<PathBuf> {
+    let extensions_root = profile_root.join("policy").join("wayfern-extensions");
+    let mut paths = Vec::new();
+    let store_id_dir = extensions_root.join(KEEPASSXC_STORE_EXTENSION_ID);
+    if store_id_dir.is_dir() {
+        paths.push(store_id_dir);
+    }
+    let read_dir = match fs::read_dir(&extensions_root) {
+        Ok(entries) => entries,
+        Err(_) => return paths,
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || paths.iter().any(|candidate| candidate == &path) {
+            continue;
+        }
+        if directory_looks_like_keepassxc(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+fn directory_looks_like_keepassxc(path: &Path) -> bool {
+    let manifest_path = path.join("manifest.json");
+    let Ok(text) = fs::read_to_string(manifest_path) else {
+        return path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase().contains("keepassxc"))
+            .unwrap_or(false);
+    };
+    let Ok(manifest) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    manifest
+        .get("name")
+        .and_then(Value::as_str)
+        .map(|value| value.to_ascii_lowercase().contains("keepassxc"))
+        .unwrap_or(false)
+}
+
+fn normalize_windowsish_path(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
 }
 
 #[cfg(target_os = "windows")]
