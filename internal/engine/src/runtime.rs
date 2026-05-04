@@ -1645,14 +1645,14 @@ mod tests {
             fs::read_to_string(extension_dir.join("manifest.json")).expect("manifest");
         let rules_raw = fs::read_to_string(extension_dir.join("rules.json")).expect("rules");
         assert!(manifest_raw.contains("\"manifest_version\": 3"));
-        assert!(manifest_raw.contains("\"version\": \"1.0.16\""));
+        assert!(manifest_raw.contains("\"version\": \"1.0.17\""));
         assert!(rules_raw.contains("||youtube.com^"));
         assert!(rules_raw.contains("||example.com^"));
     }
 
     #[test]
     fn chromium_extension_version_normalizes_hotfix_suffixes() {
-        assert_eq!(chromium_extension_version("1.0.16"), "1.0.16");
+        assert_eq!(chromium_extension_version("1.0.17"), "1.0.17");
         assert_eq!(chromium_extension_version("v1.2.3"), "1.2.3");
         assert_eq!(chromium_extension_version("7"), "7");
     }

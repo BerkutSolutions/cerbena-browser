@@ -135,7 +135,7 @@ fn launcher_multi_profile_listing_remains_stable() {
 
 #[test]
 fn launcher_manual_update_flow_is_repeatable() {
-    for version in ["1.0.8", "1.0.12", "1.0.16"] {
+    for version in ["1.0.8", "1.0.12", "1.0.17"] {
         let out = run_with_args(&[
             "update-apply".to_string(),
             "--version".to_string(),
