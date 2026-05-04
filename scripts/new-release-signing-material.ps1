@@ -38,7 +38,9 @@ function New-RandomPassword() {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
-    $OutputDir = Join-Path $repoRoot ("build\operator-secrets\release-signing\" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+    $OutputDir = Join-Path $repoRoot ".work\release-signing"
+} elseif (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
+    $OutputDir = Join-Path $repoRoot $OutputDir
 }
 if ([string]::IsNullOrWhiteSpace($PfxPassword)) {
     $PfxPassword = New-RandomPassword
@@ -101,8 +103,8 @@ Release-time environment:
 - CERBENA_AUTHENTICODE_TIMESTAMP_URL=<optional RFC3161 or Authenticode timestamp URL>
 
 Rotation flow:
-1. Securely move this directory out of the repository workspace.
-2. Replace config/release/release-signing-public-key.xml with release-signing-public-key.xml.
+1. Keep this directory local-only under .work/release-signing and never commit or publish the secret files.
+2. Replace config/release/release-signing-public-key.xml with release-signing-public-key.xml when rotating trust intentionally.
 3. Ship the next release only after all new artifacts are signed with the matching private material.
 4. Keep old signed releases available for audit, but do not reuse rotated private keys.
 "@

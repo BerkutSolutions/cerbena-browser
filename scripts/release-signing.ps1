@@ -6,11 +6,20 @@ function Get-ReleaseSigningPublicKeyPath([string]$RepoRoot) {
 }
 
 function Get-LatestLocalSigningMaterialDirectory([string]$RepoRoot) {
-    $root = Join-Path $RepoRoot "build\operator-secrets\release-signing"
-    if (-not (Test-Path $root)) {
+    $preferredRoot = Join-Path $RepoRoot ".work\release-signing"
+    $preferredPrivateKeyPath = Join-Path $preferredRoot "release-signing-private-key.xml"
+    $preferredPublicKeyPath = Join-Path $preferredRoot "release-signing-public-key.xml"
+    $preferredPfxPath = Join-Path $preferredRoot "release-signing-authenticode.pfx"
+    $preferredPasswordPath = Join-Path $preferredRoot "pfx-password.txt"
+    if ((Test-Path $preferredPrivateKeyPath) -and (Test-Path $preferredPublicKeyPath) -and (Test-Path $preferredPfxPath) -and (Test-Path $preferredPasswordPath)) {
+        return $preferredRoot
+    }
+
+    $legacyRoot = Join-Path $RepoRoot "build\operator-secrets\release-signing"
+    if (-not (Test-Path $legacyRoot)) {
         return $null
     }
-    $candidates = Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+    $candidates = Get-ChildItem -LiteralPath $legacyRoot -Directory -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTimeUtc -Descending
     foreach ($candidate in $candidates) {
         $privateKeyPath = Join-Path $candidate.FullName "release-signing-private-key.xml"
@@ -116,7 +125,7 @@ $bootstrapHint
 
 After bootstrap, either:
 - set the CERBENA_* environment variables explicitly; or
-- keep the generated bundle under build/operator-secrets/release-signing so the local release flow can auto-discover it.
+- keep the generated bundle under .work/release-signing so the local release flow can auto-discover it.
 "@
 }
 

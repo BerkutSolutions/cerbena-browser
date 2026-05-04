@@ -43,12 +43,12 @@ import {
   saveShellPreferences
 } from "../features/settings/api.js";
 import { appendRuntimeLog } from "../features/diagnostics/api.js";
+import { APP_VERSION } from "../core/app-version.js";
 
 const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.19";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";

@@ -1,5 +1,6 @@
 import { callCommand } from "../core/commands.js";
 import { loadDictionaries, createI18n } from "../i18n/runtime.js";
+import { APP_VERSION } from "../core/app-version.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -86,7 +87,7 @@ function render(root, i18n, overview) {
         <div class="updater-version-grid">
           <div class="updater-version-card">
             <span class="meta">${escapeHtml(t("updater.currentVersion"))}</span>
-          <strong>${escapeHtml(overview?.currentVersion || "1.0.19")}</strong>
+          <strong>${escapeHtml(overview?.currentVersion || APP_VERSION)}</strong>
           </div>
           <div class="updater-version-card">
             <span class="meta">${escapeHtml(t("updater.targetVersion"))}</span>

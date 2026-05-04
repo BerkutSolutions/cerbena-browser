@@ -37,6 +37,7 @@ import {
   saveSyncControls,
   syncHealthPing
 } from "../sync/api.js";
+import { APP_VERSION } from "../../core/app-version.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -146,7 +147,7 @@ function runtimeToolStatusLabel(tool, t) {
 
 function releaseVersionForLink(updateState) {
   const candidate =
-    updateState?.latestVersion || updateState?.stagedVersion || updateState?.currentVersion || "1.0.19";
+    updateState?.latestVersion || updateState?.stagedVersion || updateState?.currentVersion || APP_VERSION;
   return String(candidate).trim().replace(/^v/i, "");
 }
 
@@ -219,7 +220,7 @@ function renderUpdateCard(t, model) {
       </div>
       <div class="grid-two">
         <label>${t("settings.updates.currentVersion")}
-          <input value="${escapeHtml(updateState.currentVersion ?? "1.0.19")}" disabled />
+          <input value="${escapeHtml(updateState.currentVersion ?? APP_VERSION)}" disabled />
         </label>
         <label>${t("settings.updates.latestVersion")}
           <input value="${escapeHtml(updateState.latestVersion ?? t("settings.updates.notChecked"))}" disabled />

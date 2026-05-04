@@ -1,25 +1,47 @@
 {
   "targets": [
-    { "path": "Cargo.toml", "strategy": "replace_all" },
-    { "path": "Cargo.lock", "strategy": "replace_all" },
-    { "path": "package.json", "strategy": "replace_all" },
-    { "path": "package-lock.json", "strategy": "replace_all" },
+    { "path": "Cargo.toml", "strategy": "cargo_version_field" },
+    {
+      "path": "Cargo.lock",
+      "strategy": "cargo_lock_package_versions",
+      "packageNames": [
+        "browser-api-local",
+        "browser-api-mcp",
+        "browser-engine",
+        "browser-extensions",
+        "browser-fingerprint",
+        "browser-import-export",
+        "browser-installer",
+        "browser-network-policy",
+        "browser-profile",
+        "browser-security-pack",
+        "browser-sync-client",
+        "cerbena-launcher"
+      ]
+    },
+    { "path": "package.json", "strategy": "json_top_level_version" },
+    { "path": "package-lock.json", "strategy": "package_lock_root_versions" },
     { "path": "src/pages/index.jsx", "strategy": "replace_all" },
-    { "path": "ui/desktop/package.json", "strategy": "replace_all" },
-    { "path": "ui/desktop/package-lock.json", "strategy": "replace_all" },
-    { "path": "ui/desktop/src-tauri/Cargo.toml", "strategy": "replace_all" },
-    { "path": "ui/desktop/src-tauri/Cargo.lock", "strategy": "replace_all" },
-    { "path": "ui/desktop/src-tauri/tauri.conf.json", "strategy": "replace_all" },
-    { "path": "ui/desktop/src-tauri/src/extensions_commands.rs", "strategy": "replace_all" },
-    { "path": "ui/desktop/src-tauri/src/update_commands.rs", "strategy": "replace_all" },
-    { "path": "ui/desktop/web/app/main.js", "strategy": "replace_all" },
-    { "path": "ui/desktop/web/app/updater.js", "strategy": "replace_all" },
-    { "path": "ui/desktop/web/core/commands.js", "strategy": "replace_all" },
-    { "path": "ui/desktop/web/features/diagnostics/settings-view.js", "strategy": "replace_all" },
-    { "path": "ui/desktop/web/features/extensions/view.js", "strategy": "replace_all" },
-    { "path": "internal/engine/src/runtime.rs", "strategy": "replace_all" },
-    { "path": "cmd/launcher/tests/launcher_stability_tests.rs", "strategy": "replace_all" },
-    { "path": "cmd/launcher/tests/launcher_tests.rs", "strategy": "replace_all" },
+    { "path": "ui/desktop/package.json", "strategy": "json_top_level_version" },
+    { "path": "ui/desktop/package-lock.json", "strategy": "package_lock_root_versions" },
+    { "path": "ui/desktop/src-tauri/Cargo.toml", "strategy": "cargo_version_field" },
+    {
+      "path": "ui/desktop/src-tauri/Cargo.lock",
+      "strategy": "cargo_lock_package_versions",
+      "packageNames": [
+        "browser-api-local",
+        "browser-desktop-ui",
+        "browser-engine",
+        "browser-extensions",
+        "browser-fingerprint",
+        "browser-import-export",
+        "browser-network-policy",
+        "browser-profile",
+        "browser-sync-client"
+      ]
+    },
+    { "path": "ui/desktop/src-tauri/tauri.conf.json", "strategy": "json_top_level_version" },
+    { "path": "ui/desktop/web/core/app-version.js", "strategy": "js_export_const" },
     { "path": "CHANGELOG.md", "strategy": "changelog_heading" }
   ]
 }

@@ -1617,7 +1617,7 @@ mod tests {
     use super::{
         blocked_domains_for_profile, build_accept_language_header, chromium_extension_version,
         launch_args, prefer_wayfern_vendor_binary, prepare_wayfern_blocking_extension,
-        wayfern_launch_environment, EngineKind, EngineRuntime,
+        wayfern_launch_environment, EngineKind, EngineRuntime, WAYFERN_POLICY_EXTENSION_VERSION,
     };
     use std::fs;
 
@@ -1645,14 +1645,17 @@ mod tests {
             fs::read_to_string(extension_dir.join("manifest.json")).expect("manifest");
         let rules_raw = fs::read_to_string(extension_dir.join("rules.json")).expect("rules");
         assert!(manifest_raw.contains("\"manifest_version\": 3"));
-        assert!(manifest_raw.contains("\"version\": \"1.0.19\""));
+        assert!(manifest_raw.contains(&format!(
+            "\"version\": \"{}\"",
+            chromium_extension_version(WAYFERN_POLICY_EXTENSION_VERSION)
+        )));
         assert!(rules_raw.contains("||youtube.com^"));
         assert!(rules_raw.contains("||example.com^"));
     }
 
     #[test]
     fn chromium_extension_version_normalizes_hotfix_suffixes() {
-        assert_eq!(chromium_extension_version("1.0.19"), "1.0.19");
+        assert_eq!(chromium_extension_version("1.2.3"), "1.2.3");
         assert_eq!(chromium_extension_version("v1.2.3"), "1.2.3");
         assert_eq!(chromium_extension_version("7"), "7");
     }

@@ -105,6 +105,14 @@ function Sync-ReleaseSigningPublicKey([string]$Root, [string]$MaterialDirectory)
     Write-Utf8NoBomFile $targetPath (([System.IO.File]::ReadAllText($sourcePath, [System.Text.Encoding]::UTF8)).Trim() + "`n")
 }
 
+function Test-HasCommittedReleaseSigningPublicKey([string]$Root) {
+    $path = Get-ReleaseSigningPublicKeyPath $Root
+    if (-not (Test-Path $path)) {
+        return $false
+    }
+    return -not [string]::IsNullOrWhiteSpace(([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)).Trim())
+}
+
 function Ensure-ReleaseSigningBootstrap([string]$Root) {
     if (Test-ReleaseSigningEnvironmentPresent) {
         Initialize-ReleaseSigningEnvironment $Root
@@ -113,30 +121,30 @@ function Ensure-ReleaseSigningBootstrap([string]$Root) {
 
     $materialDirectory = Get-LatestLocalSigningMaterialDirectory $Root
     if ([string]::IsNullOrWhiteSpace($materialDirectory)) {
+        if (Test-HasCommittedReleaseSigningPublicKey $Root) {
+            throw @"
+release signing material is missing, but a committed public verification key already exists.
+
+Refusing to bootstrap a brand-new signing identity automatically because that would break updater trust for already published clients.
+
+Provide the matching operator bundle via CERBENA_* variables or restore the original files under:
+.work/release-signing
+"@
+        }
         Write-Title "Bootstrap Release Signing"
         Invoke-Native "powershell" @(
             "-ExecutionPolicy", "Bypass",
-            "-File", (Join-Path $Root "scripts\new-release-signing-material.ps1")
+            "-File", (Join-Path $Root "scripts\new-release-signing-material.ps1"),
+            "-OutputDir", (Join-Path $Root ".work\release-signing")
         )
         $materialDirectory = Get-LatestLocalSigningMaterialDirectory $Root
         if ([string]::IsNullOrWhiteSpace($materialDirectory)) {
-            throw "release signing bootstrap completed but no local signing bundle was discovered under build/operator-secrets/release-signing"
+            throw "release signing bootstrap completed but no local signing bundle was discovered under .work/release-signing"
         }
         Sync-ReleaseSigningPublicKey -Root $Root -MaterialDirectory $materialDirectory
     }
 
-    try {
-        Initialize-ReleaseSigningEnvironment $Root
-    } catch {
-        $message = [string]$_.Exception.Message
-        if ($message -like "*does not match the committed public verification key*") {
-            Write-Host "Auto-syncing committed release signing public key from local operator bundle..." -ForegroundColor Yellow
-            Sync-ReleaseSigningPublicKey -Root $Root -MaterialDirectory $materialDirectory
-            Initialize-ReleaseSigningEnvironment $Root
-            return
-        }
-        throw
-    }
+    Initialize-ReleaseSigningEnvironment $Root
 }
 
 function Test-GitRepository([string]$Root) {
@@ -598,10 +606,10 @@ function Invoke-ChangeVersion([string]$Root) {
     Write-Title "Change Version"
     $currentVersion = Get-CurrentReleaseVersion $Root
     Write-Host ("Current version: " + $currentVersion) -ForegroundColor White
-    Invoke-Native "powershell" @(
+    [void](Invoke-Native "powershell" @(
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $Root "scripts\update-version.ps1")
-    )
+    ))
 }
 
 function Show-ReleaseMenu([string]$Root) {
@@ -618,7 +626,7 @@ function Show-ReleaseMenu([string]$Root) {
         $selection = (Read-Host "Select 1/2/3/4").Trim()
         switch ($selection) {
             "1" {
-                Invoke-ChangeVersion $Root
+                [void](Invoke-ChangeVersion $Root)
                 continue
             }
             "2" { return "full" }
