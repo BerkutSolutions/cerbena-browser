@@ -890,6 +890,8 @@
   "profile.security.disableExtensionsLaunchBlocked": "Нельзя запретить запуск расширений, пока в профиле есть расширения. Сначала уберите их из профиля или включите только интеграцию KeePassXC.",
   "profile.security.cookiesCopyBlocked": "Копирование cookie запрещено, если исходный или целевой профиль защищен.",
   "action.refresh": "Обновить",
+  "logs.subtitle": "Предупреждения runtime лаунчера, диагностика апдейтера и ошибки frontend.",
+  "logs.empty": "Логи runtime пока пусты.",
   "devicePosture.title": "Состояние устройства",
   "devicePosture.subtitle": "Backend-проверки хоста, которые влияют на запуск защищенных профилей.",
   "devicePosture.statusLabel": "Текущий статус",

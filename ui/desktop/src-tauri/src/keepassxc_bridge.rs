@@ -9,6 +9,7 @@ use browser_profile::ProfileMetadata;
 use serde_json::Value;
 
 use crate::{
+    launcher_commands::push_runtime_log,
     profile_security::tags_allow_keepassxc,
     state::{app_local_data_root, AppState},
 };
@@ -399,13 +400,7 @@ fn clear_keepassxc_debug_flag(state: &AppState, profile_root: &Path) {
                 error
             );
             eprintln!("{line}");
-            if let Ok(mut logs) = state.runtime_logs.lock() {
-                logs.push(line);
-                if logs.len() > 1000 {
-                    let overflow = logs.len() - 1000;
-                    logs.drain(0..overflow);
-                }
-            }
+            push_runtime_log(state, line);
         }
     }
 }
@@ -413,11 +408,5 @@ fn clear_keepassxc_debug_flag(state: &AppState, profile_root: &Path) {
 fn write_keepassxc_log(state: &AppState, profile: &ProfileMetadata, message: &str) {
     let line = format!("[keepassxc-bridge] profile={} {}", profile.id, message);
     eprintln!("{line}");
-    if let Ok(mut logs) = state.runtime_logs.lock() {
-        logs.push(line);
-        if logs.len() > 1000 {
-            let overflow = logs.len() - 1000;
-            logs.drain(0..overflow);
-        }
-    }
+    push_runtime_log(state, line);
 }

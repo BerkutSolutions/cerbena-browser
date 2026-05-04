@@ -23,6 +23,7 @@ import { renderDns, hydrateDnsModel, wireDns } from "../features/dns/view.js";
 import { renderExtensions, hydrateExtensionsModel, wireExtensions } from "../features/extensions/view.js";
 import { renderTraffic, hydrateTrafficModel, wireTraffic } from "../features/traffic/view.js";
 import { renderSecurity, wireSecurity } from "../features/security/view.js";
+import { renderLogs, hydrateLogsModel, wireLogs } from "../features/diagnostics/logs-view.js";
 import {
   renderSettings,
   hydrateSettingsModel,
@@ -41,12 +42,13 @@ import {
   setDefaultProfileForLinks,
   saveShellPreferences
 } from "../features/settings/api.js";
+import { appendRuntimeLog } from "../features/diagnostics/api.js";
 
 const log = createDebugLogger("app");
 const COLLAPSE_BREAKPOINT = 1200;
 const DEFAULT_PANIC_FRAME_COLOR = "#ff8652";
 const HOME_METRICS_RENDER_DEBOUNCE_MS = 900;
-const APP_VERSION = "1.0.15";
+const APP_VERSION = "1.0.16";
 
 function renderBrandLogo(kind = "full") {
   const src = kind === "compact" ? "./assets/brand/logo-32.png" : "./assets/brand/logo-64.png";
@@ -79,6 +81,7 @@ const viewMap = {
   traffic: (t, model) => renderTraffic(t, model),
   dns: (t, model) => renderDns(t, model),
   security: (t, model) => renderSecurity(t, model),
+  logs: (t, model) => renderLogs(t, model),
   settings: (t, model) => renderSettings(t, model),
   identity: (t, model) => renderIdentity(t, model)
 };
@@ -927,6 +930,7 @@ async function bootstrap() {
   let unlistenProfileLaunchProgress = null;
   let unlistenAppLifecycleProgress = null;
   let unlistenCloseRequested = null;
+  let unlistenRuntimeLogs = null;
   if (listen) {
     unlistenProfileState = await listen("profile-state-changed", async (event) => {
       const payload = event.payload ?? {};
@@ -1012,6 +1016,15 @@ async function bootstrap() {
         wire(root, bus, state, model, rerender, i18n);
       }, HOME_METRICS_RENDER_DEBOUNCE_MS);
     });
+    unlistenRuntimeLogs = await listen("runtime-log-appended", async (event) => {
+      if (isPanicFrameOverlay()) return;
+      const line = typeof event.payload === "string" ? event.payload : String(event.payload ?? "").trim();
+      if (!line) return;
+      model.runtimeLogs = [...(model.runtimeLogs ?? []), line].slice(-1000);
+      if (state.currentFeature !== "logs") return;
+      renderApp(root, state, i18n, model);
+      wire(root, bus, state, model, rerender, i18n);
+    });
   }
   if (!isPanicFrameOverlay() && window.__TAURI__?.core?.invoke) {
     window.setTimeout(async () => {
@@ -1036,6 +1049,7 @@ async function bootstrap() {
       teardownDnsBlocklists?.();
       unlistenAppLifecycleProgress?.();
       unlistenCloseRequested?.();
+      unlistenRuntimeLogs?.();
       try {
         if (model.networkPingPoller) {
         clearInterval(model.networkPingPoller);
@@ -1050,6 +1064,24 @@ async function bootstrap() {
     } catch {}
   }, { once: true });
   window.addEventListener("contextmenu", (event) => event.preventDefault());
+  window.addEventListener("error", async (event) => {
+    const message = String(event.message ?? "unknown frontend error");
+    const source = String(event.filename ?? "").trim();
+    const line = Number.isFinite(event.lineno) ? `:${event.lineno}` : "";
+    const column = Number.isFinite(event.colno) ? `:${event.colno}` : "";
+    const location = source ? ` ${source}${line}${column}` : "";
+    try {
+      await appendRuntimeLog(`[frontend][error] ${message}${location}`);
+    } catch {}
+  });
+  window.addEventListener("unhandledrejection", async (event) => {
+    const reason = event.reason instanceof Error
+      ? event.reason.stack || event.reason.message
+      : String(event.reason ?? "unknown rejection");
+    try {
+      await appendRuntimeLog(`[frontend][unhandledrejection] ${reason}`);
+    } catch {}
+  });
   log.info("bootstrap complete");
 }
 
@@ -1059,6 +1091,7 @@ async function hydrateCurrentFeatureModel(featureKey, model) {
   if (featureKey === "extensions") await hydrateExtensionsModel(model);
   if (featureKey === "traffic") await hydrateTrafficModel(model);
   if (featureKey === "home") await hydrateHomeModel(model);
+  if (featureKey === "logs") await hydrateLogsModel(model);
   if (featureKey === "settings") await hydrateSettingsModel(model);
 }
 
@@ -1115,6 +1148,7 @@ function wire(root, bus, state, model, rerender, i18n) {
     wireHome(root, model, rerender, t);
     wireProfiles(root, model, rerender, t);
   }
+  if (state.currentFeature === "logs") wireLogs(root, model, rerender, t);
   if (state.currentFeature === "security") wireSecurity(root, model, rerender, t);
   if (state.currentFeature === "settings") wireSettings(root, model, rerender, t);
   if (model.linkLaunchModal) wireLinkLaunchModal(document.body, model, rerender, t);

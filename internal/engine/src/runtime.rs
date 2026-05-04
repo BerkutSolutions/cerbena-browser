@@ -166,8 +166,7 @@ impl EngineRuntime {
     }
 
     pub fn installed(&self, engine: EngineKind) -> Result<Option<EngineInstallation>, EngineError> {
-        self
-            .registry
+        self.registry
             .get(engine)?
             .map(|installation| self.normalize_installation(engine, installation))
             .transpose()
@@ -1132,9 +1131,7 @@ fn reopen_args(
     Ok(match engine {
         EngineKind::Wayfern => {
             let locked_app = load_locked_app_config(profile_root)?;
-            let mut args = vec![
-                format!("--user-data-dir={}", runtime_dir.to_string_lossy()),
-            ];
+            let mut args = vec![format!("--user-data-dir={}", runtime_dir.to_string_lossy())];
             if let Some(config) = locked_app {
                 args.push(format!(
                     "--app={}",
@@ -1224,7 +1221,11 @@ fn wayfern_launch_environment(profile_root: &Path) -> Vec<(String, String)> {
 }
 
 fn first_positive(primary: u32, fallback: u32) -> u32 {
-    if primary > 0 { primary } else { fallback }
+    if primary > 0 {
+        primary
+    } else {
+        fallback
+    }
 }
 
 fn normalize_primary_language(language: &str) -> Option<String> {
@@ -1288,9 +1289,9 @@ fn write_wayfern_language_preferences(
     if !value.is_object() {
         value = serde_json::json!({});
     }
-    let root = value
-        .as_object_mut()
-        .ok_or_else(|| EngineError::Launch("wayfern preferences root is not an object".to_string()))?;
+    let root = value.as_object_mut().ok_or_else(|| {
+        EngineError::Launch("wayfern preferences root is not an object".to_string())
+    })?;
     let intl = root
         .entry("intl".to_string())
         .or_insert_with(|| serde_json::json!({}));
@@ -1320,9 +1321,9 @@ fn write_wayfern_local_state_locale(
     if !value.is_object() {
         value = serde_json::json!({});
     }
-    let root = value
-        .as_object_mut()
-        .ok_or_else(|| EngineError::Launch("wayfern local state root is not an object".to_string()))?;
+    let root = value.as_object_mut().ok_or_else(|| {
+        EngineError::Launch("wayfern local state root is not an object".to_string())
+    })?;
     let intl = root
         .entry("intl".to_string())
         .or_insert_with(|| serde_json::json!({}));
@@ -1398,10 +1399,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
     let accept_languages = identity
         .as_ref()
         .map(|policy| {
-            normalize_accept_languages(
-                &policy.locale.navigator_language,
-                &policy.locale.languages,
-            )
+            normalize_accept_languages(&policy.locale.navigator_language, &policy.locale.languages)
         })
         .unwrap_or_default();
     if blocked_domains.is_empty() && locked_app.is_none() && accept_languages.is_empty() {
@@ -1468,31 +1466,36 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
         }));
     }
     let base_rule_id = rules.len() + 1;
-    rules.extend(blocked_domains.into_iter().enumerate().map(|(index, domain)| {
-            serde_json::json!({
-                "id": base_rule_id + index,
-                "priority": 2,
-                "action": { "type": "block" },
-                "condition": {
-                    "urlFilter": format!("||{domain}^"),
-                    "resourceTypes": [
-                        "main_frame",
-                        "sub_frame",
-                        "stylesheet",
-                        "script",
-                        "image",
-                        "font",
-                        "object",
-                        "xmlhttprequest",
-                        "ping",
-                        "media",
-                        "websocket",
-                        "webtransport",
-                        "other"
-                    ]
-                }
-            })
-        }));
+    rules.extend(
+        blocked_domains
+            .into_iter()
+            .enumerate()
+            .map(|(index, domain)| {
+                serde_json::json!({
+                    "id": base_rule_id + index,
+                    "priority": 2,
+                    "action": { "type": "block" },
+                    "condition": {
+                        "urlFilter": format!("||{domain}^"),
+                        "resourceTypes": [
+                            "main_frame",
+                            "sub_frame",
+                            "stylesheet",
+                            "script",
+                            "image",
+                            "font",
+                            "object",
+                            "xmlhttprequest",
+                            "ping",
+                            "media",
+                            "websocket",
+                            "webtransport",
+                            "other"
+                        ]
+                    }
+                })
+            }),
+    );
     if let Some(config) = locked_app {
         let allowed_hosts = config
             .allowed_hosts
@@ -1642,14 +1645,14 @@ mod tests {
             fs::read_to_string(extension_dir.join("manifest.json")).expect("manifest");
         let rules_raw = fs::read_to_string(extension_dir.join("rules.json")).expect("rules");
         assert!(manifest_raw.contains("\"manifest_version\": 3"));
-        assert!(manifest_raw.contains("\"version\": \"1.0.15\""));
+        assert!(manifest_raw.contains("\"version\": \"1.0.16\""));
         assert!(rules_raw.contains("||youtube.com^"));
         assert!(rules_raw.contains("||example.com^"));
     }
 
     #[test]
     fn chromium_extension_version_normalizes_hotfix_suffixes() {
-        assert_eq!(chromium_extension_version("1.0.15"), "1.0.15");
+        assert_eq!(chromium_extension_version("1.0.16"), "1.0.16");
         assert_eq!(chromium_extension_version("v1.2.3"), "1.2.3");
         assert_eq!(chromium_extension_version("7"), "7");
     }
@@ -1801,13 +1804,17 @@ mod tests {
         )
         .expect("launch args");
 
-        assert!(args.iter().any(|value| value == "--user-agent=Mozilla/5.0 Test Browser"));
+        assert!(args
+            .iter()
+            .any(|value| value == "--user-agent=Mozilla/5.0 Test Browser"));
         assert!(args.iter().any(|value| value == "--lang=ru"));
         assert!(args
             .iter()
             .any(|value| value == "--accept-lang=ru,en,en-GB,en-US"));
         assert!(args.iter().any(|value| value == "--window-size=1440,920"));
-        assert!(args.iter().any(|value| value == "--window-position=320,343"));
+        assert!(args
+            .iter()
+            .any(|value| value == "--window-position=320,343"));
 
         let preferences: serde_json::Value = serde_json::from_slice(
             &fs::read(

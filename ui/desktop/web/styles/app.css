@@ -1708,6 +1708,19 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   word-break: break-word;
 }
 
+.logs-panel-header {
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.logs-console {
+  min-height: 420px;
+  max-height: 70vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .dns-panel {
   display: grid;
   gap: 14px;

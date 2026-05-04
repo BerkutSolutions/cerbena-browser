@@ -7,13 +7,14 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, State};
 
 use crate::{
     envelope::{ok, UiEnvelope},
+    launcher_commands::push_runtime_log,
     state::{app_local_data_root, persist_app_update_store, AppState},
 };
 
@@ -784,6 +785,13 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
 }
 
 fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, String> {
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] check start manual={} version={} url={} user_agent={}",
+            manual, CURRENT_VERSION, GITHUB_LATEST_RELEASE_API, USER_AGENT
+        ),
+    );
     let client = build_release_http_client(Duration::from_secs(20), false)
         .map_err(|e| format!("build update http client: {e}"))?;
 
@@ -795,6 +803,13 @@ fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, Str
 
     match result {
         Ok(candidate) => {
+            push_runtime_log(
+                state,
+                format!(
+                    "[updater] latest release discovered version={} release_url={}",
+                    candidate.version, candidate.release_url
+                ),
+            );
             store.latest_version = Some(candidate.version.clone());
             store.release_url = Some(candidate.release_url.clone());
             store.has_update = is_version_newer(&candidate.version, CURRENT_VERSION);
@@ -806,8 +821,16 @@ fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, Str
                         Ok(()) => {
                             store.updater_handoff_version = Some(candidate.version.clone());
                             store.status = "handoff".to_string();
+                            push_runtime_log(
+                                state,
+                                format!(
+                                    "[updater] handoff started version={} mode=manual",
+                                    candidate.version
+                                ),
+                            );
                         }
                         Err(error) => {
+                            push_runtime_log(state, format!("[updater] handoff failed: {error}"));
                             store.status = "error".to_string();
                             store.last_error = Some(error);
                         }
@@ -818,26 +841,43 @@ fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, Str
                             Ok(()) => {
                                 store.updater_handoff_version = Some(candidate.version.clone());
                                 store.status = "handoff".to_string();
+                                push_runtime_log(
+                                    state,
+                                    format!(
+                                        "[updater] handoff started version={} mode=auto",
+                                        candidate.version
+                                    ),
+                                );
                             }
                             Err(error) => {
+                                push_runtime_log(state, format!("[updater] handoff failed: {error}"));
                                 store.status = "error".to_string();
                                 store.last_error = Some(error);
                             }
                         }
                     } else {
                         if let Err(error) = stage_release_if_needed(state, &mut store, &candidate) {
+                            push_runtime_log(state, format!("[updater] stage release failed: {error}"));
                             store.status = "error".to_string();
                             store.last_error = Some(error);
                         }
                     }
                 }
             } else {
+                push_runtime_log(
+                    state,
+                    format!(
+                        "[updater] no update available current={} latest={}",
+                        CURRENT_VERSION, candidate.version
+                    ),
+                );
                 clear_staged_update(&mut store);
                 store.updater_handoff_version = None;
                 store.status = "up_to_date".to_string();
             }
         }
         Err(error) => {
+            push_runtime_log(state, format!("[updater] check failed: {error}"));
             store.status = "error".to_string();
             store.last_error = Some(error);
         }
@@ -1048,9 +1088,10 @@ fn fetch_latest_release_from_url(
         .send()
         .map_err(|e| format!("request latest release: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!(
-            "latest release request failed with HTTP {}",
-            response.status()
+        return Err(describe_http_failure(
+            response,
+            "latest release request",
+            Some(latest_release_url),
         ));
     }
     let release: GithubRelease = response
@@ -1164,8 +1205,9 @@ fn download_release_bytes(client: &Client, url: &str, label: &str) -> Result<Vec
             }
         };
         if !response.status().is_success() {
-            last_error = format!("download {label} failed with HTTP {}", response.status());
-            if response.status().is_server_error() && attempt < 3 {
+            let status = response.status();
+            last_error = describe_http_failure(response, &format!("download {label}"), Some(url));
+            if status.is_server_error() && attempt < 3 {
                 thread::sleep(Duration::from_millis(250 * attempt as u64));
                 continue;
             }
@@ -1200,6 +1242,52 @@ fn build_release_http_client(
     builder
         .build()
         .map_err(|e| format!("build release http client: {e}"))
+}
+
+fn describe_http_failure(response: Response, context: &str, url: Option<&str>) -> String {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let request_id = headers
+        .get("x-github-request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let content_type = headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let body = response.text().unwrap_or_default();
+    let body_snippet = sanitize_http_error_body(&body);
+    let mut parts = vec![format!("{context} failed with HTTP {status}")];
+    if let Some(target) = url.filter(|value| !value.trim().is_empty()) {
+        parts.push(format!("url={target}"));
+    }
+    if !request_id.is_empty() {
+        parts.push(format!("request_id={request_id}"));
+    }
+    if !content_type.is_empty() {
+        parts.push(format!("content_type={content_type}"));
+    }
+    if !body_snippet.is_empty() {
+        parts.push(format!("body={body_snippet}"));
+    }
+    parts.join(" | ")
+}
+
+fn sanitize_http_error_body(body: &str) -> String {
+    let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut snippet = trimmed.chars().take(600).collect::<String>();
+    if trimmed.chars().count() > 600 {
+        snippet.push_str("...");
+    }
+    snippet
 }
 
 fn verify_release_checksums_signature(

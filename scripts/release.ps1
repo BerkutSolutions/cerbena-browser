@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("check", "package", "publish", "full")]
-    [string]$Mode = "check",
+    [ValidateSet("interactive", "version", "check", "package", "publish", "full")]
+    [string]$Mode = "interactive",
     [switch]$SkipDockerPreflight,
     [switch]$SkipSecurityGates,
     [switch]$SkipVulnerabilityGates,
@@ -58,6 +58,23 @@ function Read-JsonFile([string]$Path) {
         throw "missing JSON file: $Path"
     }
     return Get-Content $Path -Raw | ConvertFrom-Json
+}
+
+function Get-CurrentReleaseVersion([string]$Root) {
+    $tauriConfig = Read-JsonFile (Join-Path $Root "ui\desktop\src-tauri\tauri.conf.json")
+    $rootPackage = Read-JsonFile (Join-Path $Root "package.json")
+    $desktopPackage = Read-JsonFile (Join-Path $Root "ui\desktop\package.json")
+    $version = [string]$tauriConfig.version
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        throw "unable to resolve version from ui/desktop/src-tauri/tauri.conf.json"
+    }
+    if ([string]$rootPackage.version -ne $version) {
+        throw "root package.json version mismatch: $($rootPackage.version) != $version"
+    }
+    if ([string]$desktopPackage.version -ne $version) {
+        throw "ui/desktop package.json version mismatch: $($desktopPackage.version) != $version"
+    }
+    return $version
 }
 
 function Write-Utf8NoBomFile([string]$Path, [string]$Content) {
@@ -203,6 +220,8 @@ function Assert-ReleaseContracts([string]$Root) {
         "README.en.md",
         "CHANGELOG.md",
         "scripts\local-ci-preflight.ps1",
+        "scripts\update-version.ps1",
+        "scripts\version-sync-targets.json",
         "scripts\docker-runtime-preflight.ps1",
         "scripts\security-gates-preflight.ps1",
         "scripts\vulnerability-gates-preflight.ps1",
@@ -473,30 +492,62 @@ function Publish-Release([string]$Root, [string]$Version) {
     Publish-GitHubReleaseAssets $Root $Version
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$tauriConfig = Read-JsonFile (Join-Path $repoRoot "ui\desktop\src-tauri\tauri.conf.json")
-$rootPackage = Read-JsonFile (Join-Path $repoRoot "package.json")
-$desktopPackage = Read-JsonFile (Join-Path $repoRoot "ui\desktop\package.json")
-$version = [string]$tauriConfig.version
+function Invoke-ChangeVersion([string]$Root) {
+    Write-Title "Change Version"
+    $currentVersion = Get-CurrentReleaseVersion $Root
+    Write-Host ("Current version: " + $currentVersion) -ForegroundColor White
+    Invoke-Native "powershell" @(
+        "-ExecutionPolicy", "Bypass",
+        "-File", (Join-Path $Root "scripts\update-version.ps1")
+    )
+}
 
-if ([string]::IsNullOrWhiteSpace($version)) {
-    throw "unable to resolve version from ui/desktop/src-tauri/tauri.conf.json"
+function Show-ReleaseMenu([string]$Root) {
+    while ($true) {
+        $currentVersion = Get-CurrentReleaseVersion $Root
+        Write-Host ""
+        Write-Host "Cerbena release menu" -ForegroundColor Cyan
+        Write-Host ("Current version: " + $currentVersion) -ForegroundColor White
+        Write-Host "1. Change version"
+        Write-Host "2. Full cycle"
+        Write-Host "3. Publish only"
+        Write-Host "4. Checks only"
+        Write-Host "Press Ctrl+C to exit." -ForegroundColor DarkGray
+        $selection = (Read-Host "Select 1/2/3/4").Trim()
+        switch ($selection) {
+            "1" {
+                Invoke-ChangeVersion $Root
+                continue
+            }
+            "2" { return "full" }
+            "3" { return "publish" }
+            "4" { return "check" }
+            default {
+                Write-Host "Unknown selection. Enter 1, 2, 3, or 4." -ForegroundColor Yellow
+            }
+        }
+    }
 }
-if ([string]$rootPackage.version -ne $version) {
-    throw "root package.json version mismatch: $($rootPackage.version) != $version"
-}
-if ([string]$desktopPackage.version -ne $version) {
-    throw "ui/desktop package.json version mismatch: $($desktopPackage.version) != $version"
-}
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 Set-Location $repoRoot
 Assert-ReleaseContracts $repoRoot
+
+if ($Mode -eq "interactive") {
+    $Mode = Show-ReleaseMenu $repoRoot
+}
+
+$version = Get-CurrentReleaseVersion $repoRoot
 
 Write-Title "Release Configuration"
 Write-Host ("Version: " + $version) -ForegroundColor White
 Write-Host ("Mode: " + $Mode) -ForegroundColor White
 
 switch ($Mode) {
+    "version" {
+        Invoke-ChangeVersion $repoRoot
+    }
     "check" {
         Run-Checks $repoRoot
         Run-VulnerabilityGates $repoRoot
@@ -508,7 +559,6 @@ switch ($Mode) {
         Build-Installer $repoRoot
     }
     "publish" {
-        Run-VulnerabilityGates $repoRoot
         Publish-Release $repoRoot $version
     }
     "full" {

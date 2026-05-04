@@ -146,6 +146,15 @@ try {
         }
     }
 
+    Step "Version sync contract" {
+        Invoke-Native "cargo" @(
+            "test",
+            "-p", "cerbena-launcher",
+            "--test", "release_pipeline_contract_tests",
+            "version_sync_contract"
+        ) -Quiet:$CompactOutput
+    }
+
     if (-not $SkipCargoTest) {
         Step "Rust workspace tests" {
             Invoke-Native "cargo" @("test", "--workspace") -Quiet:$CompactOutput

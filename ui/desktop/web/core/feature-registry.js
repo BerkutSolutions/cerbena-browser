@@ -6,6 +6,7 @@
   { key: "dns", labelKey: "nav.dns" },
   { key: "network", labelKey: "nav.network" },
   { key: "traffic", labelKey: "nav.traffic" },
+  { key: "logs", labelKey: "nav.logs" },
   { key: "settings", labelKey: "nav.settings" }
 ];
 

@@ -1,10 +1,98 @@
-use std::{fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
-fn repo_root() -> std::path::PathBuf {
+use serde_json::Value;
+
+fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .to_path_buf()
+}
+
+fn current_version(root: &Path) -> String {
+    let tauri_config = fs::read_to_string(
+        root.join("ui")
+            .join("desktop")
+            .join("src-tauri")
+            .join("tauri.conf.json"),
+    )
+    .expect("read tauri config");
+    let json: Value = serde_json::from_str(&tauri_config).expect("parse tauri config");
+    json.get("version")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn version_manifest_paths(root: &Path) -> BTreeSet<String> {
+    let manifest = fs::read_to_string(root.join("scripts").join("version-sync-targets.json"))
+        .expect("read version sync manifest");
+    let json: Value = serde_json::from_str(&manifest).expect("parse version sync manifest");
+    json.get("targets")
+        .and_then(Value::as_array)
+        .expect("version sync targets array")
+        .iter()
+        .map(|entry| {
+            entry
+                .get("path")
+                .and_then(Value::as_str)
+                .expect("version sync target path")
+                .replace('\\', "/")
+        })
+        .collect()
+}
+
+fn collect_version_literal_paths(root: &Path, version: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    walk_version_paths(root, root, version, &mut found);
+    found
+}
+
+fn walk_version_paths(root: &Path, current: &Path, version: &str, found: &mut BTreeSet<String>) {
+    let skip_dirs = [
+        ".docusaurus",
+        ".git",
+        ".work",
+        "target",
+        "node_modules",
+        "build",
+    ];
+    let allowed_exts = ["toml", "lock", "json", "js", "jsx", "rs", "md", "ps1"];
+    let entries = fs::read_dir(current).expect("read repo directory");
+    for entry in entries {
+        let entry = entry.expect("read dir entry");
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            if skip_dirs.contains(&name.as_ref()) {
+                continue;
+            }
+            walk_version_paths(root, &path, version, found);
+            continue;
+        }
+        let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !allowed_exts.contains(&ext) {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if content.contains(version) {
+            let relative = path
+                .strip_prefix(root)
+                .expect("relative version path")
+                .to_string_lossy()
+                .replace('\\', "/");
+            found.insert(relative);
+        }
+    }
 }
 
 #[test]
@@ -17,6 +105,11 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         .expect("read build-installer.ps1");
     let release_script =
         fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release.ps1");
+    let version_script = fs::read_to_string(root.join("scripts").join("update-version.ps1"))
+        .expect("read update-version.ps1");
+    let version_manifest =
+        fs::read_to_string(root.join("scripts").join("version-sync-targets.json"))
+            .expect("read version-sync-targets.json");
 
     for needle in [
         "checksums.sig",
@@ -29,11 +122,15 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         "checksums.sig",
         "Assert-GitHubReleaseAssetsPublished",
         ".assets[].name",
+        "update-version.ps1",
+        "version-sync-targets.json",
     ] {
         assert!(
             artifacts_script.contains(needle)
                 || installer_script.contains(needle)
-                || release_script.contains(needle),
+                || release_script.contains(needle)
+                || version_script.contains(needle)
+                || version_manifest.contains(needle),
             "release pipeline scripts must mention {needle}"
         );
     }
@@ -76,6 +173,8 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
 
     let local_preflight = fs::read_to_string(root.join("scripts").join("local-ci-preflight.ps1"))
         .expect("read local ci preflight");
+    let release_script =
+        fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release script");
     assert!(local_preflight.contains("Trusted updater regression tests"));
     assert!(local_preflight.contains("Published updater end-to-end test"));
     assert!(local_preflight.contains("published-updater-e2e.ps1"));
@@ -83,6 +182,13 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
     assert!(local_preflight.contains("trusted_updater"));
     assert!(local_preflight.contains("Desktop UI dev smoke"));
     assert!(local_preflight.contains("npm.cmd run dev"));
+    assert!(local_preflight.contains("Version sync contract"));
+    assert!(local_preflight.contains("version_sync_contract"));
+    assert!(release_script.contains("1. Change version"));
+    assert!(release_script.contains("2. Full cycle"));
+    assert!(release_script.contains("3. Publish only"));
+    assert!(release_script.contains("4. Checks only"));
+    assert!(release_script.contains("update-version.ps1"));
 
     let security_supply = fs::read_to_string(workflows.join("security-supply-chain.yml"))
         .expect("read security-supply-chain workflow");
@@ -98,4 +204,32 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
             "security-supply-chain workflow must mention {needle}"
         );
     }
+}
+
+#[test]
+fn version_sync_contract_covers_current_version_surfaces() {
+    let root = repo_root();
+    let version = current_version(&root);
+    let manifest_paths = version_manifest_paths(&root);
+    let literal_paths = collect_version_literal_paths(&root, &version);
+
+    let uncovered = literal_paths
+        .difference(&manifest_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        uncovered.is_empty(),
+        "current version literal appears in files not registered in scripts/version-sync-targets.json: {:?}",
+        uncovered
+    );
+
+    let missing = manifest_paths
+        .difference(&literal_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "version sync manifest includes files that do not currently contain version {version}: {:?}",
+        missing
+    );
 }

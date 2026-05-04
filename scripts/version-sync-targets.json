@@ -1,0 +1,24 @@
+{
+  "targets": [
+    { "path": "Cargo.toml", "strategy": "replace_all" },
+    { "path": "Cargo.lock", "strategy": "replace_all" },
+    { "path": "package.json", "strategy": "replace_all" },
+    { "path": "package-lock.json", "strategy": "replace_all" },
+    { "path": "src/pages/index.jsx", "strategy": "replace_all" },
+    { "path": "ui/desktop/package.json", "strategy": "replace_all" },
+    { "path": "ui/desktop/package-lock.json", "strategy": "replace_all" },
+    { "path": "ui/desktop/src-tauri/Cargo.toml", "strategy": "replace_all" },
+    { "path": "ui/desktop/src-tauri/Cargo.lock", "strategy": "replace_all" },
+    { "path": "ui/desktop/src-tauri/tauri.conf.json", "strategy": "replace_all" },
+    { "path": "ui/desktop/src-tauri/src/extensions_commands.rs", "strategy": "replace_all" },
+    { "path": "ui/desktop/web/app/main.js", "strategy": "replace_all" },
+    { "path": "ui/desktop/web/app/updater.js", "strategy": "replace_all" },
+    { "path": "ui/desktop/web/core/commands.js", "strategy": "replace_all" },
+    { "path": "ui/desktop/web/features/diagnostics/settings-view.js", "strategy": "replace_all" },
+    { "path": "ui/desktop/web/features/extensions/view.js", "strategy": "replace_all" },
+    { "path": "internal/engine/src/runtime.rs", "strategy": "replace_all" },
+    { "path": "cmd/launcher/tests/launcher_stability_tests.rs", "strategy": "replace_all" },
+    { "path": "cmd/launcher/tests/launcher_tests.rs", "strategy": "replace_all" },
+    { "path": "CHANGELOG.md", "strategy": "changelog_heading" }
+  ]
+}

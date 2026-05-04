@@ -35,6 +35,8 @@
   "action.yes": "Yes",
   "action.no": "No",
   "action.refresh": "Refresh",
+  "logs.subtitle": "Launcher runtime warnings, updater diagnostics, and frontend failures.",
+  "logs.empty": "No runtime logs yet.",
   "profile.subtitle": "Manage profile lifecycle, isolation options, import/export, and launch controls.",
   "profile.empty": "No profiles yet.",
   "profile.state": "State",

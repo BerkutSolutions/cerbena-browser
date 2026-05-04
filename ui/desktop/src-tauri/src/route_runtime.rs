@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::{
+    launcher_commands::push_runtime_log,
     network_runtime::{
         ensure_network_runtime_tools, resolve_amneziawg_binary_path, resolve_openvpn_binary_path,
         resolve_sing_box_binary_path, resolve_tor_binary_path, resolve_tor_pt_binary_path,
@@ -750,13 +751,7 @@ fn resolve_effective_route_selection(
 }
 
 fn append_route_runtime_log(state: &AppState, entry: String) {
-    if let Ok(mut logs) = state.runtime_logs.lock() {
-        logs.push(entry);
-        if logs.len() > 1000 {
-            let overflow = logs.len() - 1000;
-            logs.drain(0..overflow);
-        }
-    }
+    push_runtime_log(state, entry);
 }
 
 fn reserve_local_port() -> Result<u16, String> {

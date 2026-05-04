@@ -22,6 +22,20 @@ use crate::{
     state::{persist_link_routing_store_with_secret, AppState},
 };
 
+pub(crate) const RUNTIME_LOG_EVENT_NAME: &str = "runtime-log-appended";
+
+pub(crate) fn push_runtime_log(state: &AppState, entry: impl Into<String>) {
+    let line = entry.into();
+    if let Ok(mut logs) = state.runtime_logs.lock() {
+        logs.push(line.clone());
+        if logs.len() > 1000 {
+            let overflow = logs.len() - 1000;
+            logs.drain(0..overflow);
+        }
+    }
+    let _ = state.app_handle.emit(RUNTIME_LOG_EVENT_NAME, line);
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildHomeRequest {
@@ -950,15 +964,7 @@ pub fn append_runtime_log(
     entry: String,
     correlation_id: String,
 ) -> Result<UiEnvelope<bool>, String> {
-    let mut logs = state
-        .runtime_logs
-        .lock()
-        .map_err(|_| "runtime log lock poisoned".to_string())?;
-    logs.push(entry);
-    if logs.len() > 1000 {
-        let overflow = logs.len() - 1000;
-        logs.drain(0..overflow);
-    }
+    push_runtime_log(state.inner(), entry);
     Ok(ok(correlation_id, true))
 }
 
