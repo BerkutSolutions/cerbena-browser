@@ -127,6 +127,8 @@ try {
             "docs\eng\core-docs\ui.md",
             "docs\ru\release-runbook.md",
             "docs\eng\release-runbook.md",
+            "docs\ru\release-trust.md",
+            "docs\eng\release-trust.md",
             "scripts\local-ci-preflight.ps1"
         )
         foreach ($rel in $required) {
@@ -152,6 +154,15 @@ try {
             "-p", "cerbena-launcher",
             "--test", "release_pipeline_contract_tests",
             "version_sync_contract"
+        ) -Quiet:$CompactOutput
+    }
+
+    Step "Release pipeline contract" {
+        Invoke-Native "cargo" @(
+            "test",
+            "-p", "cerbena-launcher",
+            "--test", "release_pipeline_contract_tests",
+            "release_scripts_exist_and_reference_current_quality_gates"
         ) -Quiet:$CompactOutput
     }
 

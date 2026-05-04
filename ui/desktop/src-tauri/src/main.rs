@@ -10,6 +10,7 @@ mod instance_handoff;
 mod keepassxc_bridge;
 mod launch_sessions;
 mod launcher_commands;
+mod msi_support;
 mod network_commands;
 mod network_runtime;
 mod network_sandbox;
@@ -22,6 +23,7 @@ mod process_tracking;
 mod profile_commands;
 mod profile_runtime_logs;
 mod profile_security;
+mod runtime_tools_commands;
 mod route_runtime;
 mod sensitive_store;
 mod service_catalog_seed;
@@ -79,6 +81,9 @@ fn handle_selftest_version_probe(updater_launch_mode: update_commands::UpdaterLa
 
 fn main() {
     let updater_launch_mode = update_commands::active_updater_launch_mode();
+    if msi_support::handle_maintenance_cli().unwrap_or(false) {
+        return;
+    }
     if handle_selftest_version_probe(updater_launch_mode) {
         return;
     }
@@ -333,6 +338,8 @@ fn main() {
             launcher_commands::save_global_security_settings,
             launcher_commands::get_device_posture_report,
             launcher_commands::refresh_device_posture_report,
+            runtime_tools_commands::get_runtime_tools_status,
+            runtime_tools_commands::install_runtime_tool,
             shell_commands::get_shell_preferences_state,
             shell_commands::save_shell_preferences,
             shell_commands::window_hide_to_tray,

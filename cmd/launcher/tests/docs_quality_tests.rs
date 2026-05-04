@@ -272,6 +272,8 @@ fn allowed_ru_terms() -> BTreeSet<&'static str> {
         "manual",
         "mailto",
         "mcp",
+        "msi",
+        "msiexec",
         "md",
         "metrics",
         "mixed-language",

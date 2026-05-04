@@ -110,16 +110,30 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
     let version_manifest =
         fs::read_to_string(root.join("scripts").join("version-sync-targets.json"))
             .expect("read version-sync-targets.json");
+    let signing_helper =
+        fs::read_to_string(root.join("scripts").join("release-signing.ps1"))
+            .expect("read release-signing.ps1");
+    let signing_bootstrap =
+        fs::read_to_string(root.join("scripts").join("new-release-signing-material.ps1"))
+            .expect("read new-release-signing-material.ps1");
+    let release_public_key = fs::read_to_string(
+        root.join("config")
+            .join("release")
+            .join("release-signing-public-key.xml"),
+    )
+    .expect("read release signing public key");
 
     for needle in [
         "checksums.sig",
         "cargo",
         "npm.cmd",
         "cerbena-windows-x64.zip",
+        "cerbena-browser-setup-",
         "cerbena-updater.exe",
         "release-manifest.json",
         "checksums.txt",
         "checksums.sig",
+        ".msi",
         "Assert-GitHubReleaseAssetsPublished",
         ".assets[].name",
         "update-version.ps1",
@@ -129,6 +143,9 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
             artifacts_script.contains(needle)
                 || installer_script.contains(needle)
                 || release_script.contains(needle)
+                || signing_helper.contains(needle)
+                || signing_bootstrap.contains(needle)
+                || release_public_key.contains(needle)
                 || version_script.contains(needle)
                 || version_manifest.contains(needle),
             "release pipeline scripts must mention {needle}"
@@ -137,14 +154,38 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
 
     for needle in [
         "ISCC.exe",
+        "wix.exe",
         "localappdata}\\Cerbena Browser",
         "cerbena-browser-setup",
+        "cerbena-browser-",
+        "\"msi\"",
+        "\"direct_msi\"",
+        "Primary $true",
+        "manual_installer",
     ] {
         assert!(
             installer_script.contains(needle),
             "installer build script must mention {needle}"
         );
     }
+
+    assert!(
+        artifacts_script.contains("release-signing.ps1"),
+        "generate-release-artifacts.ps1 must source release-signing.ps1"
+    );
+    assert!(
+        installer_script.contains("release-signing.ps1"),
+        "build-installer.ps1 must source release-signing.ps1"
+    );
+    assert!(
+        signing_helper.contains("CERBENA_AUTHENTICODE_PFX_PATH")
+            && signing_helper.contains("CERBENA_AUTHENTICODE_PFX_PASSWORD"),
+        "release signing helper must require operator-provided Authenticode secrets"
+    );
+    assert!(
+        !artifacts_script.contains("<D>") && !artifacts_script.contains("<P>"),
+        "generate-release-artifacts.ps1 must not embed a private RSA key"
+    );
 }
 
 #[test]
@@ -177,9 +218,11 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
         fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release script");
     assert!(local_preflight.contains("Trusted updater regression tests"));
     assert!(local_preflight.contains("Published updater end-to-end test"));
+    assert!(local_preflight.contains("Release pipeline contract"));
     assert!(local_preflight.contains("published-updater-e2e.ps1"));
     assert!(local_preflight.contains("cargo"));
     assert!(local_preflight.contains("trusted_updater"));
+    assert!(local_preflight.contains("release_scripts_exist_and_reference_current_quality_gates"));
     assert!(local_preflight.contains("Desktop UI dev smoke"));
     assert!(local_preflight.contains("npm.cmd run dev"));
     assert!(local_preflight.contains("Version sync contract"));
@@ -189,6 +232,8 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
     assert!(release_script.contains("3. Publish only"));
     assert!(release_script.contains("4. Checks only"));
     assert!(release_script.contains("update-version.ps1"));
+    assert!(release_script.contains("required legacy EXE installer is missing for compatibility"));
+    assert!(release_script.contains("required MSI installer is missing"));
 
     let security_supply = fs::read_to_string(workflows.join("security-supply-chain.yml"))
         .expect("read security-supply-chain workflow");

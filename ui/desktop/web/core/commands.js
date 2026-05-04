@@ -14,6 +14,7 @@ const MOCK_DEVICE_POSTURE_KEY = "launcher.mock.device-posture.v1";
 const MOCK_SYNC_KEY = "launcher.mock.sync.v1";
 const MOCK_UPDATES_KEY = "launcher.mock.updates.v1";
 const MOCK_SHELL_PREFS_KEY = "launcher.mock.shell-prefs.v1";
+const MOCK_RUNTIME_TOOLS_KEY = "launcher.mock.runtime-tools.v1";
 
 function readMockProfiles() {
   try {
@@ -65,10 +66,10 @@ function writeMockSyncStore(value) {
 
 function readMockUpdateState() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.17\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
+    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.18\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
   } catch {
     return {
-      currentVersion: "1.0.17",
+      currentVersion: "1.0.18",
       repositoryUrl: "https://github.com/BerkutSolutions/cerbena-browser",
       autoUpdateEnabled: false,
       lastCheckedAt: null,
@@ -107,6 +108,26 @@ function readMockShellPreferences() {
 
 function writeMockShellPreferences(value) {
   localStorage.setItem(MOCK_SHELL_PREFS_KEY, JSON.stringify(value));
+}
+
+function readMockRuntimeTools() {
+  try {
+    return JSON.parse(localStorage.getItem(MOCK_RUNTIME_TOOLS_KEY) ?? "{\"docker\":false,\"wayfern\":true,\"camoufox\":true,\"sing-box\":true,\"openvpn\":false,\"amneziawg\":false,\"tor-bundle\":true}");
+  } catch {
+    return {
+      docker: false,
+      wayfern: true,
+      camoufox: true,
+      "sing-box": true,
+      openvpn: false,
+      amneziawg: false,
+      "tor-bundle": true
+    };
+  }
+}
+
+function writeMockRuntimeTools(value) {
+  localStorage.setItem(MOCK_RUNTIME_TOOLS_KEY, JSON.stringify(value));
 }
 
 function nowIso() {
@@ -388,6 +409,75 @@ function mockProfileCommand(command, args) {
 
   if (command === "get_launcher_update_state") {
     return readMockUpdateState();
+  }
+
+  if (command === "get_runtime_tools_status") {
+    const tools = readMockRuntimeTools();
+    return [
+      {
+        id: "docker",
+        nameKey: "settings.tools.docker",
+        status: tools.docker ? "installed" : "missing",
+        version: tools.docker ? "29.2.1" : null,
+        action: tools.docker ? "none" : "external",
+        detailKey: tools.docker ? "settings.tools.detail.dockerReady" : "settings.tools.detail.dockerMissing"
+      },
+      {
+        id: "wayfern",
+        nameKey: "settings.tools.wayfern",
+        status: tools.wayfern ? "installed" : "missing",
+        version: tools.wayfern ? "1.0.18" : null,
+        action: tools.wayfern ? "none" : "internal",
+        detailKey: null
+      },
+      {
+        id: "camoufox",
+        nameKey: "settings.tools.camoufox",
+        status: tools.camoufox ? "installed" : "missing",
+        version: tools.camoufox ? "1.0.18" : null,
+        action: tools.camoufox ? "none" : "internal",
+        detailKey: null
+      },
+      {
+        id: "sing-box",
+        nameKey: "settings.tools.singBox",
+        status: tools["sing-box"] ? "installed" : "missing",
+        version: tools["sing-box"] ? "1.12.0" : null,
+        action: tools["sing-box"] ? "none" : "internal",
+        detailKey: null
+      },
+      {
+        id: "openvpn",
+        nameKey: "settings.tools.openvpn",
+        status: tools.openvpn ? "installed" : "missing",
+        version: tools.openvpn ? "2.6.16-I001" : null,
+        action: tools.openvpn ? "none" : "internal",
+        detailKey: "settings.tools.detail.localOrDocker"
+      },
+      {
+        id: "amneziawg",
+        nameKey: "settings.tools.amneziawg",
+        status: tools.amneziawg ? "installed" : "missing",
+        version: tools.amneziawg ? "2.0.0" : null,
+        action: tools.amneziawg ? "none" : "internal",
+        detailKey: "settings.tools.detail.localOrDocker"
+      },
+      {
+        id: "tor-bundle",
+        nameKey: "settings.tools.torBundle",
+        status: tools["tor-bundle"] ? "installed" : "missing",
+        version: tools["tor-bundle"] ? "15.0.9" : null,
+        action: tools["tor-bundle"] ? "none" : "internal",
+        detailKey: null
+      }
+    ];
+  }
+
+  if (command === "install_runtime_tool") {
+    const tools = readMockRuntimeTools();
+    tools[request.toolId] = true;
+    writeMockRuntimeTools(tools);
+    return mockProfileCommand("get_runtime_tools_status").find((item) => item.id === request.toolId);
   }
 
   if (command === "set_launcher_auto_update") {

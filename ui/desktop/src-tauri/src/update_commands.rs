@@ -31,7 +31,11 @@ const SCHEDULER_TICK: Duration = Duration::from_secs(15 * 60);
 const USER_AGENT: &str = concat!("Cerbena-Updater/", env!("CARGO_PKG_VERSION"));
 const UPDATER_EVENT_NAME: &str = "updater-progress";
 pub const UPDATER_RELAUNCH_AUTO_EXIT_ENV: &str = "CERBENA_UPDATER_AUTO_EXIT_AFTER_SECONDS";
-const RELEASE_SIGNING_PUBLIC_KEY_XML: &str = r#"<RSAKeyValue><Modulus>sQ/dGNzpHEHiSUvpp8+h4axIghjUrkY9hHX3GNPwS9kGK6FCoc6+DuKSK/u5JwEKk/sjTks2m8ANgCm1ajaEPFE/BQjP1VsqQE3/MGbpRwWXIYUP6qKX2EhMQa5Fg0fywHV5uk7v3x6Q/Yfc4cWVLKNClqpq2hk8CX0NfUjqN1s5CNnNH1zgZPZ45ExXZQBlM5UUhdY/N4LKTFiYjpDMvoW4KSM4j9maUBmoNGVTnnRgfyWm6wM7LCoqSPpYhSb4yE+/HtaBGpePVy21B5Xi1nzPSYfShEdVkmeCJTcTj8gr1o8OcqKEs5V3yQa6MmUhNgYM/uC/lGeqiR+lwiLG4Q==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>"#;
+const RELEASE_SIGNING_PUBLIC_KEY_XML: &str =
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../config/release/release-signing-public-key.xml"
+    ));
 
 const UPDATER_STEP_DISCOVER: &str = "discover";
 const UPDATER_STEP_COMPARE: &str = "compare";
@@ -67,6 +71,12 @@ pub struct AppUpdateStore {
     #[serde(default)]
     pub staged_asset_path: Option<String>,
     #[serde(default)]
+    pub selected_asset_type: Option<String>,
+    #[serde(default)]
+    pub selected_asset_reason: Option<String>,
+    #[serde(default)]
+    pub install_handoff_mode: Option<String>,
+    #[serde(default)]
     pub pending_apply_on_exit: bool,
     #[serde(default)]
     pub updater_handoff_version: Option<String>,
@@ -90,6 +100,9 @@ impl Default for AppUpdateStore {
             staged_version: None,
             staged_asset_name: None,
             staged_asset_path: None,
+            selected_asset_type: None,
+            selected_asset_reason: None,
+            install_handoff_mode: None,
             pending_apply_on_exit: false,
             updater_handoff_version: None,
         }
@@ -207,6 +220,9 @@ pub struct AppUpdateView {
     pub last_error: Option<String>,
     pub staged_version: Option<String>,
     pub staged_asset_name: Option<String>,
+    pub selected_asset_type: Option<String>,
+    pub selected_asset_reason: Option<String>,
+    pub install_handoff_mode: Option<String>,
     pub can_auto_apply: bool,
 }
 
@@ -267,8 +283,52 @@ struct ReleaseCandidate {
     release_url: String,
     asset_name: Option<String>,
     asset_url: Option<String>,
+    asset_type: Option<String>,
+    asset_selection_reason: Option<String>,
+    install_handoff_mode: Option<String>,
     checksums_url: Option<String>,
     checksums_signature_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectedAssetKind {
+    WindowsMsi,
+    WindowsZip,
+    WindowsExe,
+    LinuxTarGz,
+    LinuxZip,
+    MacZip,
+}
+
+impl SelectedAssetKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::WindowsMsi => "msi",
+            Self::WindowsZip => "portable_zip",
+            Self::WindowsExe => "manual_installer",
+            Self::LinuxTarGz => "linux_tar_gz",
+            Self::LinuxZip => "linux_zip",
+            Self::MacZip => "mac_zip",
+        }
+    }
+
+    fn handoff_mode(self) -> &'static str {
+        match self {
+            Self::WindowsMsi => "direct_msi",
+            Self::WindowsZip => "portable_zip",
+            Self::WindowsExe => "manual_installer",
+            Self::LinuxTarGz => "manual_installer",
+            Self::LinuxZip => "manual_installer",
+            Self::MacZip => "manual_installer",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SelectedReleaseAsset<'a> {
+    asset: &'a GithubReleaseAsset,
+    kind: SelectedAssetKind,
+    reason: &'static str,
 }
 
 fn updater_overview_template(mode: UpdaterLaunchMode) -> UpdaterOverview {
@@ -492,6 +552,26 @@ fn resolve_updater_executable_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(current_exe)
 }
 
+fn current_windows_install_mode() -> String {
+    if !cfg!(target_os = "windows") {
+        return "non_windows".to_string();
+    }
+    let Ok(current_exe) = std::env::current_exe() else {
+        return "portable_zip".to_string();
+    };
+    let Some(install_root) = current_exe.parent() else {
+        return "portable_zip".to_string();
+    };
+    let marker = install_root.join("cerbena-install-mode.txt");
+    if let Ok(value) = fs::read_to_string(marker) {
+        let normalized = value.trim().to_ascii_lowercase();
+        if !normalized.is_empty() {
+            return normalized;
+        }
+    }
+    "portable_zip".to_string()
+}
+
 pub fn launch_pending_update_on_exit(app: &AppHandle) {
     let state = app.state::<AppState>();
 
@@ -536,7 +616,20 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
             relaunch_executable.as_deref(),
         )
         .is_ok(),
-        "msi" => launch_msi_installer(&asset_path).is_ok(),
+        "msi" => {
+            let store_path = state
+                .app_update_store_path(&state.app_handle)
+                .ok()
+                .map(|value| value.to_string_lossy().to_string());
+            launch_msi_apply_helper(
+                current_pid,
+                &asset_path,
+                relaunch_executable.as_deref(),
+                store_path.as_deref(),
+                snapshot.staged_version.as_deref(),
+            )
+            .is_ok()
+        }
         _ => false,
     };
 
@@ -806,13 +899,28 @@ fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, Str
             push_runtime_log(
                 state,
                 format!(
-                    "[updater] latest release discovered version={} release_url={}",
-                    candidate.version, candidate.release_url
+                "[updater] latest release discovered version={} release_url={}",
+                candidate.version, candidate.release_url
+            ),
+        );
+            push_runtime_log(
+                state,
+                format!(
+                    "[updater] selected asset type={} handoff={} reason={}",
+                    candidate.asset_type.as_deref().unwrap_or("unknown"),
+                    candidate.install_handoff_mode.as_deref().unwrap_or("unknown"),
+                    candidate
+                        .asset_selection_reason
+                        .as_deref()
+                        .unwrap_or("unspecified")
                 ),
             );
             store.latest_version = Some(candidate.version.clone());
             store.release_url = Some(candidate.release_url.clone());
             store.has_update = is_version_newer(&candidate.version, CURRENT_VERSION);
+            store.selected_asset_type = candidate.asset_type.clone();
+            store.selected_asset_reason = candidate.asset_selection_reason.clone();
+            store.install_handoff_mode = candidate.install_handoff_mode.clone();
             store.last_error = None;
             if store.has_update {
                 store.status = "available".to_string();
@@ -913,6 +1021,9 @@ fn stage_release_if_needed(
         } else {
             "available".to_string()
         };
+        store.selected_asset_type = candidate.asset_type.clone();
+        store.selected_asset_reason = candidate.asset_selection_reason.clone();
+        store.install_handoff_mode = candidate.install_handoff_mode.clone();
         store.pending_apply_on_exit = can_auto_apply_asset(asset_name);
         return Ok(());
     }
@@ -933,6 +1044,9 @@ fn stage_release_if_needed(
     store.staged_version = Some(candidate.version.clone());
     store.staged_asset_name = Some(asset_name.clone());
     store.staged_asset_path = Some(asset_path.to_string_lossy().to_string());
+    store.selected_asset_type = candidate.asset_type.clone();
+    store.selected_asset_reason = candidate.asset_selection_reason.clone();
+    store.install_handoff_mode = candidate.install_handoff_mode.clone();
     store.pending_apply_on_exit = can_auto_apply_asset(asset_name);
     store.status = if store.pending_apply_on_exit {
         "downloaded".to_string()
@@ -946,6 +1060,9 @@ fn clear_staged_update(store: &mut AppUpdateStore) {
     store.staged_version = None;
     store.staged_asset_name = None;
     store.staged_asset_path = None;
+    store.selected_asset_type = None;
+    store.selected_asset_reason = None;
+    store.install_handoff_mode = None;
     store.pending_apply_on_exit = false;
 }
 
@@ -976,6 +1093,9 @@ fn stage_verified_release_asset(
     store.staged_version = Some(candidate.version.clone());
     store.staged_asset_name = Some(asset_name.to_string());
     store.staged_asset_path = Some(asset_path.to_string_lossy().to_string());
+    store.selected_asset_type = candidate.asset_type.clone();
+    store.selected_asset_reason = candidate.asset_selection_reason.clone();
+    store.install_handoff_mode = candidate.install_handoff_mode.clone();
     store.pending_apply_on_exit = can_auto_apply_asset(asset_name);
     store.status = if store.pending_apply_on_exit {
         "downloaded".to_string()
@@ -1110,27 +1230,139 @@ fn fetch_latest_release_from_url(
     Ok(ReleaseCandidate {
         version,
         release_url: release.html_url,
-        asset_name: asset.map(|item| item.name.clone()),
-        asset_url: asset.map(|item| item.browser_download_url.clone()),
+        asset_name: asset.map(|item| item.asset.name.clone()),
+        asset_url: asset.map(|item| item.asset.browser_download_url.clone()),
+        asset_type: asset.map(|item| item.kind.label().to_string()),
+        asset_selection_reason: asset.map(|item| item.reason.to_string()),
+        install_handoff_mode: asset.map(|item| item.kind.handoff_mode().to_string()),
         checksums_url: checksums.map(|item| item.browser_download_url.clone()),
         checksums_signature_url: checksums_signature.map(|item| item.browser_download_url.clone()),
     })
 }
 
-fn pick_release_asset(assets: &[GithubReleaseAsset]) -> Option<&GithubReleaseAsset> {
+fn pick_release_asset(assets: &[GithubReleaseAsset]) -> Option<SelectedReleaseAsset<'_>> {
     let os = std::env::consts::OS;
-    let mut candidates = assets
+    let install_mode = if os == "windows" {
+        Some(current_windows_install_mode())
+    } else {
+        None
+    };
+    pick_release_asset_for_context(assets, os, install_mode.as_deref())
+}
+
+fn pick_release_asset_for_context<'a>(
+    assets: &'a [GithubReleaseAsset],
+    os: &str,
+    windows_install_mode: Option<&str>,
+) -> Option<SelectedReleaseAsset<'a>> {
+    let candidates = assets
         .iter()
-        .filter(|asset| {
-            let name = asset.name.to_ascii_lowercase();
-            matches!(os, "windows" if name.contains("windows") || name.contains("win") || name.ends_with(".zip") || name.ends_with(".msi"))
-                || matches!(os, "linux" if name.contains("linux") || name.ends_with(".tar.gz") || name.ends_with(".zip"))
-                || matches!(os, "macos" if name.contains("mac") || name.contains("darwin") || name.ends_with(".zip"))
-        })
+        .filter_map(|asset| classify_release_asset(os, asset))
         .collect::<Vec<_>>();
 
-    candidates.sort_by_key(|asset| asset_rank(&asset.name));
-    candidates.into_iter().next()
+    if os == "windows" {
+        let prefer_msi = windows_install_mode.unwrap_or("portable_zip") != "portable_zip";
+        if prefer_msi {
+            if let Some(asset) = candidates
+                .iter()
+                .copied()
+                .find(|item| item.kind == SelectedAssetKind::WindowsMsi)
+            {
+                return Some(SelectedReleaseAsset {
+                    reason: "windows_installed_context_prefers_msi",
+                    ..asset
+                });
+            }
+        }
+        if let Some(asset) = candidates
+            .iter()
+            .copied()
+            .find(|item| item.kind == SelectedAssetKind::WindowsZip)
+        {
+            return Some(SelectedReleaseAsset {
+                reason: if prefer_msi {
+                    "windows_portable_zip_fallback"
+                } else {
+                    "windows_portable_zip_primary"
+                },
+                ..asset
+            });
+        }
+        if let Some(asset) = candidates
+            .iter()
+            .copied()
+            .find(|item| item.kind == SelectedAssetKind::WindowsMsi)
+        {
+            return Some(SelectedReleaseAsset {
+                reason: "windows_msi_fallback_when_zip_missing",
+                ..asset
+            });
+        }
+        if let Some(asset) = candidates
+            .iter()
+            .copied()
+            .find(|item| item.kind == SelectedAssetKind::WindowsExe)
+        {
+            return Some(SelectedReleaseAsset {
+                reason: "windows_manual_installer_fallback",
+                ..asset
+            });
+        }
+        return None;
+    }
+
+    candidates
+        .into_iter()
+        .min_by_key(|item| asset_rank(item.kind))
+        .map(|item| SelectedReleaseAsset {
+            reason: match item.kind {
+                SelectedAssetKind::LinuxTarGz => "linux_tar_gz_primary",
+                SelectedAssetKind::LinuxZip => "linux_zip_fallback",
+                SelectedAssetKind::MacZip => "mac_zip_primary",
+                _ => "generic_asset_selection",
+            },
+            ..item
+        })
+}
+
+fn classify_release_asset<'a>(
+    os: &str,
+    asset: &'a GithubReleaseAsset,
+) -> Option<SelectedReleaseAsset<'a>> {
+    let name = asset.name.to_ascii_lowercase();
+    match os {
+        "windows" if name.ends_with(".msi") => Some(SelectedReleaseAsset {
+            asset,
+            kind: SelectedAssetKind::WindowsMsi,
+            reason: "windows_msi_candidate",
+        }),
+        "windows" if name.ends_with(".zip") => Some(SelectedReleaseAsset {
+            asset,
+            kind: SelectedAssetKind::WindowsZip,
+            reason: "windows_zip_candidate",
+        }),
+        "windows" if name.ends_with(".exe") => Some(SelectedReleaseAsset {
+            asset,
+            kind: SelectedAssetKind::WindowsExe,
+            reason: "windows_exe_candidate",
+        }),
+        "linux" if name.ends_with(".tar.gz") => Some(SelectedReleaseAsset {
+            asset,
+            kind: SelectedAssetKind::LinuxTarGz,
+            reason: "linux_tar_gz_candidate",
+        }),
+        "linux" if name.ends_with(".zip") => Some(SelectedReleaseAsset {
+            asset,
+            kind: SelectedAssetKind::LinuxZip,
+            reason: "linux_zip_candidate",
+        }),
+        "macos" if name.ends_with(".zip") => Some(SelectedReleaseAsset {
+            asset,
+            kind: SelectedAssetKind::MacZip,
+            reason: "mac_zip_candidate",
+        }),
+        _ => None,
+    }
 }
 
 fn verify_release_candidate(
@@ -1408,21 +1640,15 @@ fn extract_checksum_for_asset<'a>(checksums_text: &'a str, asset_name: &str) -> 
     None
 }
 
-fn asset_rank(name: &str) -> u8 {
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".zip") {
-        return 0;
+fn asset_rank(kind: SelectedAssetKind) -> u8 {
+    match kind {
+        SelectedAssetKind::WindowsMsi => 0,
+        SelectedAssetKind::WindowsZip => 1,
+        SelectedAssetKind::WindowsExe => 2,
+        SelectedAssetKind::LinuxTarGz => 0,
+        SelectedAssetKind::LinuxZip => 1,
+        SelectedAssetKind::MacZip => 0,
     }
-    if lower.ends_with(".msi") {
-        return 1;
-    }
-    if lower.ends_with(".exe") {
-        return 2;
-    }
-    if lower.ends_with(".tar.gz") {
-        return 3;
-    }
-    10
 }
 
 fn can_auto_apply_asset(name: &str) -> bool {
@@ -1535,12 +1761,109 @@ fn build_zip_apply_helper_script(
     )
 }
 
-fn launch_msi_installer(msi_path: &Path) -> Result<(), String> {
-    Command::new("msiexec.exe")
-        .args(["/i", &msi_path.to_string_lossy(), "/qn", "/norestart"])
+fn launch_msi_apply_helper(
+    pid: u32,
+    msi_path: &Path,
+    relaunch_executable: Option<&Path>,
+    update_store_path: Option<&str>,
+    target_version: Option<&str>,
+) -> Result<(), String> {
+    let helper = build_msi_apply_helper_script(
+        pid,
+        msi_path,
+        relaunch_executable,
+        update_store_path,
+        target_version,
+    );
+    Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &helper,
+        ])
         .spawn()
-        .map_err(|e| format!("spawn msi installer: {e}"))?;
+        .map_err(|e| format!("spawn msi update helper: {e}"))?;
     Ok(())
+}
+
+fn build_msi_apply_helper_script(
+    pid: u32,
+    msi_path: &Path,
+    relaunch_executable: Option<&Path>,
+    update_store_path: Option<&str>,
+    target_version: Option<&str>,
+) -> String {
+    let relaunch = relaunch_executable
+        .map(powershell_quote)
+        .unwrap_or_else(|| "$null".to_string());
+    let store = update_store_path
+        .map(|value| powershell_quote(Path::new(value)))
+        .unwrap_or_else(|| "$null".to_string());
+    let version = target_version
+        .map(|value| format!("'{}'", value.replace('\'', "''")))
+        .unwrap_or_else(|| "$null".to_string());
+    format!(
+        "$pidValue={pid};\
+        $msiPath={msi};\
+        $relaunchExe={relaunch};\
+        $storePath={store};\
+        $targetVersion={version};\
+        $versionProbe=$env:CERBENA_SELFTEST_REPORT_VERSION_FILE;\
+        $autoExitAfter='20';\
+        function Describe-MsiExit([int]$code) {{\
+            switch ($code) {{\
+                1602 {{ return 'msi install canceled before completion' }}\
+                1618 {{ return 'another Windows Installer transaction is already running (1618)' }}\
+                3010 {{ return 'msi install completed and requested a relaunch (3010)' }}\
+                default {{ return ('msi install failed with exit code ' + $code) }}\
+            }}\
+        }};\
+        function Update-Store([string]$status, [string]$lastError, [bool]$pendingApply) {{\
+            if (-not $storePath -or [string]::IsNullOrWhiteSpace($storePath) -or -not (Test-Path -LiteralPath $storePath)) {{ return }};\
+            try {{\
+                $json = Get-Content -LiteralPath $storePath -Raw | ConvertFrom-Json;\
+                $json.status = $status;\
+                $json.lastError = if ([string]::IsNullOrWhiteSpace($lastError)) {{ $null }} else {{ $lastError }};\
+                $json.pendingApplyOnExit = $pendingApply;\
+                if ($targetVersion) {{ $json.stagedVersion = $targetVersion }};\
+                $updated = $json | ConvertTo-Json -Depth 8;\
+                [System.IO.File]::WriteAllText($storePath, $updated, (New-Object System.Text.UTF8Encoding($false)));\
+            }} catch {{}}\
+        }};\
+        while (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }};\
+        Update-Store 'applying' $null $false;\
+        $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $msiPath, '/qn', '/norestart') -WindowStyle Hidden -PassThru -Wait;\
+        if ($proc.ExitCode -eq 1602) {{\
+            Update-Store 'canceled' (Describe-MsiExit $proc.ExitCode) $false;\
+            exit $proc.ExitCode;\
+        }};\
+        if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {{\
+            Update-Store 'error' (Describe-MsiExit $proc.ExitCode) $false;\
+            exit $proc.ExitCode;\
+        }};\
+        Update-Store 'applied_pending_relaunch' $null $false;\
+        if ($relaunchExe -and (Test-Path -LiteralPath $relaunchExe)) {{\
+            $relaunchInfo = New-Object System.Diagnostics.ProcessStartInfo;\
+            $relaunchInfo.FileName = $relaunchExe;\
+            $relaunchInfo.WorkingDirectory = Split-Path -Parent $relaunchExe;\
+            $relaunchInfo.UseShellExecute = $false;\
+            if ($versionProbe) {{\
+                $relaunchInfo.EnvironmentVariables['CERBENA_SELFTEST_REPORT_VERSION_FILE'] = $versionProbe;\
+                $relaunchInfo.EnvironmentVariables['{auto_exit_env}'] = $autoExitAfter;\
+            }};\
+            [System.Diagnostics.Process]::Start($relaunchInfo) | Out-Null;\
+        }}",
+        pid = pid,
+        msi = powershell_quote(msi_path),
+        relaunch = relaunch,
+        store = store,
+        version = version,
+        auto_exit_env = UPDATER_RELAUNCH_AUTO_EXIT_ENV
+    )
 }
 
 fn resolve_relaunch_executable_path(install_root: &Path) -> Option<PathBuf> {
@@ -1585,10 +1908,19 @@ fn reconcile_update_store_with_current_version(store: &mut AppUpdateStore) {
         .as_deref()
         .map(|version| !is_version_newer(version, CURRENT_VERSION))
         .unwrap_or(false);
-    if staged_is_current_or_older {
+    let handoff_is_current_or_older = store
+        .updater_handoff_version
+        .as_deref()
+        .map(|version| !is_version_newer(version, CURRENT_VERSION))
+        .unwrap_or(false);
+    let stale_handoff_status = matches!(
+        store.status.as_str(),
+        "applying" | "downloaded" | "applied_pending_relaunch"
+    );
+    if staged_is_current_or_older || (handoff_is_current_or_older && stale_handoff_status) {
         clear_staged_update(store);
         store.updater_handoff_version = None;
-        if store.status == "applying" || store.status == "downloaded" {
+        if stale_handoff_status {
             store.status = "up_to_date".to_string();
         }
         store.last_error = None;
@@ -1624,6 +1956,9 @@ fn to_view(store: &AppUpdateStore) -> AppUpdateView {
         last_error: store.last_error.clone(),
         staged_version: store.staged_version.clone(),
         staged_asset_name: store.staged_asset_name.clone(),
+        selected_asset_type: store.selected_asset_type.clone(),
+        selected_asset_reason: store.selected_asset_reason.clone(),
+        install_handoff_mode: store.install_handoff_mode.clone(),
         can_auto_apply: store
             .staged_asset_name
             .as_deref()
@@ -1695,13 +2030,15 @@ fn powershell_quote(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        asset_rank, build_release_http_client, build_zip_apply_helper_script, can_auto_apply_asset,
-        default_auto_update_enabled, download_release_bytes,
-        ensure_asset_matches_verified_checksum, extract_checksum_for_asset,
-        fetch_latest_release_from_url, is_version_newer, normalize_version, pick_release_asset,
-        reconcile_update_store_with_current_version, resolve_relaunch_executable_path, sha256_hex,
-        should_run_auto_update_check, signature_verification_variants, AppUpdateStore,
-        GithubReleaseAsset, UpdaterLaunchMode, VerifiedReleaseSecurityBundle, CURRENT_VERSION,
+        asset_rank, build_msi_apply_helper_script, build_release_http_client,
+        build_zip_apply_helper_script, can_auto_apply_asset, default_auto_update_enabled,
+        download_release_bytes, ensure_asset_matches_verified_checksum,
+        extract_checksum_for_asset, fetch_latest_release_from_url, is_version_newer,
+        normalize_version, pick_release_asset_for_context,
+        reconcile_update_store_with_current_version, resolve_relaunch_executable_path,
+        sha256_hex, should_run_auto_update_check, signature_verification_variants,
+        AppUpdateStore, GithubReleaseAsset, SelectedAssetKind, UpdaterLaunchMode,
+        VerifiedReleaseSecurityBundle, CURRENT_VERSION,
         RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV,
     };
     use std::{
@@ -1840,8 +2177,8 @@ mod tests {
 
     #[test]
     fn preferred_asset_order_keeps_zip_before_other_formats() {
-        assert!(asset_rank("a.zip") < asset_rank("a.msi"));
-        assert!(asset_rank("a.msi") < asset_rank("a.exe"));
+        assert!(asset_rank(SelectedAssetKind::WindowsMsi) < asset_rank(SelectedAssetKind::WindowsZip));
+        assert!(asset_rank(SelectedAssetKind::WindowsZip) < asset_rank(SelectedAssetKind::WindowsExe));
     }
 
     #[test]
@@ -1856,10 +2193,43 @@ mod tests {
                 browser_download_url: "https://example.invalid/2".to_string(),
             },
         ];
-        let selected = pick_release_asset(&assets).expect("selected asset");
-        if cfg!(target_os = "windows") {
-            assert_eq!(selected.name, "cerbena-windows.zip");
-        }
+        let selected = pick_release_asset_for_context(&assets, "windows", Some("msi"))
+            .expect("selected installed asset");
+        assert_eq!(selected.asset.name, "cerbena-windows.msi");
+        assert_eq!(selected.kind, SelectedAssetKind::WindowsMsi);
+        assert_eq!(selected.reason, "windows_installed_context_prefers_msi");
+    }
+
+    #[test]
+    fn release_asset_picker_prefers_zip_for_portable_windows_context() {
+        let assets = vec![
+            GithubReleaseAsset {
+                name: "cerbena-windows.msi".to_string(),
+                browser_download_url: "https://example.invalid/1".to_string(),
+            },
+            GithubReleaseAsset {
+                name: "cerbena-windows.zip".to_string(),
+                browser_download_url: "https://example.invalid/2".to_string(),
+            },
+        ];
+        let selected = pick_release_asset_for_context(&assets, "windows", Some("portable_zip"))
+            .expect("selected portable asset");
+        assert_eq!(selected.asset.name, "cerbena-windows.zip");
+        assert_eq!(selected.kind, SelectedAssetKind::WindowsZip);
+        assert_eq!(selected.reason, "windows_portable_zip_primary");
+    }
+
+    #[test]
+    fn release_asset_picker_falls_back_to_msi_when_zip_is_missing() {
+        let assets = vec![GithubReleaseAsset {
+            name: "cerbena-windows.msi".to_string(),
+            browser_download_url: "https://example.invalid/1".to_string(),
+        }];
+        let selected = pick_release_asset_for_context(&assets, "windows", Some("portable_zip"))
+            .expect("selected fallback asset");
+        assert_eq!(selected.asset.name, "cerbena-windows.msi");
+        assert_eq!(selected.kind, SelectedAssetKind::WindowsMsi);
+        assert_eq!(selected.reason, "windows_msi_fallback_when_zip_missing");
     }
 
     #[test]
@@ -1962,6 +2332,29 @@ def456  cerbena-windows-x64/cerbena.exe\n";
     }
 
     #[test]
+    fn reconcile_update_store_clears_stale_handoff_state_after_successful_relaunch() {
+        let mut store = AppUpdateStore {
+            latest_version: Some("1.0.6-1".to_string()),
+            staged_asset_name: Some("cerbena-browser-1.0.18.msi".to_string()),
+            staged_asset_path: Some("C:/tmp/update.msi".to_string()),
+            selected_asset_type: Some("msi".to_string()),
+            selected_asset_reason: Some("windows_installed_context_prefers_msi".to_string()),
+            install_handoff_mode: Some("direct_msi".to_string()),
+            updater_handoff_version: Some(CURRENT_VERSION.to_string()),
+            status: "applied_pending_relaunch".to_string(),
+            ..AppUpdateStore::default()
+        };
+        reconcile_update_store_with_current_version(&mut store);
+        assert_eq!(store.staged_asset_name, None);
+        assert_eq!(store.staged_asset_path, None);
+        assert_eq!(store.selected_asset_type, None);
+        assert_eq!(store.selected_asset_reason, None);
+        assert_eq!(store.install_handoff_mode, None);
+        assert_eq!(store.updater_handoff_version, None);
+        assert_eq!(store.status, "up_to_date");
+    }
+
+    #[test]
     fn relaunch_executable_prefers_cerbena_binary() {
         let temp = tempfile::tempdir().expect("tempdir");
         let cerbena = temp.path().join("cerbena.exe");
@@ -1988,6 +2381,25 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         assert!(script
             .contains("for ($attempt=0; $attempt -lt 10 -and -not $copySucceeded; $attempt++)"));
         assert!(script.contains("CERBENA_UPDATER_AUTO_EXIT_AFTER_SECONDS"));
+    }
+
+    #[test]
+    fn msi_apply_helper_uses_quiet_msiexec_and_updates_store() {
+        let script = build_msi_apply_helper_script(
+            4242,
+            Path::new("C:/tmp/update.msi"),
+            Some(Path::new("C:/Program Files/Cerbena Browser/cerbena.exe")),
+            Some("C:/tmp/app_update_store.json"),
+            Some("1.0.18"),
+        );
+        assert!(script.contains("Start-Process -FilePath 'msiexec.exe'"));
+        assert!(script.contains("'/qn'"));
+        assert!(script.contains("Update-Store 'applied_pending_relaunch'"));
+        assert!(script.contains("pendingApplyOnExit"));
+        assert!(script.contains("Update-Store 'canceled'"));
+        assert!(script.contains("1602"));
+        assert!(script.contains("1618"));
+        assert!(script.contains("another Windows Installer transaction is already running (1618)"));
     }
 
     #[test]

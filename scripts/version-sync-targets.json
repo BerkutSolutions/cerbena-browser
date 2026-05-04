@@ -11,6 +11,7 @@
     { "path": "ui/desktop/src-tauri/Cargo.lock", "strategy": "replace_all" },
     { "path": "ui/desktop/src-tauri/tauri.conf.json", "strategy": "replace_all" },
     { "path": "ui/desktop/src-tauri/src/extensions_commands.rs", "strategy": "replace_all" },
+    { "path": "ui/desktop/src-tauri/src/update_commands.rs", "strategy": "replace_all" },
     { "path": "ui/desktop/web/app/main.js", "strategy": "replace_all" },
     { "path": "ui/desktop/web/app/updater.js", "strategy": "replace_all" },
     { "path": "ui/desktop/web/core/commands.js", "strategy": "replace_all" },

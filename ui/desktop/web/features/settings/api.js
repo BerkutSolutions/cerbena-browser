@@ -83,3 +83,13 @@ export async function confirmAppExit() {
 export async function openDefaultAppsSettings() {
   return callCommand("open_default_apps_settings");
 }
+
+export async function getRuntimeToolsStatus() {
+  return callCommand("get_runtime_tools_status");
+}
+
+export async function installRuntimeTool(toolId) {
+  return callCommand("install_runtime_tool", {
+    request: { toolId }
+  });
+}

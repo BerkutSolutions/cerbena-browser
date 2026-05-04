@@ -2719,7 +2719,7 @@ fn copy_dir_recursive(source: &PathBuf, target: &PathBuf) -> Result<(), String> 
     Ok(())
 }
 
-async fn ensure_engine_ready(
+pub(crate) async fn ensure_engine_ready(
     app_handle: &tauri::AppHandle,
     state: &AppState,
     runtime: &EngineRuntime,

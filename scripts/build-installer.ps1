@@ -7,6 +7,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "release-signing.ps1")
+
 function Invoke-Native([string]$FilePath, [string[]]$Arguments = @(), [switch]$Quiet) {
     $prevErrorAction = $ErrorActionPreference
     $hasNativePref = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
@@ -81,8 +83,374 @@ function Find-CSharpCompiler {
     return $null
 }
 
+function Find-WixTool([string]$RepoRoot) {
+    $paths = @(
+        (Join-Path $RepoRoot ".tools\wix.exe"),
+        (Get-Command "wix.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($path in $paths) {
+        if (Test-Path $path) {
+            return $path
+        }
+    }
+
+    return $null
+}
+
 function Convert-ToInnoPath([string]$Path) {
     return $Path.Replace("\", "\\")
+}
+
+function Get-RelativePathCompat([string]$BasePath, [string]$TargetPath) {
+    $pathType = [System.IO.Path]
+    $method = $pathType.GetMethod("GetRelativePath", [type[]]@([string], [string]))
+    if ($null -ne $method) {
+        return [string]$method.Invoke($null, @($BasePath, $TargetPath))
+    }
+
+    $normalizedBase = [System.IO.Path]::GetFullPath($BasePath)
+    if (-not $normalizedBase.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+        $normalizedBase += [System.IO.Path]::DirectorySeparatorChar
+    }
+    $normalizedTarget = [System.IO.Path]::GetFullPath($TargetPath)
+    $baseUri = New-Object System.Uri($normalizedBase)
+    $targetUri = New-Object System.Uri($normalizedTarget)
+    $relativeUri = $baseUri.MakeRelativeUri($targetUri)
+    return [System.Uri]::UnescapeDataString($relativeUri.ToString()).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+}
+
+function Convert-ToWixId([string]$Prefix, [string]$Value) {
+    $sanitized = ($Value -replace '[^A-Za-z0-9_]', '_').Trim('_')
+    if ([string]::IsNullOrWhiteSpace($sanitized)) {
+        $sanitized = "item"
+    }
+    if ($sanitized[0] -match '[0-9]') {
+        $sanitized = "_" + $sanitized
+    }
+    $candidate = "${Prefix}_${sanitized}"
+    if ($candidate.Length -le 60) {
+        return $candidate
+    }
+    $hash = [BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes($Value)
+        )
+    ).Replace("-", "").Substring(0, 16)
+    return "${Prefix}_${hash}"
+}
+
+function New-StableGuid([string]$Seed) {
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    try {
+        $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Seed))
+        return ([guid]::New($bytes)).ToString().ToUpperInvariant()
+    } finally {
+        $md5.Dispose()
+    }
+}
+
+function Convert-VersionToMsiProductVersion([string]$Version) {
+    $normalized = $Version.Trim().TrimStart("v", "V")
+    $parts = $normalized.Split("-", 2)
+    $core = $parts[0].Split(".")
+    if ($core.Count -lt 3) {
+        throw "version must have at least 3 numeric components for MSI: $Version"
+    }
+    $major = [int]$core[0]
+    $minor = [int]$core[1]
+    $patch = [int]$core[2]
+    if ($parts.Count -gt 1 -and $parts[1] -match '^[0-9]+(\.[0-9]+)*$') {
+        $hotfix = [int](($parts[1].Split(".")[0]))
+        $patch = [Math]::Min(65535, ($patch * 100) + $hotfix)
+    }
+    return "$major.$minor.$patch"
+}
+
+function New-ReleaseMetadataEntry([string]$Name, [string]$Target, [string]$Source, [string]$Kind, [string]$InstallerKind, [string]$UpdaterStrategy, [bool]$Primary) {
+    $hash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash.ToLowerInvariant()
+    $size = (Get-Item -LiteralPath $Source).Length
+    return @{
+        name = $Name
+        path = $Target
+        sha256 = $hash
+        size_bytes = $size
+        platform = "windows-x64"
+        kind = $Kind
+        installer_kind = $InstallerKind
+        updater_strategy = $UpdaterStrategy
+        primary = $Primary
+    }
+}
+
+function Update-ReleaseMetadataWithInstallerAssets([string]$RepoRoot, [string]$Version, [object[]]$InstallerArtifacts) {
+    if ($InstallerArtifacts.Count -eq 0) {
+        return
+    }
+
+    $releaseRoot = Join-Path $RepoRoot ("build\release\" + $Version)
+    $manifestPath = Join-Path $releaseRoot "release-manifest.json"
+    $checksumsPath = Join-Path $releaseRoot "checksums.txt"
+    $checksumsSignaturePath = Join-Path $releaseRoot "checksums.sig"
+    if (-not (Test-Path $manifestPath) -or -not (Test-Path $checksumsPath)) {
+        throw "release metadata files are missing; generate release artifacts before building installers"
+    }
+
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $existingArtifacts = @($manifest.artifacts)
+    $installerNames = $InstallerArtifacts | ForEach-Object { $_.name }
+    $manifest.artifacts = @(
+        $existingArtifacts | Where-Object { $installerNames -notcontains $_.name }
+    ) + $InstallerArtifacts
+
+    $existingLines = Get-Content -LiteralPath $checksumsPath |
+        Where-Object {
+            $line = $_.Trim()
+            if ([string]::IsNullOrWhiteSpace($line)) {
+                return $false
+            }
+            $entry = ($line -split '\s+', 3)[-1]
+            $name = [System.IO.Path]::GetFileName(($entry -replace '/', '\'))
+            return $installerNames -notcontains $name
+        }
+    $installerLines = $InstallerArtifacts | ForEach-Object { "$($_.sha256)  $($_.path)" }
+    $checksumsText = (@($existingLines) + @($installerLines)) -join "`n"
+    $checksumsBytes = [System.Text.Encoding]::UTF8.GetBytes($checksumsText)
+    $checksumsSignature = New-ReleaseChecksumSignature $checksumsBytes
+
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8), $utf8)
+    [System.IO.File]::WriteAllText($checksumsPath, $checksumsText, $utf8)
+    [System.IO.File]::WriteAllText($checksumsSignaturePath, $checksumsSignature, $utf8)
+}
+
+function New-MsiInstaller(
+    [string]$InstallerRoot,
+    [string]$PayloadRoot,
+    [string]$Version,
+    [string]$RepoRoot
+) {
+    $wix = Find-WixTool $RepoRoot
+    if ([string]::IsNullOrWhiteSpace($wix)) {
+        throw "WiX toolset is not installed. Install wix.exe (for example via dotnet tool) before building MSI artifacts."
+    }
+
+    $msiVersion = Convert-VersionToMsiProductVersion $Version
+    $wxsPath = Join-Path $InstallerRoot "CerbenaBrowserInstaller.wxs"
+    $msiPath = Join-Path $InstallerRoot "output\cerbena-browser-$Version.msi"
+    $markerPath = Join-Path $InstallerRoot "cerbena-install-mode.msi.txt"
+    $markerComponentId = "CmpInstallModeMarker"
+    $markerFileId = "FileInstallModeMarker"
+    $upgradeCode = "30A26884-D6A5-4E10-B42A-5F0B7B14A7D8"
+
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($markerPath, "msi`n", $utf8)
+
+    $files = Get-ChildItem -LiteralPath $PayloadRoot -Recurse -File | Sort-Object FullName
+    if ($files.Count -eq 0) {
+        throw "MSI payload root is empty: $PayloadRoot"
+    }
+
+    $directories = @{}
+    foreach ($file in $files) {
+        $relative = Get-RelativePathCompat -BasePath $PayloadRoot -TargetPath $file.FullName
+        $segments = $relative.Split([System.IO.Path]::DirectorySeparatorChar)
+        $current = ""
+        for ($index = 0; $index -lt ($segments.Count - 1); $index++) {
+            $segment = $segments[$index]
+            $parent = if ([string]::IsNullOrWhiteSpace($current)) { "" } else { $current }
+            $current = if ([string]::IsNullOrWhiteSpace($current)) { $segment } else { (Join-Path $current $segment) }
+            if (-not $directories.ContainsKey($current)) {
+                $directories[$current] = @{
+                    Key = $current
+                    Parent = $parent
+                    Name = $segment
+                    Id = Convert-ToWixId "DIR" $current
+                }
+            }
+        }
+    }
+
+    $childrenByParent = @{}
+    foreach ($entry in $directories.GetEnumerator()) {
+        $parent = $entry.Value.Parent
+        if (-not $childrenByParent.ContainsKey($parent)) {
+            $childrenByParent[$parent] = New-Object System.Collections.Generic.List[object]
+        }
+        [void]$childrenByParent[$parent].Add($entry.Value)
+    }
+
+    $componentsByDirectory = @{}
+    $mainExecutableFileId = ""
+    foreach ($file in $files) {
+        $relative = Get-RelativePathCompat -BasePath $PayloadRoot -TargetPath $file.FullName
+        $relativeNormalized = $relative.Replace("\", "/")
+        $directoryRelative = [System.IO.Path]::GetDirectoryName($relative)
+        $directoryKey = if ([string]::IsNullOrWhiteSpace($directoryRelative)) { "" } else { $directoryRelative }
+        $directoryId = if ([string]::IsNullOrWhiteSpace($directoryKey)) { "INSTALLDIR" } else { $directories[$directoryKey].Id }
+        if (-not $componentsByDirectory.ContainsKey($directoryId)) {
+            $componentsByDirectory[$directoryId] = New-Object System.Collections.Generic.List[string]
+        }
+        $componentId = Convert-ToWixId "CMP" $relativeNormalized
+        $fileId = Convert-ToWixId "FILE" $relativeNormalized
+        if ($relativeNormalized -eq "cerbena.exe") {
+            $mainExecutableFileId = $fileId
+        }
+        $componentGuid = New-StableGuid "msi-file::$relativeNormalized"
+        $fileSource = Convert-ToInnoPath $file.FullName
+        $xml = @"
+        <Component Id="$componentId" Guid="$componentGuid">
+          <File Id="$fileId" Source="$fileSource" KeyPath="yes" />
+        </Component>
+"@
+        [void]$componentsByDirectory[$directoryId].Add($xml)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($mainExecutableFileId)) {
+        throw "MSI payload is missing cerbena.exe"
+    }
+
+    if (-not $componentsByDirectory.ContainsKey("INSTALLDIR")) {
+        $componentsByDirectory["INSTALLDIR"] = New-Object System.Collections.Generic.List[string]
+    }
+    [void]$componentsByDirectory["INSTALLDIR"].Add(@"
+        <Component Id="$markerComponentId" Guid="$(New-StableGuid 'msi-install-mode-marker')">
+          <File Id="$markerFileId" Source="$(Convert-ToInnoPath $markerPath)" KeyPath="yes" Name="cerbena-install-mode.txt" />
+        </Component>
+"@)
+
+    $iconRegistryComponentGuid = New-StableGuid "msi-browser-registration"
+    [void]$componentsByDirectory["INSTALLDIR"].Add(@"
+        <Component Id="CmpBrowserRegistration" Guid="$iconRegistryComponentGuid">
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser" Type="string" Value="Cerbena Browser" KeyPath="yes" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser" Name="LocalizedString" Type="string" Value="Cerbena Browser" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\DefaultIcon" Type="string" Value="[INSTALLDIR]cerbena.ico" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\shell\open\command" Type="string" Value="&quot;[INSTALLDIR]cerbena.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities" Name="ApplicationName" Type="string" Value="Cerbena Browser" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities" Name="ApplicationDescription" Type="string" Value="Isolated browser profiles with controlled link routing and network policies." />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\UrlAssociations" Name="http" Type="string" Value="CerbenaBrowser.URL" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\UrlAssociations" Name="https" Type="string" Value="CerbenaBrowser.URL" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".htm" Type="string" Value="CerbenaBrowser.HTML" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".html" Type="string" Value="CerbenaBrowser.HTML" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".shtml" Type="string" Value="CerbenaBrowser.HTML" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".mht" Type="string" Value="CerbenaBrowser.MHTML" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".mhtml" Type="string" Value="CerbenaBrowser.MHTML" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".pdf" Type="string" Value="CerbenaBrowser.PDF" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".svg" Type="string" Value="CerbenaBrowser.SVG" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".xhy" Type="string" Value="CerbenaBrowser.XHTML" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".xht" Type="string" Value="CerbenaBrowser.XHTML" />
+          <RegistryValue Root="HKCU" Key="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities\FileAssociations" Name=".xhtml" Type="string" Value="CerbenaBrowser.XHTML" />
+          <RegistryValue Root="HKCU" Key="Software\RegisteredApplications" Name="Cerbena Browser" Type="string" Value="Software\Clients\StartMenuInternet\Cerbena Browser\Capabilities" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.URL" Type="string" Value="Cerbena Browser" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.URL" Name="URL Protocol" Type="string" Value="" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.URL\DefaultIcon" Type="string" Value="[INSTALLDIR]cerbena.ico" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.URL\shell\open\command" Type="string" Value="&quot;[INSTALLDIR]cerbena.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.HTML" Type="string" Value="Cerbena HTML Document" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.HTML\DefaultIcon" Type="string" Value="[INSTALLDIR]cerbena.ico" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.HTML\shell\open\command" Type="string" Value="&quot;[INSTALLDIR]cerbena.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.MHTML" Type="string" Value="Cerbena MHTML Document" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.MHTML\DefaultIcon" Type="string" Value="[INSTALLDIR]cerbena.ico" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.MHTML\shell\open\command" Type="string" Value="&quot;[INSTALLDIR]cerbena.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.PDF" Type="string" Value="Cerbena PDF Document" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.PDF\DefaultIcon" Type="string" Value="[INSTALLDIR]cerbena.ico" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.PDF\shell\open\command" Type="string" Value="&quot;[INSTALLDIR]cerbena.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.SVG" Type="string" Value="Cerbena SVG Document" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.SVG\DefaultIcon" Type="string" Value="[INSTALLDIR]cerbena.ico" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.SVG\shell\open\command" Type="string" Value="&quot;[INSTALLDIR]cerbena.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.XHTML" Type="string" Value="Cerbena XHTML Document" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.XHTML\DefaultIcon" Type="string" Value="[INSTALLDIR]cerbena.ico" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\CerbenaBrowser.XHTML\shell\open\command" Type="string" Value="&quot;[INSTALLDIR]cerbena.exe&quot; &quot;%1&quot;" />
+        </Component>
+"@)
+
+    $shortcutComponentGuid = New-StableGuid "msi-shortcuts"
+    $shortcutComponent = @"
+      <DirectoryRef Id="ProgramMenuFolder">
+        <Component Id="CmpStartMenuShortcut" Guid="$shortcutComponentGuid">
+          <Shortcut Id="ShortcutStartMenuCerbena" Name="Cerbena Browser" Target="[INSTALLDIR]cerbena.exe" WorkingDirectory="INSTALLDIR" Icon="CerbenaProductIcon" />
+          <RegistryValue Root="HKCU" Key="Software\BerkutSolutions\Cerbena Browser\MSI" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+          <RemoveFolder Id="RemoveCerbenaStartMenuFolder" On="uninstall" />
+        </Component>
+      </DirectoryRef>
+      <DirectoryRef Id="DesktopFolder">
+        <Component Id="CmpDesktopShortcut" Guid="$(New-StableGuid 'msi-shortcut-desktop')">
+          <Shortcut Id="ShortcutDesktopCerbena" Name="Cerbena Browser" Target="[INSTALLDIR]cerbena.exe" WorkingDirectory="INSTALLDIR" Icon="CerbenaProductIcon" />
+          <RegistryValue Root="HKCU" Key="Software\BerkutSolutions\Cerbena Browser\MSI" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </DirectoryRef>
+"@
+
+    function Render-DirectoryXml([string]$ParentKey, [int]$IndentLevel) {
+        $indent = "  " * $IndentLevel
+        $lines = New-Object System.Collections.Generic.List[string]
+        if ($componentsByDirectory.ContainsKey($(if ([string]::IsNullOrWhiteSpace($ParentKey)) { "INSTALLDIR" } else { $directories[$ParentKey].Id }))) {
+            foreach ($component in $componentsByDirectory[$(if ([string]::IsNullOrWhiteSpace($ParentKey)) { "INSTALLDIR" } else { $directories[$ParentKey].Id })]) {
+                [void]$lines.Add(($component -split "`n" | ForEach-Object { if ($_ -ne "") { $indent + $_ } }) -join "`n")
+            }
+        }
+        foreach ($child in @($childrenByParent[$ParentKey] | Sort-Object Name)) {
+            [void]$lines.Add("$indent<Directory Id=""$($child.Id)"" Name=""$($child.Name)"">")
+            $rendered = Render-DirectoryXml $child.Key ($IndentLevel + 1)
+            if (-not [string]::IsNullOrWhiteSpace($rendered)) {
+                [void]$lines.Add($rendered)
+            }
+            [void]$lines.Add("$indent</Directory>")
+        }
+        return ($lines -join "`n")
+    }
+
+    $installDirContent = Render-DirectoryXml "" 4
+    $wxs = @"
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Cerbena Browser"
+    Manufacturer="Berkut Solutions"
+    UpgradeCode="$upgradeCode"
+    Version="$msiVersion"
+    Scope="perUser"
+    InstallerVersion="500"
+    Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Cerbena Browser is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <Icon Id="CerbenaProductIcon" SourceFile="$(Convert-ToInnoPath (Join-Path $PayloadRoot 'cerbena.ico'))" />
+    <Property Id="ARPPRODUCTICON" Value="CerbenaProductIcon" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPNOREPAIR" Value="0" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLDIR" Name="Cerbena Browser">
+$installDirContent
+      </Directory>
+    </StandardDirectory>
+
+$shortcutComponent
+
+    <CustomAction Id="RunPostInstallRegistration" FileRef="$mainExecutableFileId" ExeCommand="--reconcile-install-registration" Execute="deferred" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="RunMsiCleanup" FileRef="$mainExecutableFileId" ExeCommand="--msi-cleanup" Execute="deferred" Impersonate="yes" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RunPostInstallRegistration" After="InstallFiles" Condition="NOT REMOVE=&quot;ALL&quot;" />
+      <Custom Action="RunMsiCleanup" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
+"@
+
+    [System.IO.File]::WriteAllText($wxsPath, $wxs, $utf8)
+    [void](Invoke-Native $wix @(
+        "build",
+        $wxsPath,
+        "-out",
+        $msiPath,
+        "-intermediatefolder",
+        (Join-Path $InstallerRoot "wix-intermediate"),
+        "-arch",
+        "x64"
+    ))
+    if (-not (Test-Path $msiPath)) {
+        throw "WiX did not produce MSI output: $msiPath"
+    }
+    return $msiPath
 }
 
 function New-ZipArchive([string]$SourceRoot, [string]$ZipPath) {
@@ -1448,6 +1816,7 @@ $installerRoot = Join-Path $repoRoot ("build\installer\" + $resolvedVersion)
 $payloadRoot = Join-Path $installerRoot "payload"
 $issPath = Join-Path $installerRoot "CerbenaBrowserInstaller.iss"
 $outputDir = Join-Path $installerRoot "output"
+$exeInstallModeMarkerPath = Join-Path $installerRoot "cerbena-install-mode.exe.txt"
 
 if (Test-Path $installerRoot) {
     Remove-Item -LiteralPath $installerRoot -Recurse -Force
@@ -1459,10 +1828,17 @@ Copy-Item -Path (Join-Path $releaseBundleRoot "*") -Destination $payloadRoot -Re
 if (Test-Path (Join-Path $repoRoot "LICENSE.txt")) {
     Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE.txt") -Destination (Join-Path $payloadRoot "LICENSE.txt") -Force
 }
+$setupIconPath = Join-Path $repoRoot "static\img\favicon.ico"
+if (-not (Test-Path $setupIconPath)) {
+    throw "installer icon not found: $setupIconPath"
+}
+Copy-Item -LiteralPath $setupIconPath -Destination (Join-Path $payloadRoot "cerbena.ico") -Force
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($exeInstallModeMarkerPath, "exe`n", $utf8)
+Copy-Item -LiteralPath $exeInstallModeMarkerPath -Destination (Join-Path $payloadRoot "cerbena-install-mode.txt") -Force
 
 $payloadRootInno = Convert-ToInnoPath $payloadRoot
 $outputDirInno = Convert-ToInnoPath $outputDir
-$setupIconPath = Join-Path $repoRoot "static\img\favicon.ico"
 $setupIconInno = Convert-ToInnoPath $setupIconPath
 $iss = @"
 #define MyAppName "Cerbena Browser"
@@ -1697,10 +2073,10 @@ begin
 end;
 "@
 
-$utf8 = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($issPath, $iss, $utf8)
 
 $compiler = Find-InnoSetupCompiler
+$builtArtifacts = New-Object System.Collections.Generic.List[hashtable]
 if ($GenerateOnly -or [string]::IsNullOrWhiteSpace($compiler)) {
     if (-not [string]::IsNullOrWhiteSpace($compiler)) {
         Write-Host "Installer script generated at $issPath" -ForegroundColor Green
@@ -1708,9 +2084,26 @@ if ($GenerateOnly -or [string]::IsNullOrWhiteSpace($compiler)) {
     }
 
     $fallbackExe = New-CSharpFallbackInstaller -InstallerRoot $installerRoot -PayloadRoot $payloadRoot -Version $resolvedVersion
+    Sign-WindowsArtifacts @($fallbackExe)
+    [void]$builtArtifacts.Add((New-ReleaseMetadataEntry -Name ([System.IO.Path]::GetFileName($fallbackExe)) -Target ([System.IO.Path]::GetFileName($fallbackExe)) -Source $fallbackExe -Kind "installer" -InstallerKind "exe_fallback" -UpdaterStrategy "manual_installer" -Primary $false))
     Write-Warning "Inno Setup compiler (ISCC.exe) not found. Built C# fallback installer instead: $fallbackExe"
-    return
+} else {
+    Invoke-Native $compiler @($issPath)
+    $innoExe = Join-Path $outputDir ("cerbena-browser-setup-" + $resolvedVersion + ".exe")
+    if (Test-Path $innoExe) {
+        [void]$builtArtifacts.Add((New-ReleaseMetadataEntry -Name ([System.IO.Path]::GetFileName($innoExe)) -Target ([System.IO.Path]::GetFileName($innoExe)) -Source $innoExe -Kind "installer" -InstallerKind "exe_fallback" -UpdaterStrategy "manual_installer" -Primary $false))
+    }
 }
 
-Invoke-Native $compiler @($issPath)
+[void](Remove-Item -LiteralPath (Join-Path $payloadRoot "cerbena-install-mode.txt") -Force -ErrorAction SilentlyContinue)
+$msiPath = New-MsiInstaller -InstallerRoot $installerRoot -PayloadRoot $payloadRoot -Version $resolvedVersion -RepoRoot $repoRoot
+[void]$builtArtifacts.Add((New-ReleaseMetadataEntry -Name ([System.IO.Path]::GetFileName($msiPath)) -Target ([System.IO.Path]::GetFileName($msiPath)) -Source $msiPath -Kind "installer" -InstallerKind "msi" -UpdaterStrategy "direct_msi" -Primary $true))
+
+Sign-WindowsArtifacts @($outputDir, $installerRoot)
+Update-ReleaseMetadataWithInstallerAssets -RepoRoot $repoRoot -Version $resolvedVersion -InstallerArtifacts @($builtArtifacts)
+
+if ($GenerateOnly -and -not [string]::IsNullOrWhiteSpace($compiler)) {
+    Write-Host "Installer script generated at $issPath" -ForegroundColor Green
+    return
+}
 Write-Host "Installer built in $outputDir" -ForegroundColor Green

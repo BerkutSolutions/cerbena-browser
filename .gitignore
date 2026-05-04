@@ -26,6 +26,8 @@ coverage.out
 .turbo/
 .gocache/
 .gomodcache/
+.dotnet-cli-home/
+.tools/
 target/
 ui/desktop/src-tauri/target/
 .cargo/

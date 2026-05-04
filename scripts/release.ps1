@@ -15,6 +15,8 @@ $defaultRemoteName = "origin"
 $defaultRemoteUrl = "https://github.com/BerkutSolutions/cerbena-browser.git"
 $defaultRepoSlug = "BerkutSolutions/cerbena-browser"
 
+. (Join-Path $PSScriptRoot "release-signing.ps1")
+
 function Write-Title([string]$Text) {
     Write-Host ""
     Write-Host ("== " + $Text + " ==") -ForegroundColor Cyan
@@ -80,6 +82,61 @@ function Get-CurrentReleaseVersion([string]$Root) {
 function Write-Utf8NoBomFile([string]$Path, [string]$Content) {
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
+function Test-ReleaseSigningEnvironmentPresent() {
+    $hasPrivateKey = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("CERBENA_RELEASE_SIGNING_PRIVATE_KEY_XML")) `
+        -or -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("CERBENA_RELEASE_SIGNING_PRIVATE_KEY_PATH"))
+    $hasPfxPath = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("CERBENA_AUTHENTICODE_PFX_PATH"))
+    $hasPfxPassword = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("CERBENA_AUTHENTICODE_PFX_PASSWORD"))
+    return $hasPrivateKey -and $hasPfxPath -and $hasPfxPassword
+}
+
+function Sync-ReleaseSigningPublicKey([string]$Root, [string]$MaterialDirectory) {
+    $sourcePath = Join-Path $MaterialDirectory "release-signing-public-key.xml"
+    if (-not (Test-Path $sourcePath)) {
+        throw "release signing bootstrap did not produce public key: $sourcePath"
+    }
+    $targetPath = Get-ReleaseSigningPublicKeyPath $Root
+    $targetDirectory = Split-Path -Parent $targetPath
+    if (-not (Test-Path $targetDirectory)) {
+        New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+    }
+    Write-Utf8NoBomFile $targetPath (([System.IO.File]::ReadAllText($sourcePath, [System.Text.Encoding]::UTF8)).Trim() + "`n")
+}
+
+function Ensure-ReleaseSigningBootstrap([string]$Root) {
+    if (Test-ReleaseSigningEnvironmentPresent) {
+        Initialize-ReleaseSigningEnvironment $Root
+        return
+    }
+
+    $materialDirectory = Get-LatestLocalSigningMaterialDirectory $Root
+    if ([string]::IsNullOrWhiteSpace($materialDirectory)) {
+        Write-Title "Bootstrap Release Signing"
+        Invoke-Native "powershell" @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $Root "scripts\new-release-signing-material.ps1")
+        )
+        $materialDirectory = Get-LatestLocalSigningMaterialDirectory $Root
+        if ([string]::IsNullOrWhiteSpace($materialDirectory)) {
+            throw "release signing bootstrap completed but no local signing bundle was discovered under build/operator-secrets/release-signing"
+        }
+        Sync-ReleaseSigningPublicKey -Root $Root -MaterialDirectory $materialDirectory
+    }
+
+    try {
+        Initialize-ReleaseSigningEnvironment $Root
+    } catch {
+        $message = [string]$_.Exception.Message
+        if ($message -like "*does not match the committed public verification key*") {
+            Write-Host "Auto-syncing committed release signing public key from local operator bundle..." -ForegroundColor Yellow
+            Sync-ReleaseSigningPublicKey -Root $Root -MaterialDirectory $materialDirectory
+            Initialize-ReleaseSigningEnvironment $Root
+            return
+        }
+        throw
+    }
 }
 
 function Test-GitRepository([string]$Root) {
@@ -226,7 +283,10 @@ function Assert-ReleaseContracts([string]$Root) {
         "scripts\security-gates-preflight.ps1",
         "scripts\vulnerability-gates-preflight.ps1",
         "scripts\generate-release-artifacts.ps1",
-        "scripts\build-installer.ps1"
+        "scripts\build-installer.ps1",
+        "scripts\release-signing.ps1",
+        "scripts\new-release-signing-material.ps1",
+        "config\release\release-signing-public-key.xml"
     )
     foreach ($rel in $required) {
         $path = Join-Path $Root $rel
@@ -242,23 +302,46 @@ function Assert-GitHubCliAvailable() {
     }
 }
 
-function Resolve-InstallerArtifactPath([string]$Root, [string]$Version) {
+function Resolve-InstallerArtifactPaths([string]$Root, [string]$Version) {
     $installerRoot = Join-Path $Root ("build\installer\" + $Version)
+    $msiPath = Join-Path $installerRoot ("output\cerbena-browser-" + $Version + ".msi")
     $innoPath = Join-Path $installerRoot ("output\cerbena-browser-setup-" + $Version + ".exe")
-    if (Test-Path $innoPath) {
-        return $innoPath
-    }
     $fallbackPath = Join-Path $installerRoot ("cerbena-browser-setup-" + $Version + ".exe")
-    if (Test-Path $fallbackPath) {
-        return $fallbackPath
+    $paths = @()
+    foreach ($candidate in @($msiPath, $innoPath, $fallbackPath)) {
+        if (Test-Path $candidate) {
+            $paths += $candidate
+        }
     }
-    return ""
+    return $paths
+}
+
+function Get-RequiredInstallerAssetPaths([string]$Root, [string]$Version) {
+    $installerRoot = Join-Path $Root ("build\installer\" + $Version)
+    return @{
+        Msi = Join-Path $installerRoot ("output\cerbena-browser-" + $Version + ".msi")
+        ExeCandidates = @(
+            (Join-Path $installerRoot ("output\cerbena-browser-setup-" + $Version + ".exe")),
+            (Join-Path $installerRoot ("cerbena-browser-setup-" + $Version + ".exe"))
+        )
+    }
+}
+
+function Assert-InstallerAssetContract([string]$Root, [string]$Version) {
+    $required = Get-RequiredInstallerAssetPaths $Root $Version
+    if (-not (Test-Path $required.Msi)) {
+        throw "required MSI installer is missing: $($required.Msi)"
+    }
+    $legacyExe = $required.ExeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($null -eq $legacyExe) {
+        throw "required legacy EXE installer is missing for compatibility: $($required.ExeCandidates -join ', ')"
+    }
 }
 
 function Resolve-ReleaseUploadAssetPaths([string]$Root, [string]$Version) {
     $releaseRoot = Join-Path $Root ("build\release\" + $Version)
     $bundleRoot = Join-Path $releaseRoot "staging\cerbena-windows-x64"
-    $installerPath = Resolve-InstallerArtifactPath $Root $Version
+    $installerPaths = Resolve-InstallerArtifactPaths $Root $Version
 
     $paths = @(
         (Join-Path $releaseRoot "cerbena-windows-x64.zip"),
@@ -267,8 +350,8 @@ function Resolve-ReleaseUploadAssetPaths([string]$Root, [string]$Version) {
         (Join-Path $releaseRoot "release-manifest.json"),
         (Join-Path $bundleRoot "cerbena-updater.exe")
     )
-    if (-not [string]::IsNullOrWhiteSpace($installerPath)) {
-        $paths += $installerPath
+    if ($installerPaths.Count -gt 0) {
+        $paths += $installerPaths
     }
     return $paths
 }
@@ -287,10 +370,14 @@ function Ensure-ReleaseUploadAssets([string]$Root, [string]$Version) {
         Generate-Artifacts $Root $Version
     }
 
-    $installerPath = Resolve-InstallerArtifactPath $Root $Version
-    if ([string]::IsNullOrWhiteSpace($installerPath)) {
+    $installerPaths = Resolve-InstallerArtifactPaths $Root $Version
+    $requiredInstallers = Get-RequiredInstallerAssetPaths $Root $Version
+    $hasMsi = Test-Path $requiredInstallers.Msi
+    $hasCompatExe = @($requiredInstallers.ExeCandidates | Where-Object { Test-Path $_ }).Count -gt 0
+    if (-not $hasMsi -or -not $hasCompatExe -or $installerPaths.Count -eq 0) {
         Build-Installer $Root
     }
+    Assert-InstallerAssetContract $Root $Version
 
     $resolvedAssets = Resolve-ReleaseUploadAssetPaths $Root $Version
     foreach ($path in $resolvedAssets) {
@@ -407,7 +494,7 @@ function Assert-GitHubReleaseAssetsPublished([string]$Root, [string]$Version) {
     }
 }
 
-function Run-Checks([string]$Root) {
+function Run-Checks([string]$Root, [switch]$SkipPublishedUpdaterE2E) {
     Write-Title "Preflight"
     $args = @(
         "-ExecutionPolicy", "Bypass",
@@ -420,6 +507,9 @@ function Run-Checks([string]$Root) {
         $args += "-SkipSecurityGates"
     }
     $args += "-SkipVulnerabilityGates"
+    if ($SkipPublishedUpdaterE2E) {
+        $args += "-SkipPublishedUpdaterE2E"
+    }
     if ($CompactOutput) {
         $args += "-CompactOutput"
     }
@@ -447,6 +537,7 @@ function Run-VulnerabilityGates([string]$Root) {
 
 function Generate-Artifacts([string]$Root, [string]$Version) {
     Write-Title "Release Artifacts"
+    Ensure-ReleaseSigningBootstrap $Root
     Invoke-Native "powershell" @(
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $Root "scripts\generate-release-artifacts.ps1"),
@@ -456,6 +547,7 @@ function Generate-Artifacts([string]$Root, [string]$Version) {
 
 function Build-Installer([string]$Root) {
     Write-Title "Build Installer"
+    Ensure-ReleaseSigningBootstrap $Root
     Invoke-Native "powershell" @(
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $Root "scripts\build-installer.ps1")
@@ -490,6 +582,16 @@ function Publish-Release([string]$Root, [string]$Version) {
     }
     Invoke-Native "git" @("-C", $Root, "push", $defaultRemoteName, $tag)
     Publish-GitHubReleaseAssets $Root $Version
+}
+
+function Run-PublishedUpdaterE2E([string]$Root, [string]$Version, [string]$ContractMode = "dual") {
+    Write-Title "Published updater end-to-end test"
+    Invoke-Native "powershell" @(
+        "-ExecutionPolicy", "Bypass",
+        "-File", (Join-Path $Root "scripts\published-updater-e2e.ps1"),
+        "-ExpectedPublishedVersion", $Version,
+        "-ContractMode", $ContractMode
+    )
 }
 
 function Invoke-ChangeVersion([string]$Root) {
@@ -560,13 +662,15 @@ switch ($Mode) {
     }
     "publish" {
         Publish-Release $repoRoot $version
+        Run-PublishedUpdaterE2E $repoRoot $version "dual"
     }
     "full" {
-        Run-Checks $repoRoot
+        Run-Checks $repoRoot -SkipPublishedUpdaterE2E
         Run-VulnerabilityGates $repoRoot
         Generate-Artifacts $repoRoot $version
         Build-Installer $repoRoot
         Publish-Release $repoRoot $version
+        Run-PublishedUpdaterE2E $repoRoot $version "dual"
     }
 }
 

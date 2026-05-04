@@ -1,6 +1,9 @@
 param(
     [string]$LegacyVersion = "1.0.0",
     [string]$MinimumPublishedVersion = "1.0.11",
+    [string]$ExpectedPublishedVersion = "",
+    [ValidateSet("compatible", "dual")]
+    [string]$ContractMode = "compatible",
     [int]$TimeoutMinutes = 25,
     [switch]$CompactOutput,
     [switch]$KeepArtifacts
@@ -154,14 +157,22 @@ function Get-LatestPublishedRelease() {
     $version = Normalize-Version ([string]$release.tag_name)
     $assets = @($release.assets)
     $zipAsset = $assets | Where-Object { $_.name -eq "cerbena-windows-x64.zip" } | Select-Object -First 1
+    $msiAsset = $assets | Where-Object { $_.name -like "cerbena-browser-*.msi" } | Select-Object -First 1
+    $exeInstallerAsset = $assets | Where-Object { $_.name -like "cerbena-browser-setup-*.exe" } | Select-Object -First 1
     $checksumsAsset = $assets | Where-Object { $_.name -eq "checksums.txt" } | Select-Object -First 1
     $signatureAsset = $assets | Where-Object { $_.name -eq "checksums.sig" } | Select-Object -First 1
     if ($null -eq $zipAsset -or $null -eq $checksumsAsset -or $null -eq $signatureAsset) {
-        throw "latest GitHub release is missing trusted updater assets"
+        throw "latest GitHub release is missing the compatible trusted updater contract (zip + checksum assets)"
+    }
+    if ($ContractMode -eq "dual" -and ($null -eq $msiAsset -or $null -eq $exeInstallerAsset)) {
+        throw "latest GitHub release is missing the dual-format trusted updater contract (zip + msi + setup exe + checksum assets)"
     }
     return @{
         Version = $version
         HtmlUrl = [string]$release.html_url
+        ZipAssetName = [string]$zipAsset.name
+        MsiAssetName = if ($null -ne $msiAsset) { [string]$msiAsset.name } else { "" }
+        ExeInstallerAssetName = if ($null -ne $exeInstallerAsset) { [string]$exeInstallerAsset.name } else { "" }
     }
 }
 
@@ -261,6 +272,9 @@ function Test-StoreStatusAllowsBackgroundRelaunch([string]$Status) {
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $currentVersion = Resolve-WorkspaceVersion $repoRoot
 $publishedRelease = Get-LatestPublishedRelease
+if (-not [string]::IsNullOrWhiteSpace($ExpectedPublishedVersion) -and -not (Test-VersionEquivalent $publishedRelease.Version $ExpectedPublishedVersion)) {
+    throw "latest published release $($publishedRelease.Version) does not match expected version $ExpectedPublishedVersion"
+}
 if ((Compare-SemVer $publishedRelease.Version $MinimumPublishedVersion) -lt 0) {
     throw "latest published release $($publishedRelease.Version) is older than required minimum $MinimumPublishedVersion"
 }
@@ -362,6 +376,10 @@ try {
         legacyVersion = $LegacyVersion
         publishedVersion = $publishedRelease.Version
         releaseUrl = $publishedRelease.HtmlUrl
+        contractMode = $ContractMode
+        zipAssetName = $publishedRelease.ZipAssetName
+        msiAssetName = $publishedRelease.MsiAssetName
+        exeInstallerAssetName = $publishedRelease.ExeInstallerAssetName
         updatedVersion = $resolvedVersion
     } | ConvertTo-Json -Depth 4
     Write-Utf8NoBomFile $reportPath $report

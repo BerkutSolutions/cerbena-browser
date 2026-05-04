@@ -2093,6 +2093,69 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.settings-grid-spacer {
+  min-height: 1px;
+}
+
+.settings-runtime-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.settings-runtime-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.settings-runtime-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings-runtime-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-runtime-copy .meta {
+  margin: 0;
+}
+
+.settings-runtime-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  margin-top: 5px;
+  flex: 0 0 10px;
+  background: rgba(225, 90, 90, 0.95);
+  box-shadow: 0 0 0 3px rgba(225, 90, 90, 0.16);
+}
+
+.settings-runtime-dot.is-ready {
+  background: rgba(96, 208, 130, 0.95);
+  box-shadow: 0 0 0 3px rgba(96, 208, 130, 0.16);
+}
+
+.settings-runtime-side {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.settings-runtime-version {
+  color: rgba(233, 240, 255, 0.92);
+  font-weight: 600;
+  text-align: right;
+}
+
 .traffic-row-blocked {
   background: rgba(126, 49, 32, 0.35);
 }
@@ -2501,6 +2564,19 @@ html:has(body.panic-overlay-mode) {
   .settings-panel-grid,
   .settings-sync-stats {
     grid-template-columns: 1fr;
+  }
+
+  .settings-grid-spacer {
+    display: none;
+  }
+
+  .settings-runtime-item {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .settings-runtime-side {
+    justify-content: flex-start;
   }
 
   .dns-services-grid {

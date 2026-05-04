@@ -68,6 +68,60 @@ pub fn reconcile_install_registration(app: &AppHandle) {
 }
 
 #[cfg(target_os = "windows")]
+pub fn register_browser_capabilities_for_current_install() -> Result<(), String> {
+    let current_exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let install_root = current_exe
+        .parent()
+        .ok_or_else(|| "resolve install root for browser registration".to_string())?;
+    let icon_path = {
+        let candidate = install_root.join("cerbena.ico");
+        if candidate.is_file() {
+            candidate
+        } else {
+            current_exe.clone()
+        }
+    };
+    register_browser_capabilities(&current_exe, &icon_path)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn register_browser_capabilities_for_current_install() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn remove_browser_capabilities() -> Result<(), String> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let _ = hkcu.delete_subkey_all(START_MENU_INTERNET_SUBKEY);
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{CERBENA_URL_PROG_ID}"));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{CERBENA_HTML_PROG_ID}"));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{CERBENA_MHTML_PROG_ID}"));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{CERBENA_PDF_PROG_ID}"));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{CERBENA_XHTML_PROG_ID}"));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{CERBENA_SVG_PROG_ID}"));
+    if let Ok(registered) = hkcu.open_subkey_with_flags(
+        REGISTERED_APPLICATIONS_SUBKEY,
+        winreg::enums::KEY_SET_VALUE,
+    ) {
+        let _ = registered.delete_value(PRODUCT_NAME);
+    }
+    for (extension, prog_id, _) in FILE_ASSOCIATIONS {
+        let path = format!(r"Software\Classes\{}\OpenWithProgids", extension);
+        if let Ok(key) = hkcu.open_subkey_with_flags(&path, winreg::enums::KEY_SET_VALUE) {
+            let _ = key.delete_value(*prog_id);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn remove_browser_capabilities() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 pub fn is_default_browser() -> bool {
     use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 

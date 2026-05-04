@@ -25,8 +25,11 @@ import {
   saveLinkTypeProfileBinding,
   setLauncherAutoUpdate,
   setDefaultProfileForLinks,
-  setDefaultSearchProvider
+  setDefaultSearchProvider,
+  getRuntimeToolsStatus,
+  installRuntimeTool
 } from "../settings/api.js";
+import { openExternalUrl } from "../../core/commands.js";
 import {
   createBackupSnapshot,
   getSyncOverview,
@@ -123,6 +126,39 @@ function updateStatusLabel(updateState, t) {
   return t(`settings.updates.status.${updateState?.status ?? "idle"}`);
 }
 
+function updateAssetTypeLabel(updateState, t) {
+  return t(`settings.updates.assetType.${updateState?.selectedAssetType ?? "unknown"}`);
+}
+
+function updateHandoffModeLabel(updateState, t) {
+  return t(`settings.updates.handoffMode.${updateState?.installHandoffMode ?? "unknown"}`);
+}
+
+function updateSelectionReasonLabel(updateState, t) {
+  return t(`settings.updates.reason.${updateState?.selectedAssetReason ?? "unknown"}`);
+}
+
+function runtimeToolStatusLabel(tool, t) {
+  if (tool.version) return tool.version;
+  if (tool.status === "docker") return t("settings.tools.inDocker");
+  return "";
+}
+
+function releaseVersionForLink(updateState) {
+  const candidate =
+    updateState?.latestVersion || updateState?.stagedVersion || updateState?.currentVersion || "1.0.18";
+  return String(candidate).trim().replace(/^v/i, "");
+}
+
+function buildReleaseUrl(updateState) {
+  const provided = String(updateState?.releaseUrl ?? "").trim();
+  if (/^https?:\/\//i.test(provided)) {
+    return provided;
+  }
+  const version = releaseVersionForLink(updateState);
+  return `https://github.com/BerkutSolutions/cerbena-browser/releases/tag/v${encodeURIComponent(version)}`;
+}
+
 function pendingWayfernProfileIds(model) {
   return new Set(model.wayfernTermsStatus?.pendingProfileIds ?? []);
 }
@@ -168,8 +204,9 @@ function renderUpdateCard(t, model) {
   const shellState = model.shellPreferencesState ?? {};
   const settingsState = ensureSettingsModel(model);
   const startupProfileId = settingsState.startupProfileDraft || shellState.startupProfileId || "";
+  const releaseUrl = buildReleaseUrl(updateState);
   return `
-    <div class="security-frame">
+    <div class="panel settings-card">
       <div class="row-between">
         <div>
           <h4>${t("settings.updates.title")}</h4>
@@ -182,7 +219,7 @@ function renderUpdateCard(t, model) {
       </div>
       <div class="grid-two">
         <label>${t("settings.updates.currentVersion")}
-          <input value="${escapeHtml(updateState.currentVersion ?? "1.0.17")}" disabled />
+          <input value="${escapeHtml(updateState.currentVersion ?? "1.0.18")}" disabled />
         </label>
         <label>${t("settings.updates.latestVersion")}
           <input value="${escapeHtml(updateState.latestVersion ?? t("settings.updates.notChecked"))}" disabled />
@@ -215,36 +252,55 @@ function renderUpdateCard(t, model) {
       <p class="meta">${t("settings.updates.lastChecked")}: ${escapeHtml(updateState.lastCheckedAt ?? t("settings.updates.notChecked"))}</p>
       <p class="meta">${t("settings.updates.statusLabel")}: ${escapeHtml(updateStatusLabel(updateState, t))}</p>
       ${updateState.stagedVersion ? `<p class="meta">${t("settings.updates.staged")}: ${escapeHtml(updateState.stagedVersion)}</p>` : ""}
-      ${updateState.releaseUrl ? `<p class="meta"><a href="${escapeHtml(updateState.releaseUrl)}" target="_blank" rel="noreferrer">${t("settings.updates.openRelease")}</a></p>` : ""}
+      ${updateState.selectedAssetType ? `<p class="meta">${t("settings.updates.assetTypeLabel")}: ${escapeHtml(updateAssetTypeLabel(updateState, t))}</p>` : ""}
+      ${updateState.installHandoffMode ? `<p class="meta">${t("settings.updates.handoffModeLabel")}: ${escapeHtml(updateHandoffModeLabel(updateState, t))}</p>` : ""}
+      ${updateState.selectedAssetReason ? `<p class="meta">${t("settings.updates.assetReasonLabel")}: ${escapeHtml(updateSelectionReasonLabel(updateState, t))}</p>` : ""}
+      <p class="meta"><a href="${escapeHtml(releaseUrl)}" id="settings-update-open-release" target="_blank" rel="noreferrer">${t("settings.updates.openRelease")}</a></p>
       ${updateState.lastError ? `<p class="notice error">${escapeHtml(updateState.lastError)}</p>` : ""}
     </div>
   `;
 }
 
+function renderRuntimeToolsCard(t, model) {
+  const tools = model.runtimeToolsStatus ?? [];
+  return `
+    <div class="panel settings-card">
+      <div class="row-between">
+        <div>
+          <h4>${t("settings.tools.title")}</h4>
+          <p class="meta">${t("settings.tools.hint")}</p>
+        </div>
+        <button id="settings-runtime-tools-refresh">${t("action.refresh")}</button>
+      </div>
+      <ul class="settings-runtime-list">
+        ${tools.map((tool) => `
+          <li class="settings-runtime-item">
+            <div class="settings-runtime-main">
+              <span class="settings-runtime-dot ${tool.status === "missing" ? "is-missing" : "is-ready"}" aria-hidden="true"></span>
+              <div class="settings-runtime-copy">
+                <strong>${t(tool.nameKey)}</strong>
+                ${tool.detailKey ? `<p class="meta">${t(tool.detailKey)}</p>` : ""}
+              </div>
+            </div>
+            <div class="settings-runtime-side">
+              ${tool.action === "internal"
+                ? `<button type="button" data-settings-tool-install="${escapeHtml(tool.id)}">${t("settings.tools.download")}</button>`
+                : tool.action === "external"
+                  ? `<button type="button" data-settings-tool-external="${escapeHtml(tool.id)}">${t("settings.tools.download")}</button>`
+                  : `<span class="settings-runtime-version">${escapeHtml(runtimeToolStatusLabel(tool, t))}</span>`}
+            </div>
+          </li>
+        `).join("")}
+      </ul>
+    </div>
+  `;
+}
+
 function renderGeneralTab(t, model) {
-  const state = ensureSettingsModel(model);
-  const securityState = ensureGlobalSecurityState(model);
-  const selectedProvider = model.settingsProvider ?? "duckduckgo";
   const posture = model.devicePostureReport;
   return `
     <section class="settings-tab-panel">
       <div class="settings-panel-grid">
-        <div class="panel settings-card">
-          <h4>${t("settings.searchProvider")}</h4>
-          <p class="meta">${t("settings.searchProviderHint")}</p>
-          <label>${t("settings.searchProvider")}
-            <select id="settings-search-provider">
-              ${SEARCH_PROVIDER_PRESETS.map((item) => `<option value="${item.id}" ${item.id === selectedProvider ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
-            </select>
-          </label>
-        </div>
-        <div class="panel settings-card">
-          <h4>${t("security.startPage")}</h4>
-          <p class="meta">${t("settings.startPageHint")}</p>
-          <label>${t("security.startPage")}
-            <input id="settings-start-page" value="${escapeHtml(securityState.startupPage ?? "")}" placeholder="https://duckduckgo.com" />
-          </label>
-        </div>
         <div class="panel settings-card">
           <div class="row-between">
             <div>
@@ -262,10 +318,9 @@ function renderGeneralTab(t, model) {
             ${(posture?.findings?.length ? posture.findings : [{ labelKey: "devicePosture.finding.none", detail: "" }]).map((item) => `<li>${escapeHtml(t(item.labelKey))}${item.detail ? `: ${escapeHtml(item.detail)}` : ""}</li>`).join("")}
           </ul>
         </div>
+        ${renderRuntimeToolsCard(t, model)}
+        <div class="settings-grid-spacer" aria-hidden="true"></div>
         ${renderUpdateCard(t, model)}
-      </div>
-      <div class="top-actions settings-save-row">
-        <button id="settings-apply-general">${t("action.save")}</button>
       </div>
     </section>
   `;
@@ -276,8 +331,31 @@ function renderLinksTab(t, model) {
   const overview = model.linkRoutingOverview ?? { globalProfileId: null, supportedTypes: [] };
   const shellState = model.shellPreferencesState ?? {};
   const globalDraft = state.globalLinkProfileDraft || overview.globalProfileId || "";
+  const securityState = ensureGlobalSecurityState(model);
+  const selectedProvider = model.settingsProvider ?? "duckduckgo";
   return `
     <section class="settings-tab-panel">
+      <div class="panel settings-card">
+        <div class="row-between">
+          <div>
+            <h4>${t("settings.browserDefaults.title")}</h4>
+            <p class="meta">${t("settings.browserDefaults.hint")}</p>
+          </div>
+          <button id="settings-links-browser-save">${t("action.save")}</button>
+        </div>
+        <div class="grid-two">
+          <label>${t("settings.searchProvider")}
+            <select id="settings-search-provider">
+              ${SEARCH_PROVIDER_PRESETS.map((item) => `<option value="${item.id}" ${item.id === selectedProvider ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label>${t("security.startPage")}
+            <input id="settings-start-page" value="${escapeHtml(securityState.startupPage ?? "")}" placeholder="https://duckduckgo.com" />
+          </label>
+        </div>
+        <p class="meta">${t("settings.startPageHint")}</p>
+      </div>
+
       <div class="panel settings-card">
         <div class="row-between">
           <div>
@@ -487,6 +565,8 @@ export async function hydrateSettingsModel(model) {
   model.devicePostureReport = posture.ok ? posture.data : null;
   const updateState = await getLauncherUpdateState();
   model.launcherUpdateState = updateState.ok ? updateState.data : null;
+  const runtimeTools = await getRuntimeToolsStatus();
+  model.runtimeToolsStatus = runtimeTools.ok ? runtimeTools.data : [];
   if (!state.globalLinkProfileDraft) {
     state.globalLinkProfileDraft = model.linkRoutingOverview.globalProfileId ?? "";
   }
@@ -540,7 +620,7 @@ export function wireSettings(root, model, rerender, t) {
     });
   }
 
-  root.querySelector("#settings-apply-general")?.addEventListener("click", async () => {
+  root.querySelector("#settings-links-browser-save")?.addEventListener("click", async () => {
     const providerId = root.querySelector("#settings-search-provider")?.value ?? "duckduckgo";
     const preset = SEARCH_PROVIDER_PRESETS.find((item) => item.id === providerId) ?? SEARCH_PROVIDER_PRESETS[0];
     await importSearchProviders([
@@ -560,6 +640,43 @@ export function wireSettings(root, model, rerender, t) {
     };
     await rerender();
   });
+
+  root.querySelector("#settings-runtime-tools-refresh")?.addEventListener("click", async () => {
+    const runtimeTools = await getRuntimeToolsStatus();
+    model.runtimeToolsStatus = runtimeTools.ok ? runtimeTools.data : model.runtimeToolsStatus;
+    model.settingsNotice = {
+      type: runtimeTools.ok ? "success" : "error",
+      text: runtimeTools.ok ? t("settings.tools.refreshed") : String(runtimeTools.data.error)
+    };
+    await rerender();
+  });
+
+  for (const button of root.querySelectorAll("[data-settings-tool-install]")) {
+    button.addEventListener("click", async () => {
+      const toolId = button.getAttribute("data-settings-tool-install");
+      if (!toolId) return;
+      const result = await installRuntimeTool(toolId);
+      model.settingsNotice = {
+        type: result.ok ? "success" : "error",
+        text: result.ok ? t("settings.tools.installed") : String(result.data.error)
+      };
+      await hydrateSettingsModel(model);
+      await rerender();
+    });
+  }
+
+  for (const button of root.querySelectorAll("[data-settings-tool-external]")) {
+    button.addEventListener("click", async () => {
+      const toolId = button.getAttribute("data-settings-tool-external");
+      if (toolId !== "docker") return;
+      const result = await openExternalUrl("https://www.docker.com/products/docker-desktop/");
+      model.settingsNotice = {
+        type: result.ok ? "success" : "error",
+        text: result.ok ? t("settings.tools.externalOpened") : String(result.data.error)
+      };
+      await rerender();
+    });
+  }
 
   root.querySelector("#settings-posture-refresh")?.addEventListener("click", async () => {
     const posture = await refreshDevicePostureReport();
@@ -661,6 +778,16 @@ export function wireSettings(root, model, rerender, t) {
     model.settingsNotice = {
       type: result.ok ? "success" : "error",
       text: result.ok ? t("settings.updates.previewOpened") : String(result.data.error)
+    };
+    await rerender();
+  });
+
+  root.querySelector("#settings-update-open-release")?.addEventListener("click", async (event) => {
+    event.preventDefault();
+    const result = await openExternalUrl(buildReleaseUrl(model.launcherUpdateState ?? {}));
+    model.settingsNotice = {
+      type: result.ok ? "success" : "error",
+      text: result.ok ? t("settings.updates.releaseOpened") : String(result.data.error)
     };
     await rerender();
   });
