@@ -499,6 +499,28 @@ pub fn ensure_updater_flow_started(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+fn updater_launch_mode_from_state(state: &AppState) -> Result<UpdaterLaunchMode, String> {
+    state
+        .updater_runtime
+        .lock()
+        .map(|runtime| runtime.launch_mode)
+        .map_err(|e| format!("lock updater runtime: {e}"))
+}
+
+fn schedule_updater_window_close_for_apply(state: &AppState) {
+    let app_handle = state.app_handle.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(750));
+        if let Some(window) = app_handle.get_webview_window("main") {
+            let _ = window.close();
+        }
+    });
+}
+
+fn should_auto_close_updater_after_ready_to_restart(launch_mode: UpdaterLaunchMode) -> bool {
+    matches!(launch_mode, UpdaterLaunchMode::Auto)
+}
+
 fn run_updater_flow(state: &AppState, launch_mode: UpdaterLaunchMode) -> Result<(), String> {
     if launch_mode.is_preview() {
         return run_preview_updater_flow(state);
@@ -742,6 +764,7 @@ fn run_preview_updater_flow(state: &AppState) -> Result<(), String> {
 }
 
 fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
+    let launch_mode = updater_launch_mode_from_state(state)?;
     progress_updater_step(
         state,
         UPDATER_STEP_DISCOVER,
@@ -864,13 +887,17 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         "i18n:updater.detail.live_relaunch_done",
     )?;
     if can_auto_apply_asset(&asset_name) {
-        return finalize_updater_success(
+        let result = finalize_updater_success(
             state,
             "ready_to_restart",
             "updater.summary.ready_to_restart",
             "i18n:updater.detail.live_ready_to_restart",
             "updater.action.reboot",
         );
+        if result.is_ok() && should_auto_close_updater_after_ready_to_restart(launch_mode) {
+            schedule_updater_window_close_for_apply(state);
+        }
+        return result;
     }
     finalize_updater_success(
         state,
@@ -2112,7 +2139,7 @@ mod tests {
         download_release_bytes, ensure_asset_matches_verified_checksum,
         extract_checksum_for_asset, fetch_latest_release_from_url, is_version_newer,
         normalize_version, pick_release_asset_for_context,
-        release_signing_public_keys,
+        release_signing_public_keys, should_auto_close_updater_after_ready_to_restart,
         reconcile_update_store_with_current_version, resolve_relaunch_executable_path,
         sha256_hex, should_run_auto_update_check, signature_verification_variants,
         AppUpdateStore, GithubReleaseAsset, SelectedAssetKind, UpdaterLaunchMode,
@@ -2504,6 +2531,19 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         assert!(matches!(
             UpdaterLaunchMode::from_args(["--updater"]),
             UpdaterLaunchMode::Auto
+        ));
+    }
+
+    #[test]
+    fn auto_launch_mode_triggers_close_after_ready_to_restart() {
+        assert!(should_auto_close_updater_after_ready_to_restart(
+            UpdaterLaunchMode::Auto
+        ));
+        assert!(!should_auto_close_updater_after_ready_to_restart(
+            UpdaterLaunchMode::Preview
+        ));
+        assert!(!should_auto_close_updater_after_ready_to_restart(
+            UpdaterLaunchMode::Disabled
         ));
     }
 
