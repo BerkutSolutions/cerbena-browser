@@ -1849,14 +1849,20 @@ fn build_msi_apply_helper_script(
     let version = target_version
         .map(|value| format!("'{}'", value.replace('\'', "''")))
         .unwrap_or_else(|| "$null".to_string());
+    let install_root = relaunch_executable
+        .and_then(|path| path.parent())
+        .map(powershell_quote)
+        .unwrap_or_else(|| "$null".to_string());
     format!(
         "$pidValue={pid};\
         $msiPath={msi};\
         $relaunchExe={relaunch};\
+        $installRoot={install};\
         $storePath={store};\
         $targetVersion={version};\
         $versionProbe=$env:CERBENA_SELFTEST_REPORT_VERSION_FILE;\
         $autoExitAfter='20';\
+        $targetExecutables=@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe','cerbena-launcher.exe');\
         function Describe-MsiExit([int]$code) {{\
             switch ($code) {{\
                 1602 {{ return 'msi install canceled before completion' }}\
@@ -1879,6 +1885,33 @@ fn build_msi_apply_helper_script(
         }};\
         while (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }};\
         Update-Store 'applying' $null $false;\
+        $targetPaths=@();\
+        if ($installRoot -and (Test-Path -LiteralPath $installRoot)) {{\
+            foreach ($exeName in $targetExecutables) {{\
+                $candidate=Join-Path $installRoot $exeName;\
+                if (Test-Path -LiteralPath $candidate) {{\
+                    $targetPaths += [System.IO.Path]::GetFullPath($candidate);\
+                }}\
+            }};\
+        }};\
+        $runningTargets=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {{\
+            $_.Id -ne $PID -and $_.Id -ne $pidValue\
+        }} | Where-Object {{\
+            try {{\
+                $processPath=$_.Path;\
+                $processPath -and ($targetPaths -contains [System.IO.Path]::GetFullPath($processPath))\
+            }} catch {{\
+                $false\
+            }}\
+        }});\
+        foreach ($proc in $runningTargets) {{\
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue;\
+        }};\
+        foreach ($proc in $runningTargets) {{\
+            try {{\
+                $proc.WaitForExit(15000) | Out-Null;\
+            }} catch {{}}\
+        }};\
         $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $msiPath, '/qn', '/norestart') -WindowStyle Hidden -PassThru -Wait;\
         if ($proc.ExitCode -eq 1602) {{\
             Update-Store 'canceled' (Describe-MsiExit $proc.ExitCode) $false;\
@@ -1903,6 +1936,7 @@ fn build_msi_apply_helper_script(
         pid = pid,
         msi = powershell_quote(msi_path),
         relaunch = relaunch,
+        install = install_root,
         store = store,
         version = version,
         auto_exit_env = UPDATER_RELAUNCH_AUTO_EXIT_ENV
@@ -2446,6 +2480,9 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         );
         assert!(script.contains("Start-Process -FilePath 'msiexec.exe'"));
         assert!(script.contains("'/qn'"));
+        assert!(script.contains("@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe','cerbena-launcher.exe')"));
+        assert!(script.contains("Stop-Process -Id $proc.Id -Force"));
+        assert!(script.contains("WaitForExit(15000)"));
         assert!(script.contains("Update-Store 'applied_pending_relaunch'"));
         assert!(script.contains("pendingApplyOnExit"));
         assert!(script.contains("Update-Store 'canceled'"));

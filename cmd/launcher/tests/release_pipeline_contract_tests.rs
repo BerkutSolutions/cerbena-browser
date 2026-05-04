@@ -85,14 +85,17 @@ fn walk_version_paths(root: &Path, current: &Path, version: &str, found: &mut BT
             continue;
         };
         if content.contains(version) {
-            let relative = path
-                .strip_prefix(root)
-                .expect("relative version path")
-                .to_string_lossy()
-                .replace('\\', "/");
-            found.insert(relative);
+        let relative = path
+            .strip_prefix(root)
+            .expect("relative version path")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative == "ui/desktop/src-tauri/Cargo.lock" {
+            continue;
         }
+        found.insert(relative);
     }
+}
 }
 
 #[test]
@@ -127,14 +130,13 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         "checksums.sig",
         "cargo",
         "npm.cmd",
-        "cerbena-windows-x64.zip",
-        "cerbena-browser-setup-",
-        "cerbena-updater.exe",
         "release-manifest.json",
         "checksums.txt",
         "checksums.sig",
         ".msi",
         "Assert-GitHubReleaseAssetsPublished",
+        "Remove-UnexpectedGitHubReleaseAssets",
+        "delete-asset",
         ".assets[].name",
         "update-version.ps1",
         "version-sync-targets.json",
@@ -243,7 +245,6 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
     assert!(release_script.contains("3. Publish only"));
     assert!(release_script.contains("4. Checks only"));
     assert!(release_script.contains("update-version.ps1"));
-    assert!(release_script.contains("required legacy EXE installer is missing for compatibility"));
     assert!(release_script.contains("required MSI installer is missing"));
 
     let security_supply = fs::read_to_string(workflows.join("security-supply-chain.yml"))

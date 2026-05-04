@@ -30,6 +30,7 @@ coverage.out
 .tools/
 target/
 ui/desktop/src-tauri/target/
+ui/desktop/src-tauri/Cargo.lock
 .cargo/
 
 # Dependency folders

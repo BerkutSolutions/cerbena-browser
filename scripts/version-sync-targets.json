@@ -25,21 +25,6 @@
     { "path": "ui/desktop/package.json", "strategy": "json_top_level_version" },
     { "path": "ui/desktop/package-lock.json", "strategy": "package_lock_root_versions" },
     { "path": "ui/desktop/src-tauri/Cargo.toml", "strategy": "cargo_version_field" },
-    {
-      "path": "ui/desktop/src-tauri/Cargo.lock",
-      "strategy": "cargo_lock_package_versions",
-      "packageNames": [
-        "browser-api-local",
-        "browser-desktop-ui",
-        "browser-engine",
-        "browser-extensions",
-        "browser-fingerprint",
-        "browser-import-export",
-        "browser-network-policy",
-        "browser-profile",
-        "browser-sync-client"
-      ]
-    },
     { "path": "ui/desktop/src-tauri/tauri.conf.json", "strategy": "json_top_level_version" },
     { "path": "ui/desktop/web/core/app-version.js", "strategy": "js_export_const" },
     { "path": "CHANGELOG.md", "strategy": "changelog_heading" }

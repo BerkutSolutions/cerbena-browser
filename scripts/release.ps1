@@ -328,10 +328,6 @@ function Get-RequiredInstallerAssetPaths([string]$Root, [string]$Version) {
     $installerRoot = Join-Path $Root ("build\installer\" + $Version)
     return @{
         Msi = Join-Path $installerRoot ("output\cerbena-browser-" + $Version + ".msi")
-        ExeCandidates = @(
-            (Join-Path $installerRoot ("output\cerbena-browser-setup-" + $Version + ".exe")),
-            (Join-Path $installerRoot ("cerbena-browser-setup-" + $Version + ".exe"))
-        )
     }
 }
 
@@ -340,49 +336,34 @@ function Assert-InstallerAssetContract([string]$Root, [string]$Version) {
     if (-not (Test-Path $required.Msi)) {
         throw "required MSI installer is missing: $($required.Msi)"
     }
-    $legacyExe = $required.ExeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($null -eq $legacyExe) {
-        throw "required legacy EXE installer is missing for compatibility: $($required.ExeCandidates -join ', ')"
-    }
 }
 
 function Resolve-ReleaseUploadAssetPaths([string]$Root, [string]$Version) {
     $releaseRoot = Join-Path $Root ("build\release\" + $Version)
-    $bundleRoot = Join-Path $releaseRoot "staging\cerbena-windows-x64"
-    $installerPaths = Resolve-InstallerArtifactPaths $Root $Version
-
     $paths = @(
-        (Join-Path $releaseRoot "cerbena-windows-x64.zip"),
         (Join-Path $releaseRoot "checksums.txt"),
         (Join-Path $releaseRoot "checksums.sig"),
         (Join-Path $releaseRoot "release-manifest.json"),
-        (Join-Path $bundleRoot "cerbena-updater.exe")
+        (Join-Path $Root ("build\installer\" + $Version + "\output\cerbena-browser-" + $Version + ".msi"))
     )
-    if ($installerPaths.Count -gt 0) {
-        $paths += $installerPaths
-    }
     return $paths
 }
 
 function Ensure-ReleaseUploadAssets([string]$Root, [string]$Version) {
     $releaseRoot = Join-Path $Root ("build\release\" + $Version)
     $requiredReleaseFiles = @(
-        (Join-Path $releaseRoot "cerbena-windows-x64.zip"),
         (Join-Path $releaseRoot "checksums.txt"),
         (Join-Path $releaseRoot "checksums.sig"),
-        (Join-Path $releaseRoot "release-manifest.json"),
-        (Join-Path $releaseRoot "staging\cerbena-windows-x64\cerbena-updater.exe")
+        (Join-Path $releaseRoot "release-manifest.json")
     )
     $missingReleaseFiles = @($requiredReleaseFiles | Where-Object { -not (Test-Path $_) })
     if ($missingReleaseFiles.Count -gt 0) {
         Generate-Artifacts $Root $Version
     }
 
-    $installerPaths = Resolve-InstallerArtifactPaths $Root $Version
     $requiredInstallers = Get-RequiredInstallerAssetPaths $Root $Version
     $hasMsi = Test-Path $requiredInstallers.Msi
-    $hasCompatExe = @($requiredInstallers.ExeCandidates | Where-Object { Test-Path $_ }).Count -gt 0
-    if (-not $hasMsi -or -not $hasCompatExe -or $installerPaths.Count -eq 0) {
+    if (-not $hasMsi) {
         Build-Installer $Root
     }
     Assert-InstallerAssetContract $Root $Version
@@ -482,7 +463,29 @@ function Publish-GitHubReleaseAssets([string]$Root, [string]$Version) {
     $uploadArgs = @("release", "upload", $tag, "--repo", $defaultRepoSlug, "--clobber")
     $uploadArgs += Resolve-ReleaseUploadAssetPaths $Root $Version
     Invoke-Native "gh" $uploadArgs
+    Remove-UnexpectedGitHubReleaseAssets $Root $Version
     Assert-GitHubReleaseAssetsPublished $Root $Version
+}
+
+function Remove-UnexpectedGitHubReleaseAssets([string]$Root, [string]$Version) {
+    $tag = "v$Version"
+    $expectedAssetNames = Resolve-ReleaseUploadAssetPaths $Root $Version |
+        ForEach-Object { [System.IO.Path]::GetFileName($_) }
+    $publishedAssetNames = Invoke-Native "gh" @(
+        "release", "view", $tag,
+        "--repo", $defaultRepoSlug,
+        "--json", "assets",
+        "--jq", ".assets[].name"
+    ) -Quiet
+    $publishedSet = @($publishedAssetNames | ForEach-Object { $_.ToString().Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $unexpected = @($publishedSet | Where-Object { $expectedAssetNames -notcontains $_ })
+    foreach ($assetName in $unexpected) {
+        Invoke-Native "gh" @(
+            "release", "delete-asset", $tag, $assetName,
+            "--repo", $defaultRepoSlug,
+            "--yes"
+        )
+    }
 }
 
 function Assert-GitHubReleaseAssetsPublished([string]$Root, [string]$Version) {
@@ -592,7 +595,7 @@ function Publish-Release([string]$Root, [string]$Version) {
     Publish-GitHubReleaseAssets $Root $Version
 }
 
-function Run-PublishedUpdaterE2E([string]$Root, [string]$Version, [string]$ContractMode = "dual") {
+function Run-PublishedUpdaterE2E([string]$Root, [string]$Version, [string]$ContractMode = "msi_only") {
     Write-Title "Published updater end-to-end test"
     Invoke-Native "powershell" @(
         "-ExecutionPolicy", "Bypass",
@@ -670,7 +673,7 @@ switch ($Mode) {
     }
     "publish" {
         Publish-Release $repoRoot $version
-        Run-PublishedUpdaterE2E $repoRoot $version "dual"
+        Run-PublishedUpdaterE2E $repoRoot $version "msi_only"
     }
     "full" {
         Run-Checks $repoRoot -SkipPublishedUpdaterE2E
@@ -678,7 +681,7 @@ switch ($Mode) {
         Generate-Artifacts $repoRoot $version
         Build-Installer $repoRoot
         Publish-Release $repoRoot $version
-        Run-PublishedUpdaterE2E $repoRoot $version "dual"
+        Run-PublishedUpdaterE2E $repoRoot $version "msi_only"
     }
 }
 

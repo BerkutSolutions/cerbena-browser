@@ -2,8 +2,8 @@ param(
     [string]$LegacyVersion = "1.0.0",
     [string]$MinimumPublishedVersion = "1.0.11",
     [string]$ExpectedPublishedVersion = "",
-    [ValidateSet("compatible", "dual")]
-    [string]$ContractMode = "compatible",
+    [ValidateSet("msi_only")]
+    [string]$ContractMode = "msi_only",
     [int]$TimeoutMinutes = 25,
     [switch]$CompactOutput,
     [switch]$KeepArtifacts
@@ -156,23 +156,16 @@ function Get-LatestPublishedRelease() {
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/BerkutSolutions/cerbena-browser/releases/latest" -Headers $headers
     $version = Normalize-Version ([string]$release.tag_name)
     $assets = @($release.assets)
-    $zipAsset = $assets | Where-Object { $_.name -eq "cerbena-windows-x64.zip" } | Select-Object -First 1
     $msiAsset = $assets | Where-Object { $_.name -like "cerbena-browser-*.msi" } | Select-Object -First 1
-    $exeInstallerAsset = $assets | Where-Object { $_.name -like "cerbena-browser-setup-*.exe" } | Select-Object -First 1
     $checksumsAsset = $assets | Where-Object { $_.name -eq "checksums.txt" } | Select-Object -First 1
     $signatureAsset = $assets | Where-Object { $_.name -eq "checksums.sig" } | Select-Object -First 1
-    if ($null -eq $zipAsset -or $null -eq $checksumsAsset -or $null -eq $signatureAsset) {
-        throw "latest GitHub release is missing the compatible trusted updater contract (zip + checksum assets)"
-    }
-    if ($ContractMode -eq "dual" -and ($null -eq $msiAsset -or $null -eq $exeInstallerAsset)) {
-        throw "latest GitHub release is missing the dual-format trusted updater contract (zip + msi + setup exe + checksum assets)"
+    if ($null -eq $msiAsset -or $null -eq $checksumsAsset -or $null -eq $signatureAsset) {
+        throw "latest GitHub release is missing the MSI-only trusted updater contract (msi + checksum assets)"
     }
     return @{
         Version = $version
         HtmlUrl = [string]$release.html_url
-        ZipAssetName = [string]$zipAsset.name
         MsiAssetName = if ($null -ne $msiAsset) { [string]$msiAsset.name } else { "" }
-        ExeInstallerAssetName = if ($null -ne $exeInstallerAsset) { [string]$exeInstallerAsset.name } else { "" }
     }
 }
 
@@ -266,7 +259,7 @@ function Test-StoreStatusAllowsBackgroundRelaunch([string]$Status) {
     if ($null -eq $Status) {
         return $false
     }
-    return @("handoff", "downloaded", "applying", "ready_to_restart", "completed") -contains $Status
+    return @("handoff", "downloaded", "applying", "ready_to_restart", "completed", "applied_pending_relaunch") -contains $Status
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -291,6 +284,7 @@ $versionProbePath = Join-Path $sessionRoot "updated-version.txt"
 $reportPath = Join-Path $sessionRoot "report.json"
 $copiedExePath = Join-Path $installRoot "cerbena.exe"
 $copiedUpdaterPath = Join-Path $installRoot "cerbena-updater.exe"
+$installModeMarkerPath = Join-Path $installRoot "cerbena-install-mode.txt"
 
 try {
     [System.IO.Directory]::CreateDirectory($snapshotRoot) | Out-Null
@@ -314,6 +308,7 @@ try {
     }
     Copy-Item -LiteralPath $builtExe -Destination $copiedExePath -Force
     Copy-Item -LiteralPath $builtExe -Destination $copiedUpdaterPath -Force
+    Write-Utf8NoBomFile $installModeMarkerPath "msi`n"
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $copiedExePath
@@ -377,9 +372,7 @@ try {
         publishedVersion = $publishedRelease.Version
         releaseUrl = $publishedRelease.HtmlUrl
         contractMode = $ContractMode
-        zipAssetName = $publishedRelease.ZipAssetName
         msiAssetName = $publishedRelease.MsiAssetName
-        exeInstallerAssetName = $publishedRelease.ExeInstallerAssetName
         updatedVersion = $resolvedVersion
     } | ConvertTo-Json -Depth 4
     Write-Utf8NoBomFile $reportPath $report
