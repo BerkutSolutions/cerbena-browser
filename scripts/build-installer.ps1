@@ -2076,7 +2076,7 @@ end;
 [System.IO.File]::WriteAllText($issPath, $iss, $utf8)
 
 $compiler = Find-InnoSetupCompiler
-$builtArtifacts = New-Object System.Collections.Generic.List[hashtable]
+$builtArtifactSpecs = New-Object System.Collections.Generic.List[hashtable]
 if ($GenerateOnly -or [string]::IsNullOrWhiteSpace($compiler)) {
     if (-not [string]::IsNullOrWhiteSpace($compiler)) {
         Write-Host "Installer script generated at $issPath" -ForegroundColor Green
@@ -2085,22 +2085,58 @@ if ($GenerateOnly -or [string]::IsNullOrWhiteSpace($compiler)) {
 
     $fallbackExe = New-CSharpFallbackInstaller -InstallerRoot $installerRoot -PayloadRoot $payloadRoot -Version $resolvedVersion
     Sign-WindowsArtifacts @($fallbackExe)
-    [void]$builtArtifacts.Add((New-ReleaseMetadataEntry -Name ([System.IO.Path]::GetFileName($fallbackExe)) -Target ([System.IO.Path]::GetFileName($fallbackExe)) -Source $fallbackExe -Kind "installer" -InstallerKind "exe_fallback" -UpdaterStrategy "manual_installer" -Primary $false))
+    [void]$builtArtifactSpecs.Add(@{
+        Name = [System.IO.Path]::GetFileName($fallbackExe)
+        Target = [System.IO.Path]::GetFileName($fallbackExe)
+        Source = $fallbackExe
+        Kind = "installer"
+        InstallerKind = "exe_fallback"
+        UpdaterStrategy = "manual_installer"
+        Primary = $false
+    })
     Write-Warning "Inno Setup compiler (ISCC.exe) not found. Built C# fallback installer instead: $fallbackExe"
 } else {
     Invoke-Native $compiler @($issPath)
     $innoExe = Join-Path $outputDir ("cerbena-browser-setup-" + $resolvedVersion + ".exe")
     if (Test-Path $innoExe) {
-        [void]$builtArtifacts.Add((New-ReleaseMetadataEntry -Name ([System.IO.Path]::GetFileName($innoExe)) -Target ([System.IO.Path]::GetFileName($innoExe)) -Source $innoExe -Kind "installer" -InstallerKind "exe_fallback" -UpdaterStrategy "manual_installer" -Primary $false))
+        [void]$builtArtifactSpecs.Add(@{
+            Name = [System.IO.Path]::GetFileName($innoExe)
+            Target = [System.IO.Path]::GetFileName($innoExe)
+            Source = $innoExe
+            Kind = "installer"
+            InstallerKind = "exe_fallback"
+            UpdaterStrategy = "manual_installer"
+            Primary = $false
+        })
     }
 }
 
 [void](Remove-Item -LiteralPath (Join-Path $payloadRoot "cerbena-install-mode.txt") -Force -ErrorAction SilentlyContinue)
 $msiPath = New-MsiInstaller -InstallerRoot $installerRoot -PayloadRoot $payloadRoot -Version $resolvedVersion -RepoRoot $repoRoot
-[void]$builtArtifacts.Add((New-ReleaseMetadataEntry -Name ([System.IO.Path]::GetFileName($msiPath)) -Target ([System.IO.Path]::GetFileName($msiPath)) -Source $msiPath -Kind "installer" -InstallerKind "msi" -UpdaterStrategy "direct_msi" -Primary $true))
+[void]$builtArtifactSpecs.Add(@{
+    Name = [System.IO.Path]::GetFileName($msiPath)
+    Target = [System.IO.Path]::GetFileName($msiPath)
+    Source = $msiPath
+    Kind = "installer"
+    InstallerKind = "msi"
+    UpdaterStrategy = "direct_msi"
+    Primary = $true
+})
 
 Sign-WindowsArtifacts @($outputDir, $installerRoot)
-Update-ReleaseMetadataWithInstallerAssets -RepoRoot $repoRoot -Version $resolvedVersion -InstallerArtifacts @($builtArtifacts)
+$builtArtifacts = @(
+    $builtArtifactSpecs | ForEach-Object {
+        New-ReleaseMetadataEntry `
+            -Name $_.Name `
+            -Target $_.Target `
+            -Source $_.Source `
+            -Kind $_.Kind `
+            -InstallerKind $_.InstallerKind `
+            -UpdaterStrategy $_.UpdaterStrategy `
+            -Primary ([bool]$_.Primary)
+    }
+)
+Update-ReleaseMetadataWithInstallerAssets -RepoRoot $repoRoot -Version $resolvedVersion -InstallerArtifacts $builtArtifacts
 
 if ($GenerateOnly -and -not [string]::IsNullOrWhiteSpace($compiler)) {
     Write-Host "Installer script generated at $issPath" -ForegroundColor Green

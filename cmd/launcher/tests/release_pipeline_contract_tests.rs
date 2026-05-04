@@ -160,7 +160,7 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         "cerbena-browser-",
         "\"msi\"",
         "\"direct_msi\"",
-        "Primary $true",
+        "Primary = $true",
         "manual_installer",
     ] {
         assert!(
@@ -168,6 +168,17 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
             "installer build script must mention {needle}"
         );
     }
+
+    let sign_index = installer_script
+        .find("Sign-WindowsArtifacts @($outputDir, $installerRoot)")
+        .expect("installer script signs final output");
+    let metadata_index = installer_script
+        .rfind("Update-ReleaseMetadataWithInstallerAssets -RepoRoot")
+        .expect("installer script refreshes release metadata");
+    assert!(
+        sign_index < metadata_index,
+        "installer signing must happen before release metadata/checksum refresh"
+    );
 
     assert!(
         artifacts_script.contains("release-signing.ps1"),
