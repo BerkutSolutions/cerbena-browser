@@ -36,6 +36,10 @@ const RELEASE_SIGNING_PUBLIC_KEY_XML: &str =
         env!("CARGO_MANIFEST_DIR"),
         "/../../../config/release/release-signing-public-key.xml"
     ));
+const RELEASE_SIGNING_LEGACY_PUBLIC_KEYS_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../config/release/release-signing-legacy-public-keys.json"
+));
 
 const UPDATER_STEP_DISCOVER: &str = "discover";
 const UPDATER_STEP_COMPARE: &str = "compare";
@@ -1540,9 +1544,48 @@ fn verify_release_checksums_signature(
     Err(last_error)
 }
 
+fn release_signing_public_keys() -> Vec<String> {
+    let mut keys = Vec::new();
+    let current = RELEASE_SIGNING_PUBLIC_KEY_XML.trim();
+    if !current.is_empty() {
+        keys.push(current.to_string());
+    }
+
+    if let Ok(legacy_keys) = serde_json::from_str::<Vec<String>>(RELEASE_SIGNING_LEGACY_PUBLIC_KEYS_JSON)
+    {
+        for key in legacy_keys {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() && keys.iter().all(|existing| existing != trimmed) {
+                keys.push(trimmed.to_string());
+            }
+        }
+    }
+
+    keys
+}
+
 fn verify_release_checksums_signature_variant(
     checksums_bytes: &[u8],
     signature_b64: &str,
+) -> Result<(), String> {
+    let mut last_error = String::new();
+    for public_key_xml in release_signing_public_keys() {
+        match verify_release_checksums_signature_variant_with_key(
+            checksums_bytes,
+            signature_b64,
+            &public_key_xml,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+fn verify_release_checksums_signature_variant_with_key(
+    checksums_bytes: &[u8],
+    signature_b64: &str,
+    public_key_xml: &str,
 ) -> Result<(), String> {
     let script = r#"
 $publicXml = @'
@@ -1563,7 +1606,7 @@ if (-not $rsa.VerifyData($checksums, $sha, $signature)) {
   exit 1
 }
 "#
-    .replace("__PUBLIC_KEY_XML__", RELEASE_SIGNING_PUBLIC_KEY_XML)
+    .replace("__PUBLIC_KEY_XML__", public_key_xml)
     .replace("__CHECKSUMS_ENV__", RELEASE_CHECKSUMS_B64_ENV)
     .replace("__SIGNATURE_ENV__", RELEASE_CHECKSUMS_SIGNATURE_B64_ENV);
 
@@ -2035,6 +2078,7 @@ mod tests {
         download_release_bytes, ensure_asset_matches_verified_checksum,
         extract_checksum_for_asset, fetch_latest_release_from_url, is_version_newer,
         normalize_version, pick_release_asset_for_context,
+        release_signing_public_keys,
         reconcile_update_store_with_current_version, resolve_relaunch_executable_path,
         sha256_hex, should_run_auto_update_check, signature_verification_variants,
         AppUpdateStore, GithubReleaseAsset, SelectedAssetKind, UpdaterLaunchMode,
@@ -2261,6 +2305,14 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         assert_eq!(variants.len(), 2);
         assert_eq!(variants[0], b"alpha\r\nbeta\r\n");
         assert_eq!(variants[1], b"alpha\nbeta\n");
+    }
+
+    #[test]
+    fn release_signing_public_keys_include_current_and_legacy_keys() {
+        let keys = release_signing_public_keys();
+        assert!(keys.len() >= 2);
+        assert!(keys.iter().any(|key| key.contains("1nCCvDQ4TOZjV1t78V3T3dIz")));
+        assert!(keys.iter().any(|key| key.contains("sQ/dGNzpHEHiSUvpp8+h4axI")));
     }
 
     #[test]
