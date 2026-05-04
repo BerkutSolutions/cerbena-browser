@@ -2335,7 +2335,7 @@ def456  cerbena-windows-x64/cerbena.exe\n";
     fn reconcile_update_store_clears_stale_handoff_state_after_successful_relaunch() {
         let mut store = AppUpdateStore {
             latest_version: Some("1.0.6-1".to_string()),
-            staged_asset_name: Some("cerbena-browser-1.0.18.msi".to_string()),
+            staged_asset_name: Some("cerbena-browser-1.0.19.msi".to_string()),
             staged_asset_path: Some("C:/tmp/update.msi".to_string()),
             selected_asset_type: Some("msi".to_string()),
             selected_asset_reason: Some("windows_installed_context_prefers_msi".to_string()),
@@ -2390,7 +2390,7 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             Path::new("C:/tmp/update.msi"),
             Some(Path::new("C:/Program Files/Cerbena Browser/cerbena.exe")),
             Some("C:/tmp/app_update_store.json"),
-            Some("1.0.18"),
+            Some("1.0.19"),
         );
         assert!(script.contains("Start-Process -FilePath 'msiexec.exe'"));
         assert!(script.contains("'/qn'"));

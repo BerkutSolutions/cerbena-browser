@@ -66,10 +66,10 @@ function writeMockSyncStore(value) {
 
 function readMockUpdateState() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.18\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
+    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.19\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
   } catch {
     return {
-      currentVersion: "1.0.18",
+      currentVersion: "1.0.19",
       repositoryUrl: "https://github.com/BerkutSolutions/cerbena-browser",
       autoUpdateEnabled: false,
       lastCheckedAt: null,
@@ -426,7 +426,7 @@ function mockProfileCommand(command, args) {
         id: "wayfern",
         nameKey: "settings.tools.wayfern",
         status: tools.wayfern ? "installed" : "missing",
-        version: tools.wayfern ? "1.0.18" : null,
+        version: tools.wayfern ? "1.0.19" : null,
         action: tools.wayfern ? "none" : "internal",
         detailKey: null
       },
@@ -434,7 +434,7 @@ function mockProfileCommand(command, args) {
         id: "camoufox",
         nameKey: "settings.tools.camoufox",
         status: tools.camoufox ? "installed" : "missing",
-        version: tools.camoufox ? "1.0.18" : null,
+        version: tools.camoufox ? "1.0.19" : null,
         action: tools.camoufox ? "none" : "internal",
         detailKey: null
       },
