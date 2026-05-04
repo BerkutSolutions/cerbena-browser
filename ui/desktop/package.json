@@ -1,7 +1,7 @@
 {
     "name":  "browser-desktop-ui",
     "private":  true,
-    "version":  "1.0.21",
+    "version":  "1.0.22",
     "type":  "module",
     "scripts":  {
                     "style:sync":  "powershell -ExecutionPolicy Bypass -File ./scripts/sync-styles.ps1",
