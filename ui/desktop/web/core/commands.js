@@ -65,10 +65,10 @@ function writeMockSyncStore(value) {
 
 function readMockUpdateState() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.14\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
+    return JSON.parse(localStorage.getItem(MOCK_UPDATES_KEY) ?? "{\"currentVersion\":\"1.0.15\",\"repositoryUrl\":\"https://github.com/BerkutSolutions/cerbena-browser\",\"autoUpdateEnabled\":false,\"lastCheckedAt\":null,\"latestVersion\":null,\"releaseUrl\":null,\"hasUpdate\":false,\"status\":\"idle\",\"lastError\":null,\"stagedVersion\":null,\"stagedAssetName\":null,\"canAutoApply\":false}");
   } catch {
     return {
-      currentVersion: "1.0.14",
+      currentVersion: "1.0.15",
       repositoryUrl: "https://github.com/BerkutSolutions/cerbena-browser",
       autoUpdateEnabled: false,
       lastCheckedAt: null,
@@ -461,7 +461,8 @@ function mockProfileCommand(command, args) {
   if (
     command === "window_hide_to_tray" ||
     command === "window_restore_from_tray" ||
-    command === "confirm_app_exit"
+    command === "confirm_app_exit" ||
+    command === "open_external_url"
   ) {
     return true;
   }
@@ -490,4 +491,10 @@ export async function callCommand(command, args = {}) {
 
     return responseEnvelope(false, { error: String(error) }, "command.failed", correlationId);
   }
+}
+
+export async function openExternalUrl(url) {
+  return callCommand("open_external_url", {
+    request: { url }
+  });
 }

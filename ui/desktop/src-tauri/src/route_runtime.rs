@@ -1009,7 +1009,9 @@ fn build_amnezia_native_config_text(value: &str) -> Result<String, String> {
         "I4", "I5",
     ] {
         if let Some(raw) = extract_string_case_insensitive(&awg, key) {
-            lines.push(format!("{key} = {raw}"));
+            if let Some(sanitized) = sanitize_amnezia_native_field_value(&raw) {
+                lines.push(format!("{key} = {sanitized}"));
+            }
         }
     }
 
@@ -1049,11 +1051,11 @@ fn sanitize_amnezia_conf_text(value: &str) -> String {
         };
         let key = left.trim();
         let val = right.trim();
-        if ["I1", "I2", "I3", "I4", "I5"]
-            .iter()
-            .any(|item| key.eq_ignore_ascii_case(item))
-            && val.is_empty()
-        {
+        if is_amnezia_native_only_key(key) {
+            let Some(normalized) = sanitize_amnezia_native_field_value(val) else {
+                continue;
+            };
+            cleaned.push(format!("{key} = {normalized}"));
             continue;
         }
         cleaned.push(format!("{key} = {val}"));
@@ -1063,6 +1065,22 @@ fn sanitize_amnezia_conf_text(value: &str) -> String {
         text.push('\n');
     }
     text
+}
+
+fn sanitize_amnezia_native_field_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = trimmed
+        .strip_prefix('"')
+        .and_then(|item| item.strip_suffix('"'))
+        .or_else(|| trimmed.strip_prefix('\'').and_then(|item| item.strip_suffix('\'')))
+        .unwrap_or(trimmed)
+        .trim();
+
+    (!normalized.is_empty()).then(|| normalized.to_string())
 }
 
 fn extract_amnezia_conf_text_from_payload(root: &Value, awg: &Value) -> Option<String> {
@@ -1089,7 +1107,7 @@ fn extract_amnezia_conf_text_from_payload(root: &Value, awg: &Value) -> Option<S
     if !config.ends_with('\n') {
         config.push('\n');
     }
-    Some(config)
+    Some(sanitize_amnezia_conf_text(&config))
 }
 
 fn extract_amnezia_dns_pair(root: &Value, awg: &Value) -> Option<String> {
@@ -3288,6 +3306,54 @@ PersistentKeepalive = 25
         assert!(conf.contains("DNS = 1.1.1.1, 1.0.0.1"));
         assert!(conf.contains("Jc = 4"));
         assert!(conf.contains("Endpoint = 5.129.225.48:32542"));
+    }
+
+    #[test]
+    fn sanitize_amnezia_conf_text_skips_empty_quoted_native_fields() {
+        let raw = "[Interface]\nPrivateKey = PRIVATE\nI1 = \nI2=''\nI3 = \"\"\nI4 =   \nI5 = 12345\nJc = 4\n\n[Peer]\nPublicKey = PUBLIC\n";
+        let sanitized = sanitize_amnezia_conf_text(raw);
+        assert!(sanitized.contains("PrivateKey = PRIVATE"));
+        assert!(sanitized.contains("Jc = 4"));
+        assert!(sanitized.contains("I5 = 12345"));
+        assert!(!sanitized.contains("I1 ="));
+        assert!(!sanitized.contains("I2 ="));
+        assert!(!sanitized.contains("I3 ="));
+        assert!(!sanitized.contains("I4 ="));
+    }
+
+    #[test]
+    fn build_amnezia_native_config_text_from_key_skips_empty_quoted_native_fields() {
+        let payload = serde_json::json!({
+            "dns1": "1.1.1.1",
+            "containers": [
+                {
+                    "awg": {
+                        "client_priv_key": "PRIVATE",
+                        "server_pub_key": "PUBLIC",
+                        "client_ip": "10.8.1.84/32",
+                        "allowed_ips": ["0.0.0.0/0", "::/0"],
+                        "port": "32542",
+                        "hostName": "5.129.225.48",
+                        "Jc": "4",
+                        "I1": "",
+                        "I2": "''",
+                        "I3": "\"\"",
+                        "I4": "  ",
+                        "I5": "12345",
+                        "persistentKeepalive": "25"
+                    }
+                }
+            ]
+        })
+        .to_string();
+        let key = build_amnezia_key(&payload);
+        let conf = build_amnezia_native_config_text(&key).expect("materialize amnezia config");
+        assert!(conf.contains("Jc = 4"));
+        assert!(conf.contains("I5 = 12345"));
+        assert!(!conf.contains("I1 ="));
+        assert!(!conf.contains("I2 ="));
+        assert!(!conf.contains("I3 ="));
+        assert!(!conf.contains("I4 ="));
     }
 
     #[test]

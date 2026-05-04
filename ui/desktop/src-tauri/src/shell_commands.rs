@@ -63,6 +63,12 @@ pub struct ShellPreferenceUpdateRequest {
     pub startup_profile_id: Option<Option<String>>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalUrlRequest {
+    pub url: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellPreferencesState {
@@ -197,6 +203,45 @@ pub fn request_exit(app: &AppHandle) -> Result<(), String> {
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
     window.close().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn open_external_url(
+    request: ExternalUrlRequest,
+    correlation_id: String,
+) -> Result<UiEnvelope<bool>, String> {
+    let url = request.url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("only http/https urls can be opened externally".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| format!("open external url: {e}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("open external url: {e}"))?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("open external url: {e}"))?;
+    }
+
+    Ok(ok(correlation_id, true))
 }
 
 fn build_shell_preferences_state(state: &AppState) -> Result<ShellPreferencesState, String> {

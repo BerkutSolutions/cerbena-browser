@@ -87,10 +87,19 @@ struct LockedAppConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 struct IdentityLaunchPolicy {
+    mode: Option<IdentityLaunchMode>,
     core: IdentityLaunchCore,
     locale: IdentityLaunchLocale,
     window: IdentityLaunchWindow,
     screen: IdentityLaunchScreen,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum IdentityLaunchMode {
+    Real,
+    Auto,
+    Manual,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -157,7 +166,11 @@ impl EngineRuntime {
     }
 
     pub fn installed(&self, engine: EngineKind) -> Result<Option<EngineInstallation>, EngineError> {
-        self.registry.get(engine)
+        self
+            .registry
+            .get(engine)?
+            .map(|installation| self.normalize_installation(engine, installation))
+            .transpose()
     }
 
     pub fn ensure_ready<F, C>(
@@ -175,7 +188,7 @@ impl EngineRuntime {
                 "download interrupted by user".to_string(),
             ));
         }
-        if let Some(installed) = self.registry.get(engine)? {
+        if let Some(installed) = self.installed(engine)? {
             if installed.binary_path.exists() {
                 return Ok(installed);
             }
@@ -272,13 +285,10 @@ impl EngineRuntime {
         runtime_hardening: bool,
     ) -> Result<u32, EngineError> {
         let installation = self
-            .registry
-            .get(engine)?
+            .installed(engine)?
             .ok_or_else(|| EngineError::Launch("engine is not installed".to_string()))?;
         let binary_path = if matches!(engine, EngineKind::Camoufox) {
             prefer_camoufox_browser_binary(&installation.binary_path)
-        } else if matches!(engine, EngineKind::Wayfern) {
-            ensure_wayfern_launch_binary(&installation.binary_path)
         } else {
             installation.binary_path
         };
@@ -324,13 +334,10 @@ impl EngineRuntime {
         url: String,
     ) -> Result<(), EngineError> {
         let installation = self
-            .registry
-            .get(engine)?
+            .installed(engine)?
             .ok_or_else(|| EngineError::Launch("engine is not installed".to_string()))?;
         let binary_path = if matches!(engine, EngineKind::Camoufox) {
             prefer_camoufox_browser_binary(&installation.binary_path)
-        } else if matches!(engine, EngineKind::Wayfern) {
-            ensure_wayfern_launch_binary(&installation.binary_path)
         } else {
             installation.binary_path
         };
@@ -730,11 +737,11 @@ impl EngineRuntime {
     fn locate_binary(&self, engine: EngineKind, root: &Path) -> Result<PathBuf, EngineError> {
         let candidates = match engine {
             EngineKind::Wayfern => candidate_names(&[
+                "chrome.exe",
+                "chrome",
                 "wayfern-browser.exe",
                 "wayfern.exe",
                 "wayfern",
-                "chrome.exe",
-                "chrome",
             ]),
             EngineKind::Camoufox => candidate_names(&[
                 "camoufox.exe",
@@ -752,9 +759,6 @@ impl EngineRuntime {
                 root.display()
             ))
         })?;
-        if matches!(engine, EngineKind::Wayfern) {
-            return Ok(ensure_wayfern_launch_binary(&binary));
-        }
         Ok(binary)
     }
 
@@ -771,6 +775,22 @@ impl EngineRuntime {
             install_root: self.install_root.clone(),
             cache_dir: self.cache_dir.clone(),
         }
+    }
+
+    fn normalize_installation(
+        &self,
+        engine: EngineKind,
+        mut installation: EngineInstallation,
+    ) -> Result<EngineInstallation, EngineError> {
+        let normalized_binary_path = match engine {
+            EngineKind::Wayfern => prefer_wayfern_vendor_binary(&installation.binary_path),
+            EngineKind::Camoufox => installation.binary_path.clone(),
+        };
+        if normalized_binary_path != installation.binary_path {
+            installation.binary_path = normalized_binary_path;
+            self.registry.put(installation.clone())?;
+        }
+        Ok(installation)
     }
 }
 
@@ -1009,32 +1029,21 @@ fn prefer_camoufox_browser_binary(current: &Path) -> PathBuf {
     current.to_path_buf()
 }
 
-fn ensure_wayfern_launch_binary(current: &Path) -> PathBuf {
-    let file_name = current
+fn prefer_wayfern_vendor_binary(current: &Path) -> PathBuf {
+    let Some(parent) = current.parent() else {
+        return current.to_path_buf();
+    };
+    let current_name = current
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if file_name != "chrome.exe" {
+    if current_name == "chrome.exe" || current_name == "chrome" {
         return current.to_path_buf();
     }
-    let Some(parent) = current.parent() else {
-        return current.to_path_buf();
-    };
-    let alias = parent.join("wayfern-browser.exe");
-    let needs_refresh = fs::metadata(&alias)
-        .ok()
-        .and_then(|alias_meta| {
-            fs::metadata(current)
-                .ok()
-                .map(|current_meta| alias_meta.len() != current_meta.len())
-        })
-        .unwrap_or(true);
-    if needs_refresh {
-        let _ = fs::copy(current, &alias);
-    }
-    if alias.exists() {
-        return alias;
+    let chrome_candidates = candidate_names(&["chrome.exe", "chrome"]);
+    if let Some(path) = find_first_match(parent, &chrome_candidates) {
+        return path;
     }
     current.to_path_buf()
 }
@@ -1061,11 +1070,7 @@ fn launch_args(
                 "--no-default-browser-check".to_string(),
                 "--disable-background-mode".to_string(),
                 "--disable-quic".to_string(),
-                if runtime_hardening {
-                    "--disable-features=AsyncDns,DnsHttpssvc,AutofillServerCommunication,AutofillEnableAccountWalletStorage,PasswordManagerOnboarding".to_string()
-                } else {
-                    "--disable-features=AsyncDns,DnsHttpssvc".to_string()
-                },
+                "--disable-features=AsyncDns,DnsHttpssvc".to_string(),
             ];
             if private_mode {
                 args.push("--incognito".to_string());
@@ -1163,7 +1168,7 @@ fn apply_wayfern_identity_args(
     let Some(identity) = identity else {
         return Ok(());
     };
-    if !identity.core.user_agent.trim().is_empty() {
+    if !identity.core.user_agent.trim().is_empty() && !identity_uses_native_user_agent(identity) {
         args.push(format!("--user-agent={}", identity.core.user_agent.trim()));
     }
     if let Some(language) = normalize_primary_language(&identity.locale.navigator_language) {
@@ -1241,6 +1246,27 @@ fn normalize_accept_languages(primary: &str, languages: &[String]) -> Vec<String
         }
     }
     ordered
+}
+
+fn identity_uses_native_user_agent(identity: &IdentityLaunchPolicy) -> bool {
+    matches!(identity.mode, Some(IdentityLaunchMode::Real))
+}
+
+fn build_accept_language_header(languages: &[String]) -> String {
+    languages
+        .iter()
+        .enumerate()
+        .map(|(index, language)| {
+            if index == 0 {
+                language.clone()
+            } else {
+                let quality = 1.0 - (index as f32 * 0.1);
+                let quality = quality.max(0.1);
+                format!("{language};q={quality:.1}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn write_wayfern_language_preferences(
@@ -1407,6 +1433,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
     });
     let mut rules = Vec::new();
     if !accept_languages.is_empty() {
+        let accept_language_header = build_accept_language_header(&accept_languages);
         rules.push(serde_json::json!({
             "id": 1,
             "priority": 1,
@@ -1416,7 +1443,7 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
                     {
                         "header": "Accept-Language",
                         "operation": "set",
-                        "value": accept_languages.join(",")
+                        "value": accept_language_header
                     }
                 ]
             },
@@ -1585,8 +1612,9 @@ fn blocked_domains_for_profile(profile_root: &Path) -> Result<Vec<String>, Engin
 #[cfg(test)]
 mod tests {
     use super::{
-        blocked_domains_for_profile, chromium_extension_version, ensure_wayfern_launch_binary,
-        launch_args, prepare_wayfern_blocking_extension, wayfern_launch_environment, EngineKind,
+        blocked_domains_for_profile, build_accept_language_header, chromium_extension_version,
+        launch_args, prefer_wayfern_vendor_binary, prepare_wayfern_blocking_extension,
+        wayfern_launch_environment, EngineKind, EngineRuntime,
     };
     use std::fs;
 
@@ -1614,14 +1642,14 @@ mod tests {
             fs::read_to_string(extension_dir.join("manifest.json")).expect("manifest");
         let rules_raw = fs::read_to_string(extension_dir.join("rules.json")).expect("rules");
         assert!(manifest_raw.contains("\"manifest_version\": 3"));
-        assert!(manifest_raw.contains("\"version\": \"1.0.14\""));
+        assert!(manifest_raw.contains("\"version\": \"1.0.15\""));
         assert!(rules_raw.contains("||youtube.com^"));
         assert!(rules_raw.contains("||example.com^"));
     }
 
     #[test]
     fn chromium_extension_version_normalizes_hotfix_suffixes() {
-        assert_eq!(chromium_extension_version("1.0.14"), "1.0.14");
+        assert_eq!(chromium_extension_version("1.0.15"), "1.0.15");
         assert_eq!(chromium_extension_version("v1.2.3"), "1.2.3");
         assert_eq!(chromium_extension_version("7"), "7");
     }
@@ -1697,7 +1725,20 @@ mod tests {
         assert!(manifest_raw.contains("\"host_permissions\": ["));
         assert!(rules_raw.contains("\"type\": \"modifyHeaders\""));
         assert!(rules_raw.contains("\"header\": \"Accept-Language\""));
-        assert!(rules_raw.contains("\"value\": \"ru,en,en-US\""));
+        assert!(rules_raw.contains("\"value\": \"ru,en;q=0.9,en-US;q=0.8\""));
+    }
+
+    #[test]
+    fn accept_language_header_uses_browser_like_quality_weights() {
+        assert_eq!(
+            build_accept_language_header(&[
+                "ru-RU".to_string(),
+                "ru".to_string(),
+                "en-US".to_string(),
+                "en".to_string(),
+            ]),
+            "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+        );
     }
 
     #[test]
@@ -1809,18 +1850,72 @@ mod tests {
     }
 
     #[test]
-    fn wayfern_launch_binary_aliases_chrome_name() {
+    fn wayfern_real_mode_keeps_native_user_agent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let policy_dir = temp.path().join("policy");
+        fs::create_dir_all(&policy_dir).expect("policy dir");
+        fs::write(
+            policy_dir.join("identity-preset.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "mode": "real",
+                "core": {
+                    "user_agent": "Mozilla/5.0 Launcher WebView"
+                },
+                "locale": {
+                    "navigator_language": "ru-RU",
+                    "languages": ["ru-RU", "ru", "en-US"]
+                }
+            }))
+            .expect("serialize identity policy"),
+        )
+        .expect("write identity policy");
+
+        let args = launch_args(
+            EngineKind::Wayfern,
+            temp.path(),
+            "https://duckduckgo.com",
+            false,
+            None,
+            true,
+        )
+        .expect("launch args");
+
+        assert!(!args
+            .iter()
+            .any(|value| value == "--user-agent=Mozilla/5.0 Launcher WebView"));
+        assert!(args.iter().any(|value| value == "--lang=ru-RU"));
+        assert!(args
+            .iter()
+            .any(|value| value == "--accept-lang=ru-RU,ru,en-US"));
+    }
+
+    #[test]
+    fn wayfern_prefers_vendor_chrome_binary_over_launcher_alias() {
         let temp = tempfile::tempdir().expect("tempdir");
         let chrome = temp.path().join("chrome.exe");
-        fs::write(&chrome, b"wayfern").expect("write chrome stub");
+        let alias = temp.path().join("wayfern-browser.exe");
+        fs::write(&chrome, b"vendor chrome").expect("write chrome stub");
+        fs::write(&alias, b"launcher alias").expect("write alias stub");
 
-        let launch_binary = ensure_wayfern_launch_binary(&chrome);
+        let runtime = EngineRuntime::new(temp.path().join("state")).expect("runtime");
+        let launch_binary = runtime
+            .locate_binary(EngineKind::Wayfern, temp.path())
+            .expect("locate wayfern binary");
 
-        assert_eq!(
-            launch_binary.file_name().and_then(|value| value.to_str()),
-            Some("wayfern-browser.exe")
-        );
-        assert!(launch_binary.exists());
+        assert_eq!(launch_binary, chrome);
+    }
+
+    #[test]
+    fn wayfern_prefers_vendor_chrome_from_stored_alias_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let chrome = temp.path().join("chrome.exe");
+        let alias = temp.path().join("wayfern-browser.exe");
+        fs::write(&chrome, b"vendor chrome").expect("write chrome stub");
+        fs::write(&alias, b"launcher alias").expect("write alias stub");
+
+        let resolved = prefer_wayfern_vendor_binary(&alias);
+
+        assert_eq!(resolved, chrome);
     }
 }
 

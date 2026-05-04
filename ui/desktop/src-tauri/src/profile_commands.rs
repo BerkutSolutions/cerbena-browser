@@ -1099,7 +1099,12 @@ fn apply_camoufox_identity_prefs(
         return;
     };
     let user_agent = identity_preset.core.user_agent.trim();
-    if !user_agent.is_empty() {
+    if !user_agent.is_empty()
+        && !matches!(
+            identity_preset.mode,
+            browser_fingerprint::IdentityPresetMode::Real
+        )
+    {
         user_js_lines.push(format!(
             "user_pref(\"general.useragent.override\", \"{}\");",
             escape_firefox_pref_string(user_agent)
@@ -2895,7 +2900,7 @@ mod tests {
             .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("cerbena-camoufox-identity-{unique}"));
         let identity = IdentityPreset {
-            mode: browser_fingerprint::IdentityPresetMode::Real,
+            mode: browser_fingerprint::IdentityPresetMode::Manual,
             auto_platform: None,
             display_name: Some("Real".to_string()),
             core: browser_fingerprint::IdentityCore {
@@ -2974,6 +2979,95 @@ mod tests {
         assert!(user_js.contains("intl.locale.requested\", \"ru\""));
         assert!(user_js.contains("intl.accept_languages\", \"ru,en\""));
         assert!(user_js.contains("privacy.spoof_english\", 0"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn camoufox_real_mode_keeps_native_user_agent() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("cerbena-camoufox-real-{unique}"));
+        let identity = IdentityPreset {
+            mode: browser_fingerprint::IdentityPresetMode::Real,
+            auto_platform: None,
+            display_name: Some("Real".to_string()),
+            core: browser_fingerprint::IdentityCore {
+                user_agent: "Mozilla/5.0 Launcher WebView".to_string(),
+                platform: "Win32".to_string(),
+                platform_version: "10.0".to_string(),
+                brand: "Firefox".to_string(),
+                brand_version: "126".to_string(),
+                vendor: "Mozilla".to_string(),
+                vendor_sub: "".to_string(),
+                product_sub: "20030107".to_string(),
+            },
+            hardware: browser_fingerprint::HardwareProfile {
+                cpu_threads: 8,
+                max_touch_points: 0,
+                device_memory_gb: 16,
+            },
+            screen: browser_fingerprint::ScreenProfile {
+                width: 1920,
+                height: 1080,
+                device_pixel_ratio: 1.0,
+                avail_width: 1920,
+                avail_height: 1040,
+                color_depth: 32,
+            },
+            window: browser_fingerprint::WindowProfile {
+                outer_width: 1440,
+                outer_height: 920,
+                inner_width: 1400,
+                inner_height: 860,
+                screen_x: 0,
+                screen_y: 0,
+            },
+            locale: browser_fingerprint::LocaleProfile {
+                navigator_language: "ru".to_string(),
+                languages: vec!["ru".to_string(), "en".to_string()],
+                do_not_track: "unspecified".to_string(),
+                timezone_iana: "Europe/Moscow".to_string(),
+                timezone_offset_minutes: -180,
+            },
+            geo: browser_fingerprint::GeoProfile {
+                latitude: 0.0,
+                longitude: 0.0,
+                accuracy_meters: 100000.0,
+            },
+            auto_geo: browser_fingerprint::AutoGeoConfig { enabled: false },
+            webgl: browser_fingerprint::WebGlProfile {
+                vendor: "Mozilla".to_string(),
+                renderer: "WebRender".to_string(),
+                params_json: "{\"antialias\":true}".to_string(),
+            },
+            canvas_noise_seed: 1,
+            fonts: vec!["Arial".to_string()],
+            audio: browser_fingerprint::AudioProfile {
+                sample_rate: 44100,
+                max_channels: 2,
+            },
+            battery: browser_fingerprint::BatteryProfile {
+                charging: true,
+                level: 1.0,
+            },
+        };
+        prepare_camoufox_profile_runtime(
+            &temp_dir,
+            Some("https://duckduckgo.com"),
+            Some("duckduckgo"),
+            None,
+            false,
+            Some(&identity),
+        )
+        .expect("prepare camoufox identity runtime");
+
+        let user_js = fs::read_to_string(temp_dir.join("user.js")).expect("read user.js");
+        assert!(!user_js.contains("general.useragent.override"));
+        assert!(user_js.contains("intl.locale.requested\", \"ru\""));
+        assert!(user_js.contains("intl.accept_languages\", \"ru,en\""));
 
         let _ = fs::remove_dir_all(temp_dir);
     }

@@ -1,6 +1,4 @@
 use std::{
-    collections::HashMap,
-    sync::{Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -40,8 +38,6 @@ use std::{ffi::c_void, mem::size_of, ptr};
 
 #[derive(Debug, Clone, Copy)]
 struct WindowBounds {
-    #[cfg(target_os = "windows")]
-    hwnd: Hwnd,
     x: f64,
     y: f64,
     width: f64,
@@ -148,24 +144,10 @@ pub fn maybe_start_panic_frame(app_handle: &AppHandle, profile_id: Uuid, pid: u3
             }
 
             if let Some(bounds) = query_main_window_bounds(target_pid) {
-                #[cfg(target_os = "windows")]
-                let _ = apply_native_overlay_group(
-                    &handle,
-                    bounds,
-                    &[
-                        (&border_label, "border"),
-                        (&label_label, "label"),
-                        (&controls_label, "controls"),
-                        (&menu_label, "menu"),
-                    ],
-                );
-                #[cfg(not(target_os = "windows"))]
-                {
-                    let _ = update_panic_frame_window(&handle, &border_label, bounds, "border");
-                    let _ = update_panic_frame_window(&handle, &label_label, bounds, "label");
-                    let _ = update_panic_frame_window(&handle, &controls_label, bounds, "controls");
-                    let _ = update_panic_frame_window(&handle, &menu_label, bounds, "menu");
-                }
+                let _ = update_panic_frame_window(&handle, &border_label, bounds, "border");
+                let _ = update_panic_frame_window(&handle, &label_label, bounds, "label");
+                let _ = update_panic_frame_window(&handle, &controls_label, bounds, "controls");
+                let _ = update_panic_frame_window(&handle, &menu_label, bounds, "menu");
             } else {
                 hide_panic_frame_windows(&handle, profile_id);
             }
@@ -178,11 +160,6 @@ pub fn maybe_start_panic_frame(app_handle: &AppHandle, profile_id: Uuid, pid: u3
 pub fn close_panic_frame(app_handle: &AppHandle, profile_id: Uuid) {
     if let Ok(mut active) = app_handle.state::<AppState>().active_panic_frames.lock() {
         active.remove(&profile_id);
-    }
-    #[cfg(target_os = "windows")]
-    if let Ok(mut cache) = overlay_placement_cache().lock() {
-        let profile_key = profile_id.to_string();
-        cache.retain(|label, _| !label.contains(&profile_key));
     }
     if let Some(window) = app_handle.get_webview_window(&panic_frame_border_label(profile_id)) {
         hide_native_overlay_window(&window);
@@ -294,6 +271,7 @@ fn ensure_panic_frame_window(
         .transparent(true)
         .shadow(false)
         .resizable(false)
+        .always_on_top(true)
         .skip_taskbar(true)
         .visible(false)
         .initialization_script(&script)
@@ -305,7 +283,6 @@ fn ensure_panic_frame_window(
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
 fn update_panic_frame_window(
     app_handle: &AppHandle,
     label: &str,
@@ -356,79 +333,21 @@ fn update_panic_frame_window(
     let rounded_y = y.round() as i32;
     let rounded_width = width.max(24.0).round() as u32;
     let rounded_height = height.max(24.0).round() as u32;
-    #[cfg(target_os = "windows")]
-    {
-        apply_native_overlay_bounds(
-            &window,
-            label,
-            bounds.hwnd,
-            rounded_x,
-            rounded_y,
+    window
+        .set_position(Position::Physical(PhysicalPosition::new(
+            rounded_x, rounded_y,
+        )))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_size(Size::Physical(PhysicalSize::new(
             rounded_width,
             rounded_height,
-            true,
-        )?;
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        window
-            .set_position(Position::Physical(PhysicalPosition::new(
-                rounded_x, rounded_y,
-            )))
-            .map_err(|e| e.to_string())?;
-        window
-            .set_size(Size::Physical(PhysicalSize::new(
-                rounded_width,
-                rounded_height,
-            )))
-            .map_err(|e| e.to_string())?;
-        if mode == "border" || !window.is_visible().map_err(|e| e.to_string())? {
-            window.show().map_err(|e| e.to_string())?;
-        }
+        )))
+        .map_err(|e| e.to_string())?;
+    if mode == "border" || !window.is_visible().map_err(|e| e.to_string())? {
+        window.show().map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-fn overlay_geometry(bounds: WindowBounds, mode: &str) -> (i32, i32, u32, u32) {
-    let (x, y, width, height) = match mode {
-        "label" => {
-            let width = (bounds.width * 0.34).clamp(LABEL_MIN_WIDTH, LABEL_MAX_WIDTH);
-            (
-                bounds.x + (bounds.width - width) / 2.0,
-                bounds.y - LABEL_LIFT,
-                width,
-                LABEL_HEIGHT,
-            )
-        }
-        "controls" => (
-            bounds.x + bounds.width - CONTROL_RIGHT_GAP - CONTROL_SIZE,
-            (bounds.y + CONTROL_TOP_OFFSET).max(bounds.work_top),
-            CONTROL_SIZE,
-            CONTROL_SIZE,
-        ),
-        "menu" => {
-            let max_x = (bounds.work_right - MENU_WIDTH).max(bounds.work_left);
-            let preferred_x =
-                bounds.x + bounds.width - CONTROL_RIGHT_GAP - MENU_WIDTH + CONTROL_SIZE;
-            let x = preferred_x.clamp(bounds.work_left, max_x);
-            let max_y = (bounds.work_bottom - MENU_HEIGHT).max(bounds.work_top);
-            let preferred_y = bounds.y + CONTROL_SIZE + MENU_OFFSET_Y;
-            let y = preferred_y.clamp(bounds.work_top, max_y);
-            (x, y, MENU_WIDTH, MENU_HEIGHT)
-        }
-        _ => (
-            bounds.x - FRAME_SIDE_BLEED,
-            bounds.y - FRAME_TOP_BLEED,
-            bounds.width + FRAME_SIDE_BLEED * 2.0,
-            bounds.height + FRAME_TOP_BLEED + FRAME_BOTTOM_BLEED,
-        ),
-    };
-    (
-        x.round() as i32,
-        y.round() as i32,
-        width.max(24.0).round() as u32,
-        height.max(24.0).round() as u32,
-    )
 }
 
 pub fn show_panic_frame_menu(app_handle: &AppHandle, profile_id: Uuid) -> Result<(), String> {
@@ -501,7 +420,6 @@ fn query_main_window_bounds(pid: u32) -> Option<WindowBounds> {
         let info = get_monitor_info(monitor)?;
 
         Some(WindowBounds {
-            hwnd,
             x: rect.left as f64,
             y: rect.top as f64,
             width: (rect.right - rect.left) as f64,
@@ -529,48 +447,11 @@ const MONITOR_DEFAULTTONEAREST: u32 = 2;
 #[cfg(target_os = "windows")]
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 #[cfg(target_os = "windows")]
-const GWL_HWNDPARENT: i32 = -8;
-#[cfg(target_os = "windows")]
 const SWP_NOACTIVATE: u32 = 0x0010;
-#[cfg(target_os = "windows")]
-const SWP_SHOWWINDOW: u32 = 0x0040;
 #[cfg(target_os = "windows")]
 const SWP_HIDEWINDOW: u32 = 0x0080;
 #[cfg(target_os = "windows")]
 const SW_HIDE: i32 = 0;
-#[cfg(target_os = "windows")]
-const SW_SHOWNOACTIVATE: i32 = 4;
-#[cfg(target_os = "windows")]
-type Hdwp = *mut c_void;
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct OverlayPlacement {
-    owner_hwnd: isize,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    visible: bool,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Clone)]
-struct OverlayUpdate {
-    label: String,
-    hwnd: Hwnd,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    visible: bool,
-}
-
-#[cfg(target_os = "windows")]
-fn overlay_placement_cache() -> &'static Mutex<HashMap<String, OverlayPlacement>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, OverlayPlacement>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
@@ -617,8 +498,6 @@ unsafe extern "system" {
         value: *mut c_void,
         value_size: u32,
     ) -> i32;
-    fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize;
-    fn SetWindowLongPtrW(hwnd: Hwnd, index: i32, new_long: isize) -> isize;
     fn SetWindowPos(
         hwnd: Hwnd,
         hwnd_insert_after: Hwnd,
@@ -629,18 +508,6 @@ unsafe extern "system" {
         flags: u32,
     ) -> i32;
     fn ShowWindow(hwnd: Hwnd, cmd_show: i32) -> i32;
-    fn BeginDeferWindowPos(num_windows: i32) -> Hdwp;
-    fn DeferWindowPos(
-        win_pos_info: Hdwp,
-        hwnd: Hwnd,
-        hwnd_insert_after: Hwnd,
-        x: i32,
-        y: i32,
-        cx: i32,
-        cy: i32,
-        flags: u32,
-    ) -> Hdwp;
-    fn EndDeferWindowPos(win_pos_info: Hdwp) -> i32;
 }
 
 #[cfg(target_os = "windows")]
@@ -741,117 +608,3 @@ fn hide_native_overlay_window(window: &tauri::WebviewWindow) {
 
 #[cfg(not(target_os = "windows"))]
 fn hide_native_overlay_window(_window: &tauri::WebviewWindow) {}
-
-#[cfg(target_os = "windows")]
-fn apply_native_overlay_group(
-    app_handle: &AppHandle,
-    bounds: WindowBounds,
-    entries: &[(&str, &str)],
-) -> Result<(), String> {
-    let mut updates = Vec::with_capacity(entries.len());
-    for (label, mode) in entries {
-        let Some(window) = app_handle.get_webview_window(label) else {
-            continue;
-        };
-        let visible = if *mode == "menu" {
-            window.is_visible().map_err(|e| e.to_string())?
-        } else {
-            true
-        };
-        let overlay_hwnd = window
-            .hwnd()
-            .map_err(|e| format!("resolve panic overlay hwnd: {e}"))?;
-        let overlay_hwnd = overlay_hwnd.0 as Hwnd;
-        let (x, y, width, height) = overlay_geometry(bounds, mode);
-        updates.push(OverlayUpdate {
-            label: (*label).to_string(),
-            hwnd: overlay_hwnd,
-            x,
-            y,
-            width,
-            height,
-            visible,
-        });
-    }
-    if updates.is_empty() {
-        return Ok(());
-    }
-
-    let mut changed = Vec::with_capacity(updates.len());
-    if let Ok(cache) = overlay_placement_cache().lock() {
-        for update in updates {
-            let placement = OverlayPlacement {
-                owner_hwnd: bounds.hwnd as isize,
-                x: update.x,
-                y: update.y,
-                width: update.width,
-                height: update.height,
-                visible: update.visible,
-            };
-            if cache.get(&update.label).copied() != Some(placement) {
-                changed.push((update, placement));
-            }
-        }
-    } else {
-        for update in updates {
-            changed.push((
-                update.clone(),
-                OverlayPlacement {
-                    owner_hwnd: bounds.hwnd as isize,
-                    x: update.x,
-                    y: update.y,
-                    width: update.width,
-                    height: update.height,
-                    visible: update.visible,
-                },
-            ));
-        }
-    }
-    if changed.is_empty() {
-        return Ok(());
-    }
-
-    unsafe {
-        let mut batch = BeginDeferWindowPos(changed.len() as i32);
-        if batch.is_null() {
-            return Err("BeginDeferWindowPos failed for panic overlay".to_string());
-        }
-        let mut insert_after = bounds.hwnd;
-        for (update, _) in &changed {
-            if GetWindowLongPtrW(update.hwnd, GWL_HWNDPARENT) != bounds.hwnd as isize {
-                SetWindowLongPtrW(update.hwnd, GWL_HWNDPARENT, bounds.hwnd as isize);
-            }
-            let flags =
-                SWP_NOACTIVATE | if update.visible { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
-            batch = DeferWindowPos(
-                batch,
-                update.hwnd,
-                insert_after,
-                update.x,
-                update.y,
-                update.width as i32,
-                update.height as i32,
-                flags,
-            );
-            if batch.is_null() {
-                return Err("DeferWindowPos failed for panic overlay".to_string());
-            }
-            insert_after = update.hwnd;
-        }
-        if EndDeferWindowPos(batch) == 0 {
-            return Err("EndDeferWindowPos failed for panic overlay".to_string());
-        }
-        for (update, _) in &changed {
-            if update.visible {
-                ShowWindow(update.hwnd, SW_SHOWNOACTIVATE);
-            }
-        }
-    }
-
-    if let Ok(mut cache) = overlay_placement_cache().lock() {
-        for (update, placement) in changed {
-            cache.insert(update.label, placement);
-        }
-    }
-    Ok(())
-}

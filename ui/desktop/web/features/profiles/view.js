@@ -44,6 +44,7 @@ import { getSyncOverview, saveSyncControls } from "../sync/api.js";
 import { blockedServicesToPairs, loadDnsTemplates, loadProfileDnsDraft, saveProfileDnsDraft } from "../dns/store.js";
 import { applyPolicyPresetToDraft, loadPolicyPresets, summarizePolicyPreset } from "../dns/policy-store.js";
 import { askConfirmModal, askInputModal, closeModalOverlay, showModalOverlay } from "../../core/modal.js";
+import { openExternalUrl } from "../../core/commands.js";
 import { buildTagPickerMarkup, collectTagOptions, uniqueTags, wireTagPicker } from "../../core/tag-picker.js";
 
 const DOMAIN_OPTIONS = [
@@ -837,6 +838,28 @@ function renderProfileSandboxFrame(preview, selectedTemplate, selectedModeOverri
   `;
 }
 
+function globalRouteNoticeHtml(networkState, routeMode, t) {
+  const normalizedMode = normalizeProfileRouteMode(routeMode || "direct");
+  if (normalizedMode !== "direct") {
+    return "";
+  }
+  const globalRoute = networkState?.globalRoute ?? {};
+  const defaultTemplateId = String(globalRoute.defaultTemplateId ?? "").trim();
+  if (!defaultTemplateId || (!globalRoute.globalVpnEnabled && !globalRoute.blockWithoutVpn)) {
+    return "";
+  }
+  const template = (networkState?.connectionTemplates ?? []).find((item) => item.id === defaultTemplateId);
+  if (!template) {
+    return "";
+  }
+  const reasonKey = globalRoute.globalVpnEnabled && globalRoute.blockWithoutVpn
+    ? "profile.route.globalRouteInheritedGlobalAndBlock"
+    : globalRoute.globalVpnEnabled
+      ? "profile.route.globalRouteInheritedGlobalOnly"
+      : "profile.route.globalRouteInheritedBlockOnly";
+  return `<p class="notice success">${escapeHtml(t(reasonKey).replace("{route}", profileRouteSummary(template, t)))}</p>`;
+}
+
 function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, syncOverview, identityPreset) {
   const isRunning = profile?.state === "running";
   const searchDefault = profile?.default_search_provider ?? "duckduckgo";
@@ -983,6 +1006,9 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
                 <input type="checkbox" name="profileKillSwitch" ${routeKillSwitchEnabled ? "checked" : ""} ${routeIsDirect ? "disabled" : ""}/>
                 <span>${t("network.killSwitch")}</span>
               </label>
+            </div>
+            <div id="profile-global-route-notice-slot">
+              ${globalRouteNoticeHtml(networkState, selectedRouteMode, t)}
             </div>
             <div id="profile-sandbox-frame-slot"></div>
           </div>
@@ -1142,6 +1168,76 @@ async function askConfirm(root, t, title, description, descriptionHtml = "") {
   });
 }
 
+function dockerHelpModalHtml(t, mode) {
+  const isMissing = mode === "missing";
+  const title = isMissing ? t("docker.modal.missingTitle") : t("docker.modal.stoppedTitle");
+  const body = isMissing ? t("docker.modal.missingBody") : t("docker.modal.stoppedBody");
+  const actionLabel = isMissing ? t("docker.modal.download") : t("action.close");
+  return `
+    <div class="profiles-modal-overlay" id="docker-help-overlay">
+      <div class="profiles-modal-window profiles-modal-window-sm">
+        <div class="action-modal">
+          <h3>${escapeHtml(title)}</h3>
+          <p class="meta">${escapeHtml(body)}</p>
+          <footer class="modal-actions">
+            <button type="button" id="docker-help-cancel">${t("action.cancel")}</button>
+            <button type="button" id="docker-help-submit">${escapeHtml(actionLabel)}</button>
+          </footer>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function showDockerHelpModal(t, mode) {
+  return new Promise((resolve) => {
+    const existing = document.body.querySelector("#docker-help-overlay");
+    if (existing) {
+      closeModalOverlay(existing);
+    }
+    document.body.insertAdjacentHTML("beforeend", dockerHelpModalHtml(t, mode));
+    const overlay = document.body.querySelector("#docker-help-overlay");
+    if (!overlay) {
+      resolve(false);
+      return;
+    }
+    const close = (value) => closeModalOverlay(overlay, () => resolve(value));
+    showModalOverlay(overlay);
+    overlay.querySelector("#docker-help-cancel")?.addEventListener("click", () => close(false));
+    overlay.querySelector("#docker-help-submit")?.addEventListener("click", async () => {
+      if (mode === "missing") {
+        await openExternalUrl("https://www.docker.com/products/docker-desktop/");
+      }
+      close(true);
+    });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        close(false);
+      }
+    });
+  });
+}
+
+function classifyDockerRuntimeIssue(errorText) {
+  const text = String(errorText ?? "").toLowerCase();
+  if (
+    text.includes("docker runtime is not installed or not reachable:")
+    && (text.includes("program not found") || text.includes("not recognized"))
+  ) {
+    return "missing";
+  }
+  if (
+    text.includes("network sandbox adapter 'container-vm' is not available:")
+    || text.includes("container sandbox runtime is unavailable:")
+    || text.includes("container runtime probe failed:")
+    || text.includes("docker desktop server runtime is unavailable")
+    || text.includes("error during connect")
+  ) {
+    return "stopped";
+  }
+  return null;
+}
+
 function profileLogsModalHtml(t, profile, lines) {
   const content = Array.isArray(lines) && lines.length
     ? lines.join("\n")
@@ -1201,6 +1297,13 @@ function setNotice(model, type, text) {
 
 function resolveProfileErrorMessage(t, errorText) {
   const text = String(errorText ?? "");
+  const dockerIssue = classifyDockerRuntimeIssue(text);
+  if (dockerIssue === "missing") {
+    return t("network.sandbox.reason.containerRuntimeMissing");
+  }
+  if (dockerIssue === "stopped") {
+    return t("network.sandbox.reason.containerProbeFailed");
+  }
   const keyMap = {
     "profile_protection.locked_profile_requires_unlock": "profile.security.lockedLaunchBlocked",
     "profile_protection.system_access_forbidden": "profile.security.systemAccessBlocked",
@@ -1449,8 +1552,12 @@ export function wireProfiles(root, model, rerender, t) {
           if (!launchResult.ok) {
             model.profileLaunchOverlay = null;
             const errorText = String(launchResult.data.error);
+            const dockerIssue = classifyDockerRuntimeIssue(errorText);
             const postureAction = resolveDevicePostureAction(errorText);
-            if (postureAction) {
+            if (dockerIssue) {
+              await showDockerHelpModal(t, dockerIssue);
+              setNotice(model, "error", resolveProfileErrorMessage(t, errorText));
+            } else if (postureAction) {
               const postureResult = await getDevicePostureReport();
               const report = postureResult.ok ? postureResult.data : null;
               const detail = report ? postureFindingLines(t, report) : "";
@@ -1686,6 +1793,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
   const profileRouteTemplateRow = overlay.querySelector("#profile-route-template-row");
   const profileKillSwitchRow = overlay.querySelector("#profile-kill-switch-row");
   const profileKillSwitchInput = overlay.querySelector("[name='profileKillSwitch']");
+  const profileGlobalRouteNoticeSlot = overlay.querySelector("#profile-global-route-notice-slot");
   const profileSandboxSlot = overlay.querySelector("#profile-sandbox-frame-slot");
   let profileSandboxPreview = null;
   let initialSandboxMode = null;
@@ -1775,13 +1883,25 @@ async function openProfileModal(root, model, rerender, t, existing) {
       profileRouteTemplate.value = "";
     }
   };
+  const refreshGlobalRouteNotice = () => {
+    if (!profileGlobalRouteNoticeSlot || !profileRouteMode) {
+      return;
+    }
+    profileGlobalRouteNoticeSlot.innerHTML = globalRouteNoticeHtml(
+      profileNetworkState,
+      profileRouteMode.value || "direct",
+      t
+    );
+  };
   refreshRouteTemplateOptions();
+  refreshGlobalRouteNotice();
   refreshProfileSandboxFrame().catch(() => {});
   profileRouteMode?.addEventListener("change", async () => {
     dirty = true;
     initialSandboxMode = null;
     draftSandboxMode = null;
     refreshRouteTemplateOptions();
+    refreshGlobalRouteNotice();
     await refreshProfileSandboxFrame();
   });
   profileRouteTemplate?.addEventListener("change", async () => {

@@ -339,6 +339,7 @@ fn main() {
             shell_commands::window_restore_from_tray,
             shell_commands::confirm_app_exit,
             shell_commands::open_default_apps_settings,
+            shell_commands::open_external_url,
             update_commands::get_launcher_update_state,
             update_commands::set_launcher_auto_update,
             update_commands::check_launcher_updates,

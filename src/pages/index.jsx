@@ -13,7 +13,7 @@ export default function Home() {
       <main className="hero-page">
         <section className="hero-panel hero-panel--home">
           <div>
-            <p className="eyebrow">CERBENA BROWSER 1.0.14</p>
+            <p className="eyebrow">CERBENA BROWSER 1.0.15</p>
             <h1>Cerbena Browser Documentation</h1>
             <p className="hero-copy">
               Unified entry point for isolated profiles, route runtime, DNS filters, traffic gateway,

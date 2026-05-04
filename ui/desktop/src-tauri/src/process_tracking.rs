@@ -25,6 +25,7 @@ pub fn track_profile_process(
 ) {
     std::thread::spawn(move || {
         let mut tracked_pid = pid;
+        let mut known_session_pids = vec![pid];
         let mut missing_profile_ticks = 0u8;
         loop {
             if let Some(actual_pid) = find_profile_process_pid(&profile_data_dir) {
@@ -36,9 +37,28 @@ pub fn track_profile_process(
                     );
                     replace_tracked_pid(&app_handle, profile_id, tracked_pid, actual_pid);
                     tracked_pid = actual_pid;
+                    if !known_session_pids.contains(&actual_pid) {
+                        known_session_pids.push(actual_pid);
+                    }
                 }
             } else {
-                missing_profile_ticks = missing_profile_ticks.saturating_add(1);
+                if let Some(descendant_pid) = find_session_descendant_browser_pid(&known_session_pids)
+                {
+                    missing_profile_ticks = 0;
+                    if descendant_pid != tracked_pid {
+                        eprintln!(
+                            "[process-tracking] profile={} descendant_pid_replaced old={} new={}",
+                            profile_id, tracked_pid, descendant_pid
+                        );
+                        replace_tracked_pid(&app_handle, profile_id, tracked_pid, descendant_pid);
+                        tracked_pid = descendant_pid;
+                        if !known_session_pids.contains(&descendant_pid) {
+                            known_session_pids.push(descendant_pid);
+                        }
+                    }
+                } else {
+                    missing_profile_ticks = missing_profile_ticks.saturating_add(1);
+                }
                 if !is_process_running(tracked_pid) && missing_profile_ticks >= 4 {
                     eprintln!(
                         "[process-tracking] profile={} tracked_pid={} considered stopped after {} missing ticks",
@@ -268,4 +288,60 @@ fn matching_profile_processes(system: &System, target: &str) -> Vec<ProfileProce
             .then_with(|| left.pid.cmp(&right.pid))
     });
     matches
+}
+
+fn find_session_descendant_browser_pid(roots: &[u32]) -> Option<u32> {
+    if roots.is_empty() {
+        return None;
+    }
+    let system = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    let root_set = roots.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let mut descendants = system
+        .processes()
+        .values()
+        .filter_map(|process| {
+            let name = process.name().to_lowercase();
+            let browser_name = name.contains("wayfern")
+                || name.contains("chrome")
+                || name.contains("chromium")
+                || name.contains("camoufox")
+                || name.contains("firefox")
+                || name.contains("private_browsing");
+            if !browser_name {
+                return None;
+            }
+            let pid = process.pid().as_u32();
+            is_descendant_of_any(&system, pid, &root_set).then_some(pid)
+        })
+        .collect::<Vec<_>>();
+    descendants.sort_unstable();
+    descendants.into_iter().next()
+}
+
+fn is_descendant_of_any(
+    system: &System,
+    pid: u32,
+    roots: &std::collections::BTreeSet<u32>,
+) -> bool {
+    if roots.contains(&pid) {
+        return true;
+    }
+    let mut cursor = system
+        .processes()
+        .values()
+        .find(|process| process.pid().as_u32() == pid)
+        .and_then(|process| process.parent());
+    while let Some(parent_pid) = cursor {
+        let parent_u32 = parent_pid.as_u32();
+        if roots.contains(&parent_u32) {
+            return true;
+        }
+        cursor = system
+            .processes()
+            .get(&parent_pid)
+            .and_then(|process| process.parent());
+    }
+    false
 }

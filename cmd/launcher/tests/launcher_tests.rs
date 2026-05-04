@@ -32,10 +32,10 @@ fn launcher_update_apply_manual_path_works() {
     let out = run_with_args(&[
         "update-apply".to_string(),
         "--version".to_string(),
-        "1.0.14".to_string(),
+        "1.0.15".to_string(),
         "--signature".to_string(),
         "sig-ok".to_string(),
     ])
     .expect("update apply");
-    assert!(out.contains("updated_to_1.0.14"));
+    assert!(out.contains("updated_to_1.0.15"));
 }
