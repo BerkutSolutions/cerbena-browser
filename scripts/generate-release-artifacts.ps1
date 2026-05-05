@@ -52,6 +52,38 @@ function Write-Utf8NoBomFile([string]$Path, [string]$Content) {
     [System.IO.File]::WriteAllText($Path, $Content, $encoding)
 }
 
+function Resolve-BuiltBinaryPath([string]$RepoRoot, [string]$PreferredPath, [string]$BinaryName) {
+    if (Test-Path -LiteralPath $PreferredPath) {
+        return $PreferredPath
+    }
+
+    $candidateRoots = @(
+        (Join-Path $RepoRoot "target\release"),
+        (Join-Path $RepoRoot "cmd\launcher\target\release"),
+        (Join-Path $RepoRoot "ui\desktop\src-tauri\target\release")
+    ) | Where-Object { Test-Path -LiteralPath $_ }
+
+    foreach ($root in $candidateRoots) {
+        $candidate = Join-Path $root $BinaryName
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    $fallback = Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -Filter $BinaryName -ErrorAction SilentlyContinue |
+        Sort-Object FullName |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not [string]::IsNullOrWhiteSpace($fallback)) {
+        return $fallback
+    }
+
+    return $PreferredPath
+}
+
+function Resolve-LocalCargoTargetDir([string]$RepoRoot) {
+    return (Join-Path $RepoRoot "target")
+}
+
 function Try-GetGitCommit([string]$Root) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "git"
@@ -108,28 +140,32 @@ $archivePath = Join-Path $releaseRoot "cerbena-windows-x64.zip"
 $manifestPath = Join-Path $releaseRoot "release-manifest.json"
 $checksumsPath = Join-Path $releaseRoot "checksums.txt"
 $checksumsSignaturePath = Join-Path $releaseRoot "checksums.sig"
-$desktopBinary = Join-Path $repoRoot ("ui\desktop\src-tauri\target\release\" + $desktopBinaryName)
-$launcherBinary = Join-Path $repoRoot ("target\release\" + $launcherBinaryName)
+$cargoTargetDir = Resolve-LocalCargoTargetDir $repoRoot
+$desktopBinary = Join-Path $cargoTargetDir ("release\" + $desktopBinaryName)
+$launcherBinary = Join-Path $cargoTargetDir ("release\" + $launcherBinaryName)
 
 if (Test-Path $releaseRoot) {
     Remove-Item -LiteralPath $releaseRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Path $bundleRoot -Force | Out-Null
 
-Invoke-Native "cargo" @("build", "-p", "cerbena-launcher", "--release")
+Invoke-Native "cargo" @("build", "-p", "cerbena-launcher", "--release", "--target-dir", $cargoTargetDir)
 Push-Location (Join-Path $repoRoot "ui\desktop")
 try {
     Invoke-Native "npm.cmd" @("run", "style:sync")
     Invoke-Native "npm.cmd" @("run", "i18n:check")
     Push-Location "src-tauri"
     try {
-        Invoke-Native "cargo" @("build", "--release")
+        Invoke-Native "cargo" @("build", "--release", "--target-dir", $cargoTargetDir)
     } finally {
         Pop-Location
     }
 } finally {
     Pop-Location
 }
+
+$desktopBinary = Resolve-BuiltBinaryPath $repoRoot $desktopBinary $desktopBinaryName
+$launcherBinary = Resolve-BuiltBinaryPath $repoRoot $launcherBinary $launcherBinaryName
 
 foreach ($requiredFile in @($desktopBinary, $launcherBinary)) {
     if (-not (Test-Path $requiredFile)) {

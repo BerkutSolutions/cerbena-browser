@@ -1,5 +1,6 @@
 param(
     [string]$Version = "",
+    [string]$LogPath = "",
     [switch]$SkipReleasePackaging,
     [switch]$GenerateOnly
 )
@@ -7,7 +8,69 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if ([string]::IsNullOrWhiteSpace($LogPath)) {
+    $LogPath = Join-Path ([System.IO.Path]::GetTempPath()) ("cerbena-build-installer-" + [guid]::NewGuid().ToString("N") + ".log")
+}
+$script:BuildInstallerLogPath = $LogPath
+$script:BuildInstallerTranscriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("cerbena-build-installer-transcript-" + [guid]::NewGuid().ToString("N") + ".log")
+$script:BuildInstallerTranscriptStarted = $false
+
 . (Join-Path $PSScriptRoot "release-signing.ps1")
+
+function Append-Utf8NoBomLine([string]$Path, [string]$Line) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $directory = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($directory)) {
+        [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+    }
+    $payload = $encoding.GetBytes($Line + [Environment]::NewLine)
+    $maxAttempts = 20
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $stream = $null
+        try {
+            $stream = New-Object System.IO.FileStream(
+                $Path,
+                [System.IO.FileMode]::Append,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::ReadWrite
+            )
+            $stream.Write($payload, 0, $payload.Length)
+            return
+        } catch {
+            if ($attempt -ge $maxAttempts) {
+                throw
+            }
+            Start-Sleep -Milliseconds 50
+        } finally {
+            if ($null -ne $stream) {
+                $stream.Dispose()
+            }
+        }
+    }
+}
+
+function Write-Log([string]$Message) {
+    $timestamp = [DateTime]::UtcNow.ToString("o")
+    $line = "[$timestamp] [build-installer] $Message"
+    Write-Host $line
+    Append-Utf8NoBomLine $script:BuildInstallerLogPath $line
+}
+
+function Write-CommandOutputToLog([string]$Kind, [string]$FilePath, $Output) {
+    if ($null -eq $Output) {
+        return
+    }
+    $text = ($Output | Out-String)
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return
+    }
+    Append-Utf8NoBomLine $script:BuildInstallerLogPath ("----- $Kind BEGIN ($FilePath) -----")
+    $normalized = $text -replace "`r`n", "`n"
+    foreach ($line in ($normalized -split "`n")) {
+        Append-Utf8NoBomLine $script:BuildInstallerLogPath $line
+    }
+    Append-Utf8NoBomLine $script:BuildInstallerLogPath ("----- $Kind END ($FilePath) -----")
+}
 
 function Invoke-Native([string]$FilePath, [string[]]$Arguments = @(), [switch]$Quiet) {
     $prevErrorAction = $ErrorActionPreference
@@ -18,23 +81,30 @@ function Invoke-Native([string]$FilePath, [string[]]$Arguments = @(), [switch]$Q
     }
     $ErrorActionPreference = "Continue"
     try {
+        Write-Log "spawn command file=$FilePath args=$($Arguments -join ' ') quiet=$Quiet"
         if ($Quiet) {
             $output = & $FilePath @Arguments 2>&1
+            Write-CommandOutputToLog "output" $FilePath $output
             $exitCode = if (Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue) { $LASTEXITCODE } else { 0 }
             if ($exitCode -ne 0) {
                 $argsText = ($Arguments -join " ")
                 $tail = ($output | Select-Object -Last 40) -join [Environment]::NewLine
+                Write-Log "command failed exitCode=$exitCode file=$FilePath"
                 throw "command failed ($exitCode): $FilePath $argsText`n$tail"
             }
+            Write-Log "command completed exitCode=0 file=$FilePath"
             return $output
         }
 
         $output = & $FilePath @Arguments
+        Write-CommandOutputToLog "output" $FilePath $output
         $exitCode = if (Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue) { $LASTEXITCODE } else { 0 }
         if ($exitCode -ne 0) {
             $argsText = ($Arguments -join " ")
+            Write-Log "command failed exitCode=$exitCode file=$FilePath"
             throw "command failed ($exitCode): $FilePath $argsText"
         }
+        Write-Log "command completed exitCode=0 file=$FilePath"
         return $output
     } finally {
         $ErrorActionPreference = $prevErrorAction
@@ -241,7 +311,10 @@ function New-MsiInstaller(
     $markerPath = Join-Path $InstallerRoot "cerbena-install-mode.msi.txt"
     $markerComponentId = "CmpInstallModeMarker"
     $markerFileId = "FileInstallModeMarker"
-    $upgradeCode = "30A26884-D6A5-4E10-B42A-5F0B7B14A7D8"
+    $upgradeCode = [Environment]::GetEnvironmentVariable("CERBENA_MSI_UPGRADE_CODE")
+    if ([string]::IsNullOrWhiteSpace($upgradeCode)) {
+        $upgradeCode = "30A26884-D6A5-4E10-B42A-5F0B7B14A7D8"
+    }
 
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($markerPath, "msi`n", $utf8)
@@ -1791,6 +1864,16 @@ internal static class CerbenaInstallerProgram
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$scriptStartedAt = [DateTime]::UtcNow
+try {
+    Start-Transcript -Path $script:BuildInstallerTranscriptPath -Force | Out-Null
+    $script:BuildInstallerTranscriptStarted = $true
+} catch {
+}
+Write-Log "build-installer log path: $script:BuildInstallerLogPath"
+Write-Log "build-installer transcript path: $script:BuildInstallerTranscriptPath"
+Write-Log "build-installer started repoRoot=$repoRoot versionArg=$Version skipReleasePackaging=$SkipReleasePackaging generateOnly=$GenerateOnly"
+try {
 $tauriConfig = Read-JsonFile (Join-Path $repoRoot "ui\desktop\src-tauri\tauri.conf.json")
 $resolvedVersion = $Version
 if ([string]::IsNullOrWhiteSpace($resolvedVersion)) {
@@ -1802,11 +1885,14 @@ if ([string]::IsNullOrWhiteSpace($resolvedVersion)) {
 
 $releaseBundleRoot = Join-Path $repoRoot ("build\release\" + $resolvedVersion + "\staging\cerbena-windows-x64")
 if (-not $SkipReleasePackaging) {
+    $releasePackagingStartedAt = [DateTime]::UtcNow
+    Write-Log "release packaging started version=$resolvedVersion"
     Invoke-Native "powershell" @(
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $repoRoot "scripts\generate-release-artifacts.ps1"),
         "-Version", $resolvedVersion
     )
+    Write-Log "release packaging completed elapsedSeconds=$([int]([DateTime]::UtcNow - $releasePackagingStartedAt).TotalSeconds)"
 }
 if (-not (Test-Path $releaseBundleRoot)) {
     throw "release payload not found: $releaseBundleRoot"
@@ -2096,7 +2182,10 @@ if ($GenerateOnly -or [string]::IsNullOrWhiteSpace($compiler)) {
     })
     Write-Warning "Inno Setup compiler (ISCC.exe) not found. Built C# fallback installer instead: $fallbackExe"
 } else {
+    $innoBuildStartedAt = [DateTime]::UtcNow
+    Write-Log "inno installer build started compiler=$compiler script=$issPath"
     Invoke-Native $compiler @($issPath)
+    Write-Log "inno installer build completed elapsedSeconds=$([int]([DateTime]::UtcNow - $innoBuildStartedAt).TotalSeconds)"
     $innoExe = Join-Path $outputDir ("cerbena-browser-setup-" + $resolvedVersion + ".exe")
     if (Test-Path $innoExe) {
         [void]$builtArtifactSpecs.Add(@{
@@ -2112,7 +2201,10 @@ if ($GenerateOnly -or [string]::IsNullOrWhiteSpace($compiler)) {
 }
 
 [void](Remove-Item -LiteralPath (Join-Path $payloadRoot "cerbena-install-mode.txt") -Force -ErrorAction SilentlyContinue)
+$msiBuildStartedAt = [DateTime]::UtcNow
+Write-Log "msi build started installerRoot=$installerRoot payloadRoot=$payloadRoot"
 $msiPath = New-MsiInstaller -InstallerRoot $installerRoot -PayloadRoot $payloadRoot -Version $resolvedVersion -RepoRoot $repoRoot
+Write-Log "msi build completed elapsedSeconds=$([int]([DateTime]::UtcNow - $msiBuildStartedAt).TotalSeconds) msiPath=$msiPath"
 [void]$builtArtifactSpecs.Add(@{
     Name = [System.IO.Path]::GetFileName($msiPath)
     Target = [System.IO.Path]::GetFileName($msiPath)
@@ -2124,6 +2216,7 @@ $msiPath = New-MsiInstaller -InstallerRoot $installerRoot -PayloadRoot $payloadR
 })
 
 Sign-WindowsArtifacts @($outputDir, $installerRoot)
+Write-Log "artifact signing completed outputDir=$outputDir installerRoot=$installerRoot"
 $builtArtifacts = @(
     $builtArtifactSpecs | ForEach-Object {
         New-ReleaseMetadataEntry `
@@ -2143,3 +2236,9 @@ if ($GenerateOnly -and -not [string]::IsNullOrWhiteSpace($compiler)) {
     return
 }
 Write-Host "Installer built in $outputDir" -ForegroundColor Green
+} finally {
+    Write-Log "build-installer completed elapsedSeconds=$([int]([DateTime]::UtcNow - $scriptStartedAt).TotalSeconds)"
+    if ($script:BuildInstallerTranscriptStarted) {
+        try { Stop-Transcript | Out-Null } catch {}
+    }
+}

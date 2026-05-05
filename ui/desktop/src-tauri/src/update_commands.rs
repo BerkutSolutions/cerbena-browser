@@ -22,6 +22,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPOSITORY_URL: &str = "https://github.com/BerkutSolutions/cerbena-browser";
 const GITHUB_LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/BerkutSolutions/cerbena-browser/releases/latest";
+const RELEASE_LATEST_API_URL_ENV: &str = "CERBENA_RELEASE_LATEST_API_URL";
 const RELEASE_CHECKSUMS_ASSET: &str = "checksums.txt";
 const RELEASE_CHECKSUMS_SIGNATURE_ASSET: &str = "checksums.sig";
 const RELEASE_CHECKSUMS_B64_ENV: &str = "CERBENA_RELEASE_CHECKSUMS_B64";
@@ -31,6 +32,8 @@ const SCHEDULER_TICK: Duration = Duration::from_secs(15 * 60);
 const USER_AGENT: &str = concat!("Cerbena-Updater/", env!("CARGO_PKG_VERSION"));
 const UPDATER_EVENT_NAME: &str = "updater-progress";
 pub const UPDATER_RELAUNCH_AUTO_EXIT_ENV: &str = "CERBENA_UPDATER_AUTO_EXIT_AFTER_SECONDS";
+pub const UPDATER_MSI_INSTALL_DIR_ENV: &str = "CERBENA_UPDATER_MSI_INSTALL_DIR";
+pub const UPDATER_MSI_TIMEOUT_MS_ENV: &str = "CERBENA_UPDATER_MSI_TIMEOUT_MS";
 const RELEASE_SIGNING_PUBLIC_KEY_XML: &str =
     include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -680,6 +683,7 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
         }
     };
     let relaunch_executable = resolve_relaunch_executable_path(&install_root);
+    let msi_target_install_root = app_local_data_root(&state.app_handle).ok();
     let runtime_log_path = state
         .runtime_log_path(&state.app_handle)
         .ok()
@@ -687,10 +691,14 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
     push_runtime_log(
         &state,
         format!(
-            "[updater] pending apply start asset={} extension={} install_root={} relaunch_exe={} target_version={}",
+            "[updater] pending apply start asset={} extension={} install_root={} msi_target_root={} relaunch_exe={} target_version={}",
             asset_path.display(),
             extension,
             install_root.display(),
+            msi_target_install_root
+                .as_deref()
+                .map(|value| value.display().to_string())
+                .unwrap_or_else(|| "missing".to_string()),
             relaunch_executable
                 .as_deref()
                 .map(|value| value.display().to_string())
@@ -719,7 +727,7 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
             launch_msi_apply_helper(
                 current_pid,
                 &asset_path,
-                relaunch_executable.as_deref(),
+                msi_target_install_root.as_deref(),
                 store_path.as_deref(),
                 snapshot.staged_version.as_deref(),
                 runtime_log_path.as_deref(),
@@ -1067,17 +1075,18 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
 }
 
 fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, String> {
+    let latest_release_url = resolve_latest_release_api_url();
     push_runtime_log(
         state,
         format!(
             "[updater] check start manual={} version={} url={} user_agent={}",
-            manual, CURRENT_VERSION, GITHUB_LATEST_RELEASE_API, USER_AGENT
+            manual, CURRENT_VERSION, latest_release_url, USER_AGENT
         ),
     );
     let client = build_release_http_client(Duration::from_secs(20), false)
         .map_err(|e| format!("build update http client: {e}"))?;
 
-    let result = fetch_latest_release(&client);
+    let result = fetch_latest_release_from_url(&client, &latest_release_url);
     let mut store = refresh_update_store_snapshot(state)?;
 
     store.last_checked_at = Some(now_iso());
@@ -1225,9 +1234,7 @@ fn stage_release_if_needed(
         return Ok(());
     }
 
-    let root = state
-        .app_update_root_path(&state.app_handle)
-        .map_err(|e| format!("resolve update root path: {e}"))?;
+    let root = resolve_update_asset_root(state, asset_name)?;
     let target_dir = root.join(&candidate.version);
     fs::create_dir_all(&target_dir).map_err(|e| format!("create update dir: {e}"))?;
     let asset_path = target_dir.join(asset_name);
@@ -1290,9 +1297,7 @@ fn stage_verified_release_asset(
         .asset_name
         .as_deref()
         .ok_or_else(|| "release asset name is missing".to_string())?;
-    let root = state
-        .app_update_root_path(&state.app_handle)
-        .map_err(|e| format!("resolve update root path: {e}"))?;
+    let root = resolve_update_asset_root(state, asset_name)?;
     let target_dir = root.join(&candidate.version);
     fs::create_dir_all(&target_dir).map_err(|e| format!("create update dir: {e}"))?;
     let asset_path = target_dir.join(asset_name);
@@ -1411,7 +1416,8 @@ fn finalize_updater_failure(state: &AppState, error: &str) -> Result<(), String>
 }
 
 fn fetch_latest_release(client: &Client) -> Result<ReleaseCandidate, String> {
-    fetch_latest_release_from_url(client, GITHUB_LATEST_RELEASE_API)
+    let latest_release_url = resolve_latest_release_api_url();
+    fetch_latest_release_from_url(client, &latest_release_url)
 }
 
 fn fetch_latest_release_from_url(
@@ -1910,6 +1916,33 @@ fn can_auto_apply_asset(name: &str) -> bool {
     lower.ends_with(".zip") || lower.ends_with(".msi")
 }
 
+fn uses_msi_installer(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with(".msi")
+}
+
+fn resolve_latest_release_api_url() -> String {
+    std::env::var(RELEASE_LATEST_API_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| GITHUB_LATEST_RELEASE_API.to_string())
+}
+
+fn resolve_update_asset_root(state: &AppState, asset_name: &str) -> Result<PathBuf, String> {
+    if uses_msi_installer(asset_name) {
+        let app_root = app_local_data_root(&state.app_handle)
+            .map_err(|e| format!("resolve app local data root for msi staging: {e}"))?;
+        let namespace_hash = sha256_hex(app_root.to_string_lossy().as_bytes());
+        let namespace = &namespace_hash[..16];
+        return Ok(std::env::temp_dir()
+            .join("cerbena-browser-updates")
+            .join(namespace));
+    }
+    state
+        .app_update_root_path(&state.app_handle)
+        .map_err(|e| format!("resolve update root path: {e}"))
+}
+
 fn launch_zip_apply_helper(
     pid: u32,
     archive_path: &Path,
@@ -2055,7 +2088,7 @@ fn build_zip_apply_helper_script(
 fn launch_msi_apply_helper(
     pid: u32,
     msi_path: &Path,
-    relaunch_executable: Option<&Path>,
+    target_install_root: Option<&Path>,
     update_store_path: Option<&str>,
     target_version: Option<&str>,
     runtime_log_path: Option<&str>,
@@ -2063,7 +2096,7 @@ fn launch_msi_apply_helper(
     let helper = build_msi_apply_helper_script(
         pid,
         msi_path,
-        relaunch_executable,
+        target_install_root,
         update_store_path,
         target_version,
         runtime_log_path,
@@ -2086,35 +2119,40 @@ fn launch_msi_apply_helper(
 fn build_msi_apply_helper_script(
     pid: u32,
     msi_path: &Path,
-    relaunch_executable: Option<&Path>,
+    target_install_root: Option<&Path>,
     update_store_path: Option<&str>,
     target_version: Option<&str>,
     runtime_log_path: Option<&str>,
 ) -> String {
-    let relaunch = relaunch_executable
-        .map(powershell_quote)
-        .unwrap_or_else(|| "$null".to_string());
     let store = update_store_path
         .map(|value| powershell_quote(Path::new(value)))
         .unwrap_or_else(|| "$null".to_string());
     let version = target_version
         .map(|value| format!("'{}'", value.replace('\'', "''")))
         .unwrap_or_else(|| "$null".to_string());
-    let install_root = relaunch_executable
-        .and_then(|path| path.parent())
+    let install_root = target_install_root
         .map(powershell_quote)
         .unwrap_or_else(|| "$null".to_string());
     let runtime_log = runtime_log_path
         .map(|value| powershell_quote(Path::new(value)))
         .unwrap_or_else(|| "$null".to_string());
     format!(
-        "$pidValue={pid};\
+        "$ErrorActionPreference='Stop';\
+        $pidValue={pid};\
         $msiPath={msi};\
-        $relaunchExe={relaunch};\
         $installRoot={install};\
         $storePath={store};\
         $targetVersion={version};\
         $runtimeLogPath={runtime_log};\
+        $msiLogPath=([System.IO.Path]::ChangeExtension($msiPath, '.msiexec.log'));\
+        $msiInstallDirOverride=$env:{install_dir_env};\
+        $msiWaitTimeoutMs = 120000;\
+        if ($env:{msi_timeout_env}) {{\
+            try {{\
+                $parsedTimeout = [int]$env:{msi_timeout_env};\
+                if ($parsedTimeout -ge 15000) {{ $msiWaitTimeoutMs = $parsedTimeout }};\
+            }} catch {{}}\
+        }};\
         $versionProbe=$env:CERBENA_SELFTEST_REPORT_VERSION_FILE;\
         $autoExitAfter='20';\
         $targetExecutables=@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe','cerbena-launcher.exe');\
@@ -2134,6 +2172,14 @@ fn build_msi_apply_helper_script(
                 default {{ return ('msi install failed with exit code ' + $code) }}\
             }}\
         }};\
+        function Resolve-RelaunchExecutable() {{\
+            if (-not $installRoot -or [string]::IsNullOrWhiteSpace($installRoot) -or -not (Test-Path -LiteralPath $installRoot)) {{ return $null }};\
+            foreach ($exeName in @('cerbena.exe','browser-desktop-ui.exe')) {{\
+                $candidate = Join-Path $installRoot $exeName;\
+                if (Test-Path -LiteralPath $candidate) {{ return $candidate }};\
+            }};\
+            return $null;\
+        }};\
         function Update-Store([string]$status, [string]$lastError, [bool]$pendingApply) {{\
             if (-not $storePath -or [string]::IsNullOrWhiteSpace($storePath) -or -not (Test-Path -LiteralPath $storePath)) {{ return }};\
             try {{\
@@ -2147,7 +2193,8 @@ fn build_msi_apply_helper_script(
                 Write-Log ('store updated status=' + $status + ' pending=' + $pendingApply + ' error=' + $lastError);\
             }} catch {{}}\
         }};\
-        Write-Log ('helper started pid=' + $pidValue + ' msi=' + $msiPath + ' installRoot=' + $installRoot + ' store=' + $storePath + ' targetVersion=' + $targetVersion);\
+        try {{\
+        Write-Log ('helper started pid=' + $pidValue + ' msi=' + $msiPath + ' installRoot=' + $installRoot + ' installDirOverride=' + $msiInstallDirOverride + ' store=' + $storePath + ' targetVersion=' + $targetVersion);\
         while (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }};\
         Write-Log 'launcher process exited; starting msi apply';\
         Update-Store 'applying' $null $false;\
@@ -2179,18 +2226,92 @@ fn build_msi_apply_helper_script(
                 $proc.WaitForExit(15000) | Out-Null;\
             }} catch {{}}\
         }};\
-        Write-Log ('invoking msiexec path=' + $msiPath);\
-        $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $msiPath, '/qn', '/norestart') -WindowStyle Hidden -PassThru -Wait;\
-        Write-Log ('msiexec completed exitCode=' + $proc.ExitCode);\
-        if ($proc.ExitCode -eq 1602) {{\
-            Update-Store 'canceled' (Describe-MsiExit $proc.ExitCode) $false;\
-            exit $proc.ExitCode;\
+        $msiArgs=@('/i', $msiPath, '/qn', '/norestart', '/l*v', $msiLogPath);\
+        if ($msiInstallDirOverride -and -not [string]::IsNullOrWhiteSpace($msiInstallDirOverride)) {{\
+            $msiArgs += ('INSTALLDIR=\"' + $msiInstallDirOverride + '\"');\
         }};\
-        if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {{\
-            Update-Store 'error' (Describe-MsiExit $proc.ExitCode) $false;\
-            exit $proc.ExitCode;\
+        $attempt = 0;\
+        $maxAttempts = 3;\
+        $exitCode = -1;\
+        $completed = $false;\
+        while (-not $completed -and $attempt -lt $maxAttempts) {{\
+            $attempt++;\
+            Write-Log ('invoking msiexec attempt=' + $attempt + ' path=' + $msiPath + ' log=' + $msiLogPath + ' installRoot=' + $installRoot + ' installDirOverride=' + $msiInstallDirOverride);\
+            $existingMsiexec = @(Get-CimInstance Win32_Process -Filter \"Name = 'msiexec.exe'\" -ErrorAction SilentlyContinue);\
+            Write-Log ('msiexec pre-spawn processCount=' + $existingMsiexec.Count + ' attempt=' + $attempt);\
+            $proc = $null;\
+            try {{\
+                $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -WindowStyle Hidden -PassThru -ErrorAction Stop;\
+            }} catch {{\
+                $spawnError = $_.Exception.Message;\
+                Write-Log ('msiexec spawn failed attempt=' + $attempt + ' error=' + $spawnError);\
+                Update-Store 'error' ('msiexec spawn failed: ' + $spawnError + '; verbose log: ' + $msiLogPath) $false;\
+                exit 125;\
+            }};\
+            if ($null -eq $proc) {{\
+                Write-Log ('msiexec spawn returned null attempt=' + $attempt);\
+                Update-Store 'error' ('msiexec spawn returned null process; verbose log: ' + $msiLogPath) $false;\
+                exit 126;\
+            }};\
+            $null = $proc.Handle;\
+            $timedOut = $false;\
+            Write-Log ('msiexec spawned pid=' + $proc.Id + ' attempt=' + $attempt);\
+            $waitStartedAt = [DateTime]::UtcNow;\
+            $lastWaitHeartbeatAt = $waitStartedAt.AddSeconds(-2);\
+            while (-not $proc.WaitForExit(1000)) {{\
+                $elapsedMs = [int]([DateTime]::UtcNow - $waitStartedAt).TotalMilliseconds;\
+                if ($elapsedMs -ge $msiWaitTimeoutMs) {{\
+                    $timedOut = $true;\
+                    break;\
+                }};\
+                if ([DateTime]::UtcNow -ge $lastWaitHeartbeatAt.AddSeconds(2)) {{\
+                    Write-Log ('msiexec wait heartbeat attempt=' + $attempt + ' pid=' + $proc.Id + ' elapsedMs=' + $elapsedMs + ' timeoutMs=' + $msiWaitTimeoutMs);\
+                    $lastWaitHeartbeatAt = [DateTime]::UtcNow;\
+                }};\
+            }};\
+            if ($timedOut) {{\
+                Write-Log ('msiexec timed out after ' + $msiWaitTimeoutMs + 'ms attempt=' + $attempt + ' pid=' + $proc.Id + ' log=' + $msiLogPath);\
+                try {{ Start-Process -FilePath 'taskkill.exe' -ArgumentList @('/PID', [string]$proc.Id, '/T', '/F') -WindowStyle Hidden -Wait | Out-Null }} catch {{}};\
+                try {{ $proc.Kill() }} catch {{}};\
+                try {{ $proc.WaitForExit(10000) | Out-Null }} catch {{}};\
+            }};\
+            if ($timedOut) {{\
+                Update-Store 'error' ('msiexec timed out; verbose log: ' + $msiLogPath) $false;\
+                exit 124;\
+            }};\
+            $exitCode = $proc.ExitCode;\
+            Write-Log ('msiexec completed attempt=' + $attempt + ' exitCode=' + $exitCode + ' log=' + $msiLogPath);\
+            if (Test-Path -LiteralPath $msiLogPath) {{\
+                try {{\
+                    $msiLogSize = (Get-Item -LiteralPath $msiLogPath -ErrorAction Stop).Length;\
+                    Write-Log ('msiexec log detected sizeBytes=' + $msiLogSize + ' attempt=' + $attempt + ' path=' + $msiLogPath);\
+                }} catch {{\
+                    Write-Log ('msiexec log stat failed attempt=' + $attempt + ' path=' + $msiLogPath + ' error=' + $_.Exception.Message);\
+                }};\
+            }} else {{\
+                Write-Log ('msiexec log missing after completion attempt=' + $attempt + ' path=' + $msiLogPath);\
+            }};\
+            if ($exitCode -eq 1618 -and $attempt -lt $maxAttempts) {{\
+                Write-Log ('msiexec returned 1618; retrying attempt=' + ($attempt + 1));\
+                Start-Sleep -Seconds 5;\
+                continue;\
+            }};\
+            $completed = $true;\
+        }};\
+        if (-not $completed) {{\
+            Update-Store 'error' ('msiexec did not complete after retries; verbose log: ' + $msiLogPath) $false;\
+            exit 1618;\
+        }};\
+        if ($exitCode -eq 1602) {{\
+            Update-Store 'canceled' ((Describe-MsiExit $exitCode) + '; verbose log: ' + $msiLogPath) $false;\
+            exit $exitCode;\
+        }};\
+        if ($exitCode -ne 0 -and $exitCode -ne 3010) {{\
+            Update-Store 'error' ((Describe-MsiExit $exitCode) + '; verbose log: ' + $msiLogPath) $false;\
+            exit $exitCode;\
         }};\
         Update-Store 'applied_pending_relaunch' $null $false;\
+        $relaunchExe = Resolve-RelaunchExecutable;\
         if ($relaunchExe -and (Test-Path -LiteralPath $relaunchExe)) {{\
             $relaunchInfo = New-Object System.Diagnostics.ProcessStartInfo;\
             $relaunchInfo.FileName = $relaunchExe;\
@@ -2206,15 +2327,22 @@ fn build_msi_apply_helper_script(
             [System.Diagnostics.Process]::Start($relaunchInfo) | Out-Null;\
             Write-Log ('relaunch started exe=' + $relaunchExe);\
         }} else {{\
-            Write-Log 'relaunch skipped because executable is missing';\
+            Write-Log ('relaunch skipped because executable is missing installRoot=' + $installRoot);\
+        }};\
+        }} catch {{\
+            $message = $_.Exception.Message;\
+            Write-Log ('helper exception: ' + $message);\
+            Update-Store 'error' ('helper exception: ' + $message + '; verbose log: ' + $msiLogPath) $false;\
+            exit 1;\
         }}",
         pid = pid,
         msi = powershell_quote(msi_path),
-        relaunch = relaunch,
         install = install_root,
         store = store,
         version = version,
         runtime_log = runtime_log,
+        install_dir_env = UPDATER_MSI_INSTALL_DIR_ENV,
+        msi_timeout_env = UPDATER_MSI_TIMEOUT_MS_ENV,
         helper_log_env = UPDATER_HELPER_LOG_ENV,
         auto_exit_env = UPDATER_RELAUNCH_AUTO_EXIT_ENV
     )
@@ -2404,10 +2532,11 @@ mod tests {
         extract_checksum_for_asset, fetch_latest_release_from_url, is_version_newer,
         normalize_version, pick_release_asset_for_context,
         release_signing_public_keys, should_auto_close_updater_after_ready_to_restart,
-        reconcile_update_store_with_current_version, resolve_relaunch_executable_path,
-        sha256_hex, should_run_auto_update_check, signature_verification_variants,
+        reconcile_update_store_with_current_version, resolve_latest_release_api_url,
+        resolve_relaunch_executable_path, sha256_hex, should_run_auto_update_check,
+        signature_verification_variants,
         AppUpdateStore, GithubReleaseAsset, SelectedAssetKind, UpdaterLaunchMode,
-        VerifiedReleaseSecurityBundle, CURRENT_VERSION,
+        VerifiedReleaseSecurityBundle, CURRENT_VERSION, RELEASE_LATEST_API_URL_ENV,
         RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV,
     };
     use std::{
@@ -2768,24 +2897,50 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         let script = build_msi_apply_helper_script(
             4242,
             Path::new("C:/tmp/update.msi"),
-            Some(Path::new("C:/Program Files/Cerbena Browser/cerbena.exe")),
+            Some(Path::new("C:/Users/test/AppData/Local/Cerbena Browser")),
             Some("C:/tmp/app_update_store.json"),
             Some("1.2.3"),
             Some("C:/tmp/runtime_logs.log"),
         );
         assert!(script.contains("Start-Process -FilePath 'msiexec.exe'"));
         assert!(script.contains("'/qn'"));
+        assert!(script.contains("'/l*v'"));
         assert!(script.contains("@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe','cerbena-launcher.exe')"));
         assert!(script.contains("Stop-Process -Id $proc.Id -Force"));
         assert!(script.contains("WaitForExit(15000)"));
+        assert!(script.contains("while (-not $proc.WaitForExit(1000))"));
+        assert!(script.contains("$elapsedMs -ge $msiWaitTimeoutMs"));
+        assert!(script.contains("msiexec timed out"));
+        assert!(script.contains("taskkill.exe"));
+        assert!(script.contains("Resolve-RelaunchExecutable"));
+        assert!(script.contains("INSTALLDIR="));
         assert!(script.contains("Update-Store 'applied_pending_relaunch'"));
         assert!(script.contains("pendingApplyOnExit"));
         assert!(script.contains("Update-Store 'canceled'"));
         assert!(script.contains("1602"));
         assert!(script.contains("1618"));
         assert!(script.contains("another Windows Installer transaction is already running (1618)"));
+        assert!(script.contains("verbose log"));
         assert!(script.contains("[updater-helper][msi]"));
+        assert!(script.contains("CERBENA_UPDATER_MSI_INSTALL_DIR"));
+        assert!(script.contains("CERBENA_UPDATER_MSI_TIMEOUT_MS"));
         assert!(script.contains("CERBENA_UPDATER_RUNTIME_LOG"));
+    }
+
+    #[test]
+    fn latest_release_api_url_prefers_env_override() {
+        let key = RELEASE_LATEST_API_URL_ENV;
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, "http://127.0.0.1:9191/latest");
+        assert_eq!(
+            resolve_latest_release_api_url(),
+            "http://127.0.0.1:9191/latest"
+        );
+        if let Some(value) = previous {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
     }
 
     #[test]

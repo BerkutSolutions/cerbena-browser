@@ -227,6 +227,14 @@ foreach ($pending in $pendingWrites) {
     Write-Utf8NoBomFile $pending.Path $pending.Content
 }
 
+$publishedUpdaterScriptPath = Join-Path $repoRoot "scripts\published-updater-e2e.ps1"
+if (Test-Path -LiteralPath $publishedUpdaterScriptPath) {
+    $publishedUpdaterScript = [System.IO.File]::ReadAllText($publishedUpdaterScriptPath, [System.Text.Encoding]::UTF8)
+    if ($publishedUpdaterScript -match '\[string\]\$MinimumPublishedVersion\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"') {
+        throw "scripts/published-updater-e2e.ps1 contains a pinned MinimumPublishedVersion literal. Use dynamic minimum based on BaseVersion."
+    }
+}
+
 Write-Host ""
 Write-Host ("Updated version: " + $currentVersion + " -> " + $nextVersion) -ForegroundColor Green
 foreach ($item in $updatedFiles) {

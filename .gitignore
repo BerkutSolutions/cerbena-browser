@@ -91,3 +91,9 @@ PROMPT_UPDATED.md
 
 # Local planning and scratch space
 .work/
+
+# Local publication blockers (operator-only scripts must never be published by release automation)
+# release-local-only: scripts/release.ps1
+# release-local-only: scripts/local-ci-preflight.ps1
+# release-local-only: scripts/local-updater-e2e.ps1
+# release-local-only: scripts/published-updater-e2e.ps1
