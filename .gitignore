@@ -97,3 +97,7 @@ PROMPT_UPDATED.md
 # release-local-only: scripts/local-ci-preflight.ps1
 # release-local-only: scripts/local-updater-e2e.ps1
 # release-local-only: scripts/published-updater-e2e.ps1
+scripts/release.ps1
+scripts/local-ci-preflight.ps1
+scripts/local-updater-e2e.ps1
+scripts/published-updater-e2e.ps1
