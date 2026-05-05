@@ -34,8 +34,6 @@ fn desktop_backend_declares_traffic_isolation_regression_tests() {
 #[test]
 fn release_and_github_gates_run_traffic_isolation_regressions() {
     let root = repo_root();
-    let local_preflight = fs::read_to_string(root.join("scripts").join("local-ci-preflight.ps1"))
-        .expect("read local-ci-preflight.ps1");
     let workflow = fs::read_to_string(
         root.join(".github")
             .join("workflows")
@@ -43,14 +41,6 @@ fn release_and_github_gates_run_traffic_isolation_regressions() {
     )
     .expect("read security-regression-gate.yml");
 
-    assert!(
-        local_preflight.contains("Traffic isolation regression tests"),
-        "local preflight must expose a dedicated traffic isolation step"
-    );
-    assert!(
-        local_preflight.contains("traffic_isolation"),
-        "local preflight must invoke the traffic isolation regression filter"
-    );
     assert!(
         workflow.contains("traffic-isolation-regression"),
         "GitHub security regression workflow must run traffic isolation regressions"

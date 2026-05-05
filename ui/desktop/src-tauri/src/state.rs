@@ -385,6 +385,11 @@ impl AppState {
         Ok(app_data.join("shell_preference_store.json"))
     }
 
+    pub fn runtime_log_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
+        let app_data = app_local_data_root(app)?;
+        Ok(app_data.join("runtime_logs.log"))
+    }
+
     pub fn hidden_default_profiles_path(&self, app: &AppHandle) -> Result<PathBuf, String> {
         let app_data = app_local_data_root(app)?;
         Ok(app_data.join("hidden_default_profiles.json"))

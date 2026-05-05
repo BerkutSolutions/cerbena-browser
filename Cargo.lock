@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "browser-api-local"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "browser-network-policy",
  "browser-profile",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "browser-api-mcp"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "browser-api-local",
  "browser-network-policy",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "browser-engine"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "browser-fingerprint",
  "browser-profile",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "browser-extensions"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "browser-network-policy",
  "serde",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "browser-fingerprint"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "serde",
  "serde_json",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "browser-import-export"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "base64",
  "browser-profile",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "browser-installer"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "serde",
  "sha2",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "browser-network-policy"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "reqwest",
  "serde",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "browser-profile"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "browser-security-pack"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "browser-extensions",
  "browser-network-policy",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "browser-sync-client"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "cerbena-launcher"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "browser-engine",
  "browser-profile",

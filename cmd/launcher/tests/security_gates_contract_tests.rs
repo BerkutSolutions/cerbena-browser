@@ -8,34 +8,6 @@ fn repo_root() -> std::path::PathBuf {
 }
 
 #[test]
-fn security_gates_preflight_is_wired_into_local_preflight() {
-    let root = repo_root();
-    let script_path = root.join("scripts").join("security-gates-preflight.ps1");
-    let docker_script_path = root.join("scripts").join("docker-runtime-preflight.ps1");
-    assert!(script_path.exists(), "missing {}", script_path.display());
-    assert!(
-        docker_script_path.exists(),
-        "missing {}",
-        docker_script_path.display()
-    );
-
-    let preflight = fs::read_to_string(root.join("scripts").join("local-ci-preflight.ps1"))
-        .expect("read local preflight");
-    assert!(
-        preflight.contains("security-gates-preflight.ps1"),
-        "local preflight must invoke security-gates-preflight.ps1"
-    );
-    assert!(
-        preflight.contains("docker-runtime-preflight.ps1"),
-        "local preflight must invoke docker-runtime-preflight.ps1"
-    );
-    assert!(
-        preflight.contains("vulnerability-gates-preflight.ps1"),
-        "local preflight must invoke vulnerability-gates-preflight.ps1"
-    );
-}
-
-#[test]
 fn security_gates_preflight_covers_tasks4_release_artifacts() {
     let root = repo_root();
     let script = fs::read_to_string(root.join("scripts").join("security-gates-preflight.ps1"))

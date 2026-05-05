@@ -6,7 +6,7 @@ use browser_profile::ProfileState;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{collections::BTreeMap, fs, path::Path, time::Duration};
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
@@ -23,16 +23,53 @@ use crate::{
 };
 
 pub(crate) const RUNTIME_LOG_EVENT_NAME: &str = "runtime-log-appended";
+const RUNTIME_LOG_LIMIT: usize = 1000;
+
+fn append_runtime_log_file(state: &AppState, line: &str) {
+    let Ok(path) = state.runtime_log_path(&state.app_handle) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut payload = String::with_capacity(line.len() + 1);
+    payload.push_str(line);
+    payload.push('\n');
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, payload.as_bytes()));
+}
+
+fn read_runtime_log_lines(state: &AppState) -> Result<Vec<String>, String> {
+    let path = state.runtime_log_path(&state.app_handle)?;
+    if !path.exists() {
+        let logs = state
+            .runtime_logs
+            .lock()
+            .map_err(|_| "runtime log lock poisoned".to_string())?;
+        return Ok(logs.clone());
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| format!("read runtime log file: {e}"))?;
+    let mut lines = raw.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+    if lines.len() > RUNTIME_LOG_LIMIT {
+        let keep_from = lines.len() - RUNTIME_LOG_LIMIT;
+        lines.drain(0..keep_from);
+    }
+    Ok(lines)
+}
 
 pub(crate) fn push_runtime_log(state: &AppState, entry: impl Into<String>) {
     let line = entry.into();
     if let Ok(mut logs) = state.runtime_logs.lock() {
         logs.push(line.clone());
-        if logs.len() > 1000 {
-            let overflow = logs.len() - 1000;
+        if logs.len() > RUNTIME_LOG_LIMIT {
+            let overflow = logs.len() - RUNTIME_LOG_LIMIT;
             logs.drain(0..overflow);
         }
     }
+    append_runtime_log_file(state, &line);
     let _ = state.app_handle.emit(RUNTIME_LOG_EVENT_NAME, line);
 }
 
@@ -973,11 +1010,7 @@ pub fn read_runtime_logs(
     state: State<AppState>,
     correlation_id: String,
 ) -> Result<UiEnvelope<Vec<String>>, String> {
-    let logs = state
-        .runtime_logs
-        .lock()
-        .map_err(|_| "runtime log lock poisoned".to_string())?;
-    Ok(ok(correlation_id, logs.clone()))
+    Ok(ok(correlation_id, read_runtime_log_lines(&state)?))
 }
 
 #[tauri::command]

@@ -70,6 +70,22 @@ function Write-Utf8NoBomFile([string]$Path, [string]$Content) {
     [System.IO.File]::WriteAllText($Path, $Content, $encoding)
 }
 
+function Append-Utf8NoBomLine([string]$Path, [string]$Line) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $directory = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($directory)) {
+        [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+    }
+    [System.IO.File]::AppendAllText($Path, $Line + [Environment]::NewLine, $encoding)
+}
+
+function Write-Log([string]$Message) {
+    $timestamp = [DateTime]::UtcNow.ToString("o")
+    $line = "[$timestamp] [published-updater-e2e] $Message"
+    Write-Host $line
+    Append-Utf8NoBomLine $script:SessionLogPath $line
+}
+
 function Read-JsonFile([string]$Path) {
     if (-not (Test-Path $Path)) {
         throw "missing file: $Path"
@@ -255,6 +271,29 @@ function Get-StoreFieldValue($Store, [string[]]$Names, [string]$Default = "") {
     return $Default
 }
 
+function Get-RuntimeLogCandidates([string]$LocalAppDataRoot) {
+    return @(
+        (Join-Path $LocalAppDataRoot "dev.browser.launcher\runtime_logs.log"),
+        (Join-Path $LocalAppDataRoot "Cerbena Browser\runtime_logs.log")
+    )
+}
+
+function Get-ExistingRuntimeLogPath([string]$LocalAppDataRoot) {
+    foreach ($path in (Get-RuntimeLogCandidates $LocalAppDataRoot)) {
+        if (Test-Path $path) {
+            return $path
+        }
+    }
+    return $null
+}
+
+function Get-FileTail([string]$Path, [int]$Tail = 20) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path $Path)) {
+        return @()
+    }
+    return @(Get-Content -LiteralPath $Path -Tail $Tail)
+}
+
 function Test-StoreStatusAllowsBackgroundRelaunch([string]$Status) {
     if ($null -eq $Status) {
         return $false
@@ -282,6 +321,7 @@ $installRoot = Join-Path $sessionRoot "install"
 $targetRoot = Join-Path $sessionRoot "target"
 $versionProbePath = Join-Path $sessionRoot "updated-version.txt"
 $reportPath = Join-Path $sessionRoot "report.json"
+$script:SessionLogPath = Join-Path $sessionRoot "published-updater-e2e.log"
 $copiedExePath = Join-Path $installRoot "cerbena.exe"
 $copiedUpdaterPath = Join-Path $installRoot "cerbena-updater.exe"
 $installModeMarkerPath = Join-Path $installRoot "cerbena-install-mode.txt"
@@ -291,8 +331,13 @@ try {
     [System.IO.Directory]::CreateDirectory($localAppDataRoot) | Out-Null
     [System.IO.Directory]::CreateDirectory($installRoot) | Out-Null
     [System.IO.Directory]::CreateDirectory($targetRoot) | Out-Null
+    Write-Log "session root: $sessionRoot"
+    Write-Log "workspace version: $currentVersion"
+    Write-Log "published version: $($publishedRelease.Version)"
+    Write-Log "published release url: $($publishedRelease.HtmlUrl)"
 
     Write-Host "Creating tracked workspace snapshot..." -ForegroundColor Cyan
+    Write-Log "creating tracked workspace snapshot"
     Copy-TrackedWorkspaceSnapshot $repoRoot $snapshotRoot
     Replace-VersionAcrossSnapshot $snapshotRoot $currentVersion $LegacyVersion
 
@@ -300,6 +345,7 @@ try {
         "CARGO_TARGET_DIR" = $targetRoot
     }
     Write-Host "Building temporary legacy desktop binary ($LegacyVersion)..." -ForegroundColor Cyan
+    Write-Log "building temporary legacy desktop binary version=$LegacyVersion"
     Invoke-Native "cargo" @("build", "--release", "--manifest-path", (Join-Path $snapshotRoot "ui\desktop\src-tauri\Cargo.toml")) $snapshotRoot $buildEnv -Quiet:$CompactOutput | Out-Null
 
     $builtExe = Join-Path $targetRoot "release\browser-desktop-ui.exe"
@@ -318,40 +364,63 @@ try {
     $startInfo.CreateNoWindow = $true
     $startInfo.Environment["LOCALAPPDATA"] = $localAppDataRoot
     $startInfo.Environment["CERBENA_SELFTEST_REPORT_VERSION_FILE"] = $versionProbePath
+    $startInfo.Environment["CERBENA_UPDATER_RUNTIME_LOG"] = (Join-Path $localAppDataRoot "Cerbena Browser\runtime_logs.log")
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
     if (-not $process.Start()) {
         throw "failed to launch updater e2e binary"
     }
+    Write-Log "launched legacy updater pid=$($process.Id) exe=$copiedExePath"
 
     $deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
     $resolvedVersion = $null
+    $lastHeartbeatAt = [DateTime]::UtcNow.AddSeconds(-10)
+    $lastStoreStatus = ""
+    $lastStoreError = ""
     while ([DateTime]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 500
         if (Test-Path $versionProbePath) {
             $resolvedVersion = (Get-Content -LiteralPath $versionProbePath -Raw).Trim()
             if (-not [string]::IsNullOrWhiteSpace($resolvedVersion)) {
+                Write-Log "version probe resolved version=$resolvedVersion"
                 break
             }
         }
         $store = Read-UpdateStoreSnapshot $localAppDataRoot
+        $runtimeLogPath = Get-ExistingRuntimeLogPath $localAppDataRoot
+        $storeStatus = Get-StoreFieldValue $store @("status")
+        $storeError = Get-StoreFieldValue $store @("lastError", "last_error")
+        if ($storeStatus -ne $lastStoreStatus -or $storeError -ne $lastStoreError) {
+            Write-Log "store update status=$storeStatus error=$storeError runtimeLog=$runtimeLogPath"
+            $lastStoreStatus = $storeStatus
+            $lastStoreError = $storeError
+        }
+        if ([DateTime]::UtcNow -ge $lastHeartbeatAt.AddSeconds(5)) {
+            $runtimeTail = (Get-FileTail $runtimeLogPath 5) -join " || "
+            Write-Log "heartbeat exited=$($process.HasExited) status=$storeStatus probeExists=$(Test-Path $versionProbePath) runtimeTail=$runtimeTail"
+            $lastHeartbeatAt = [DateTime]::UtcNow
+        }
         if ($null -ne $store -and [string]$store.status -eq "up_to_date") {
             $storeVersion = Normalize-Version ([string]$store.latestVersion)
             if (-not [string]::IsNullOrWhiteSpace($storeVersion)) {
+                Write-Log "resolved version from store latestVersion=$storeVersion"
                 $resolvedVersion = $storeVersion
                 break
             }
         }
         if ($process.HasExited -and -not (Test-Path $versionProbePath)) {
-            $storeStatus = Get-StoreFieldValue $store @("status")
             if (Test-StoreStatusAllowsBackgroundRelaunch $storeStatus) {
+                Write-Log "launcher process exited but background relaunch is still allowed by store status=$storeStatus"
                 continue
             }
             $detail = if ($null -eq $store) {
                 "updater process exited before writing the version probe"
             } else {
-                $storeError = Get-StoreFieldValue $store @("lastError", "last_error")
                 "updater process exited early with status '$storeStatus' and error '$storeError'"
+            }
+            $runtimeTail = (Get-FileTail $runtimeLogPath 20) -join [Environment]::NewLine
+            if (-not [string]::IsNullOrWhiteSpace($runtimeTail)) {
+                Write-Log "runtime log tail before failure:`n$runtimeTail"
             }
             throw $detail
         }
@@ -361,6 +430,11 @@ try {
         $store = Read-UpdateStoreSnapshot $localAppDataRoot
         $status = Get-StoreFieldValue $store @("status") "missing"
         $lastError = Get-StoreFieldValue $store @("lastError", "last_error")
+        $runtimeLogPath = Get-ExistingRuntimeLogPath $localAppDataRoot
+        $runtimeTail = (Get-FileTail $runtimeLogPath 30) -join [Environment]::NewLine
+        if (-not [string]::IsNullOrWhiteSpace($runtimeTail)) {
+            Write-Log "runtime log tail on timeout:`n$runtimeTail"
+        }
         throw "timed out waiting for the relaunched updated build to report its version; last updater status: $status; error: $lastError"
     }
     if (-not (Test-VersionEquivalent $resolvedVersion $publishedRelease.Version)) {
@@ -376,6 +450,7 @@ try {
         updatedVersion = $resolvedVersion
     } | ConvertTo-Json -Depth 4
     Write-Utf8NoBomFile $reportPath $report
+    Write-Log "published updater e2e passed legacy=$LegacyVersion updated=$resolvedVersion"
     Write-Host "Published updater e2e passed: $LegacyVersion -> $resolvedVersion" -ForegroundColor Green
 } finally {
     Stop-ProcessesInRoot $installRoot

@@ -48,6 +48,7 @@ const UPDATER_STEP_DOWNLOAD: &str = "download";
 const UPDATER_STEP_CHECKSUM: &str = "checksum";
 const UPDATER_STEP_INSTALL: &str = "install";
 const UPDATER_STEP_RELAUNCH: &str = "relaunch";
+const UPDATER_HELPER_LOG_ENV: &str = "CERBENA_UPDATER_RUNTIME_LOG";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -508,6 +509,10 @@ fn updater_launch_mode_from_state(state: &AppState) -> Result<UpdaterLaunchMode,
 }
 
 fn schedule_updater_window_close_for_apply(state: &AppState) {
+    push_runtime_log(
+        state,
+        "[updater] scheduling updater window close to trigger pending apply",
+    );
     let app_handle = state.app_handle.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(750));
@@ -541,6 +546,7 @@ fn should_run_auto_update_check(store: &AppUpdateStore) -> bool {
 }
 
 fn spawn_updater_process(app: &AppHandle, mode: UpdaterLaunchMode) -> Result<(), String> {
+    let state = app.state::<AppState>();
     let exe = resolve_updater_executable_path(app)?;
     let mut command = Command::new(exe);
     if mode.is_preview() {
@@ -554,11 +560,22 @@ fn spawn_updater_process(app: &AppHandle, mode: UpdaterLaunchMode) -> Result<(),
     {
         command.current_dir(dir);
     }
+    if let Ok(log_path) = state.runtime_log_path(app) {
+        command.env(UPDATER_HELPER_LOG_ENV, log_path);
+    }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x00000010);
     }
+    push_runtime_log(
+        &state,
+        format!(
+            "[updater] spawning standalone updater mode={} exe={}",
+            if mode.is_preview() { "preview" } else { "auto" },
+            command.get_program().to_string_lossy()
+        ),
+    );
     command
         .spawn()
         .map_err(|e| format!("spawn standalone updater: {e}"))?;
@@ -603,18 +620,39 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
 
     let snapshot = match state.app_update_store.lock() {
         Ok(store) => store.clone(),
-        Err(_) => return,
+        Err(error) => {
+            push_runtime_log(
+                &state,
+                format!("[updater] pending apply skipped: failed to lock store: {error}"),
+            );
+            return;
+        }
     };
 
     if !snapshot.pending_apply_on_exit {
+        push_runtime_log(
+            &state,
+            "[updater] pending apply skipped: pending_apply_on_exit=false",
+        );
         return;
     }
 
     let Some(path) = snapshot.staged_asset_path.as_ref() else {
+        push_runtime_log(
+            &state,
+            "[updater] pending apply skipped: staged_asset_path missing",
+        );
         return;
     };
     let asset_path = PathBuf::from(path);
     if !asset_path.is_file() {
+        push_runtime_log(
+            &state,
+            format!(
+                "[updater] pending apply skipped: staged asset missing path={}",
+                asset_path.display()
+            ),
+        );
         return;
     }
 
@@ -626,13 +664,43 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
     let current_pid = std::process::id();
     let current_exe = match std::env::current_exe() {
         Ok(value) => value,
-        Err(_) => return,
+        Err(error) => {
+            push_runtime_log(
+                &state,
+                format!("[updater] pending apply skipped: resolve current exe failed: {error}"),
+            );
+            return;
+        }
     };
     let install_root = match current_exe.parent() {
         Some(value) => value.to_path_buf(),
-        None => return,
+        None => {
+            push_runtime_log(&state, "[updater] pending apply skipped: install root missing");
+            return;
+        }
     };
     let relaunch_executable = resolve_relaunch_executable_path(&install_root);
+    let runtime_log_path = state
+        .runtime_log_path(&state.app_handle)
+        .ok()
+        .map(|value| value.to_string_lossy().to_string());
+    push_runtime_log(
+        &state,
+        format!(
+            "[updater] pending apply start asset={} extension={} install_root={} relaunch_exe={} target_version={}",
+            asset_path.display(),
+            extension,
+            install_root.display(),
+            relaunch_executable
+                .as_deref()
+                .map(|value| value.display().to_string())
+                .unwrap_or_else(|| "missing".to_string()),
+            snapshot
+                .staged_version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
+    );
 
     let launched = match extension.as_str() {
         "zip" => launch_zip_apply_helper(
@@ -640,6 +708,7 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
             &asset_path,
             &install_root,
             relaunch_executable.as_deref(),
+            runtime_log_path.as_deref(),
         )
         .is_ok(),
         "msi" => {
@@ -653,6 +722,7 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
                 relaunch_executable.as_deref(),
                 store_path.as_deref(),
                 snapshot.staged_version.as_deref(),
+                runtime_log_path.as_deref(),
             )
             .is_ok()
         }
@@ -660,6 +730,10 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
     };
 
     if !launched {
+        push_runtime_log(
+            &state,
+            format!("[updater] pending apply failed: helper launch failed for {extension}"),
+        );
         return;
     }
 
@@ -667,6 +741,13 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
         store.pending_apply_on_exit = false;
         store.status = "applying".to_string();
         let _ = persist_update_store_from_state(&state, &store);
+        push_runtime_log(
+            &state,
+            format!(
+                "[updater] pending apply helper launched asset={} status=applying",
+                asset_path.display()
+            ),
+        );
     };
 }
 
@@ -765,6 +846,13 @@ fn run_preview_updater_flow(state: &AppState) -> Result<(), String> {
 
 fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
     let launch_mode = updater_launch_mode_from_state(state)?;
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] live flow start current_version={} launch_mode={:?}",
+            CURRENT_VERSION, launch_mode
+        ),
+    );
     progress_updater_step(
         state,
         UPDATER_STEP_DISCOVER,
@@ -774,6 +862,21 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
     let client = build_release_http_client(Duration::from_secs(30), false)
         .map_err(|e| format!("build updater client: {e}"))?;
     let candidate = fetch_latest_release(&client)?;
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] live release discovered version={} asset={} asset_type={} handoff={} reason={} release_url={}",
+            candidate.version,
+            candidate.asset_name.as_deref().unwrap_or("missing"),
+            candidate.asset_type.as_deref().unwrap_or("unknown"),
+            candidate.install_handoff_mode.as_deref().unwrap_or("unknown"),
+            candidate
+                .asset_selection_reason
+                .as_deref()
+                .unwrap_or("unspecified"),
+            candidate.release_url
+        ),
+    );
     update_updater_overview(state, |overview| {
         overview.target_version = Some(candidate.version.clone());
         overview.release_url = Some(candidate.release_url.clone());
@@ -794,6 +897,13 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         "i18n:updater.detail.live_compare_running",
     )?;
     if !is_version_newer(&candidate.version, CURRENT_VERSION) {
+        push_runtime_log(
+            state,
+            format!(
+                "[updater] live compare up_to_date current={} latest={}",
+                CURRENT_VERSION, candidate.version
+            ),
+        );
         progress_updater_step(
             state,
             UPDATER_STEP_COMPARE,
@@ -823,6 +933,13 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         "i18n:updater.detail.live_security_running",
     )?;
     let security_bundle = verify_release_security_bundle(&candidate)?;
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] release security verified checksums_bytes={}",
+            security_bundle.checksums_text.len()
+        ),
+    );
     progress_updater_step(
         state,
         UPDATER_STEP_SECURITY,
@@ -845,6 +962,15 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         "i18n:updater.detail.live_download_running",
     )?;
     let asset_bytes = download_release_bytes(&client, &asset_url, "release asset")?;
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] asset downloaded name={} bytes={} url={}",
+            asset_name,
+            asset_bytes.len(),
+            asset_url
+        ),
+    );
     progress_updater_step(
         state,
         UPDATER_STEP_DOWNLOAD,
@@ -859,6 +985,14 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         "i18n:updater.detail.live_checksum_running",
     )?;
     ensure_asset_matches_verified_checksum(&security_bundle, &asset_name, &asset_bytes)?;
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] checksum verified asset={} sha256={}",
+            asset_name,
+            sha256_hex(&asset_bytes)
+        ),
+    );
     progress_updater_step(
         state,
         UPDATER_STEP_CHECKSUM,
@@ -872,7 +1006,17 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         "running",
         "i18n:updater.detail.live_install_running",
     )?;
-    let _staged_path = stage_verified_release_asset(state, &candidate, &asset_bytes)?;
+    let staged_path = stage_verified_release_asset(state, &candidate, &asset_bytes)?;
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] asset staged version={} asset={} path={} auto_apply={}",
+            candidate.version,
+            asset_name,
+            staged_path.display(),
+            can_auto_apply_asset(&asset_name)
+        ),
+    );
     progress_updater_step(
         state,
         UPDATER_STEP_INSTALL,
@@ -887,6 +1031,13 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         "i18n:updater.detail.live_relaunch_done",
     )?;
     if can_auto_apply_asset(&asset_name) {
+        push_runtime_log(
+            state,
+            format!(
+                "[updater] flow ready_to_restart version={} asset={} awaiting close handoff",
+                candidate.version, asset_name
+            ),
+        );
         let result = finalize_updater_success(
             state,
             "ready_to_restart",
@@ -899,6 +1050,13 @@ fn run_live_updater_flow(state: &AppState) -> Result<(), String> {
         }
         return result;
     }
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] flow completed without auto-apply version={} asset={}",
+            candidate.version, asset_name
+        ),
+    );
     finalize_updater_success(
         state,
         "completed",
@@ -1047,6 +1205,14 @@ fn stage_release_if_needed(
             .map(Path::new)
             .is_some_and(Path::is_file)
     {
+        push_runtime_log(
+            state,
+            format!(
+                "[updater] reuse staged asset version={} path={}",
+                candidate.version,
+                store.staged_asset_path.as_deref().unwrap_or_default()
+            ),
+        );
         store.status = if can_auto_apply_asset(asset_name) {
             "downloaded".to_string()
         } else {
@@ -1068,9 +1234,27 @@ fn stage_release_if_needed(
 
     let client = build_release_http_client(Duration::from_secs(60), true)
         .map_err(|e| format!("build update download client: {e}"))?;
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] staging download start version={} asset={} target_dir={}",
+            candidate.version,
+            asset_name,
+            target_dir.display()
+        ),
+    );
     let bytes = download_release_bytes(&client, asset_url, "update asset")?;
     verify_release_candidate(candidate, &bytes)?;
     fs::write(&asset_path, &bytes).map_err(|e| format!("write update asset: {e}"))?;
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] staging complete asset={} bytes={} path={}",
+            asset_name,
+            bytes.len(),
+            asset_path.display()
+        ),
+    );
 
     store.staged_version = Some(candidate.version.clone());
     store.staged_asset_name = Some(asset_name.clone());
@@ -1731,9 +1915,15 @@ fn launch_zip_apply_helper(
     archive_path: &Path,
     install_root: &Path,
     relaunch_executable: Option<&Path>,
+    runtime_log_path: Option<&str>,
 ) -> Result<(), String> {
-    let helper =
-        build_zip_apply_helper_script(pid, archive_path, install_root, relaunch_executable);
+    let helper = build_zip_apply_helper_script(
+        pid,
+        archive_path,
+        install_root,
+        relaunch_executable,
+        runtime_log_path,
+    );
     Command::new("powershell")
         .args([
             "-NoProfile",
@@ -1754,19 +1944,34 @@ fn build_zip_apply_helper_script(
     archive_path: &Path,
     install_root: &Path,
     relaunch_executable: Option<&Path>,
+    runtime_log_path: Option<&str>,
 ) -> String {
     let relaunch = relaunch_executable
         .map(powershell_quote)
+        .unwrap_or_else(|| "$null".to_string());
+    let runtime_log = runtime_log_path
+        .map(|value| powershell_quote(Path::new(value)))
         .unwrap_or_else(|| "$null".to_string());
     format!(
         "$pidValue={pid};\
         $archive={archive};\
         $installRoot={install};\
         $relaunchExe={relaunch};\
+        $runtimeLogPath={runtime_log};\
         $versionProbe=$env:CERBENA_SELFTEST_REPORT_VERSION_FILE;\
         $autoExitAfter='20';\
         $targetExecutables=@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe');\
+        function Write-Log([string]$message) {{\
+            if (-not $runtimeLogPath -or [string]::IsNullOrWhiteSpace($runtimeLogPath)) {{ return }};\
+            try {{\
+                $directory = Split-Path -Parent $runtimeLogPath;\
+                if ($directory) {{ [System.IO.Directory]::CreateDirectory($directory) | Out-Null }};\
+                [System.IO.File]::AppendAllText($runtimeLogPath, ('[' + [DateTime]::UtcNow.ToString('o') + '] [updater-helper][zip] ' + $message + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)));\
+            }} catch {{}}\
+        }};\
+        Write-Log ('helper started pid=' + $pidValue + ' archive=' + $archive + ' installRoot=' + $installRoot);\
         while (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }};\
+        Write-Log 'launcher process exited; starting zip apply';\
         $targetPaths=@();\
         foreach ($exeName in $targetExecutables) {{\
             $candidate=Join-Path $installRoot $exeName;\
@@ -1787,6 +1992,7 @@ fn build_zip_apply_helper_script(
         foreach ($proc in $runningTargets) {{\
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue;\
         }};\
+        Write-Log ('stopped running targets count=' + $runningTargets.Count);\
         foreach ($proc in $runningTargets) {{\
             try {{\
                 $proc.WaitForExit(15000) | Out-Null;\
@@ -1795,6 +2001,7 @@ fn build_zip_apply_helper_script(
         $temp=Join-Path ([System.IO.Path]::GetTempPath()) ('cerbena-update-' + [guid]::NewGuid().ToString('N'));\
         New-Item -ItemType Directory -Path $temp -Force | Out-Null;\
         try {{\
+            Write-Log ('expanding archive to temp=' + $temp);\
             Expand-Archive -LiteralPath $archive -DestinationPath $temp -Force;\
             $source=$temp;\
             $entries=Get-ChildItem -LiteralPath $temp;\
@@ -1804,7 +2011,9 @@ fn build_zip_apply_helper_script(
                 try {{\
                     Get-ChildItem -LiteralPath $source | ForEach-Object {{ Copy-Item -LiteralPath $_.FullName -Destination $installRoot -Recurse -Force }};\
                     $copySucceeded=$true;\
+                    Write-Log ('copy succeeded attempt=' + ($attempt + 1));\
                 }} catch {{\
+                    Write-Log ('copy failed attempt=' + ($attempt + 1) + ' error=' + $_.Exception.Message);\
                     if ($attempt -ge 9) {{ throw }};\
                     Start-Sleep -Milliseconds 500;\
                 }}\
@@ -1818,15 +2027,27 @@ fn build_zip_apply_helper_script(
                     $relaunchInfo.EnvironmentVariables['CERBENA_SELFTEST_REPORT_VERSION_FILE'] = $versionProbe;\
                     $relaunchInfo.EnvironmentVariables['{auto_exit_env}'] = $autoExitAfter;\
                 }};\
+                if ($runtimeLogPath) {{\
+                    $relaunchInfo.EnvironmentVariables['{helper_log_env}'] = $runtimeLogPath;\
+                }};\
                 [System.Diagnostics.Process]::Start($relaunchInfo) | Out-Null;\
+                Write-Log ('relaunch started exe=' + $relaunchExe);\
+            }} else {{\
+                Write-Log 'relaunch skipped because executable is missing';\
             }}\
+        }} catch {{\
+            Write-Log ('helper failed: ' + $_.Exception.Message);\
+            throw;\
         }} finally {{\
+            Write-Log 'cleaning temporary extraction directory';\
             if (Test-Path -LiteralPath $temp) {{ Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }}\
         }}",
         pid = pid,
         archive = powershell_quote(archive_path),
         install = powershell_quote(install_root),
         relaunch = relaunch,
+        runtime_log = runtime_log,
+        helper_log_env = UPDATER_HELPER_LOG_ENV,
         auto_exit_env = UPDATER_RELAUNCH_AUTO_EXIT_ENV
     )
 }
@@ -1837,6 +2058,7 @@ fn launch_msi_apply_helper(
     relaunch_executable: Option<&Path>,
     update_store_path: Option<&str>,
     target_version: Option<&str>,
+    runtime_log_path: Option<&str>,
 ) -> Result<(), String> {
     let helper = build_msi_apply_helper_script(
         pid,
@@ -1844,6 +2066,7 @@ fn launch_msi_apply_helper(
         relaunch_executable,
         update_store_path,
         target_version,
+        runtime_log_path,
     );
     Command::new("powershell")
         .args([
@@ -1866,6 +2089,7 @@ fn build_msi_apply_helper_script(
     relaunch_executable: Option<&Path>,
     update_store_path: Option<&str>,
     target_version: Option<&str>,
+    runtime_log_path: Option<&str>,
 ) -> String {
     let relaunch = relaunch_executable
         .map(powershell_quote)
@@ -1880,6 +2104,9 @@ fn build_msi_apply_helper_script(
         .and_then(|path| path.parent())
         .map(powershell_quote)
         .unwrap_or_else(|| "$null".to_string());
+    let runtime_log = runtime_log_path
+        .map(|value| powershell_quote(Path::new(value)))
+        .unwrap_or_else(|| "$null".to_string());
     format!(
         "$pidValue={pid};\
         $msiPath={msi};\
@@ -1887,9 +2114,18 @@ fn build_msi_apply_helper_script(
         $installRoot={install};\
         $storePath={store};\
         $targetVersion={version};\
+        $runtimeLogPath={runtime_log};\
         $versionProbe=$env:CERBENA_SELFTEST_REPORT_VERSION_FILE;\
         $autoExitAfter='20';\
         $targetExecutables=@('cerbena.exe','browser-desktop-ui.exe','cerbena-updater.exe','cerbena-launcher.exe');\
+        function Write-Log([string]$message) {{\
+            if (-not $runtimeLogPath -or [string]::IsNullOrWhiteSpace($runtimeLogPath)) {{ return }};\
+            try {{\
+                $directory = Split-Path -Parent $runtimeLogPath;\
+                if ($directory) {{ [System.IO.Directory]::CreateDirectory($directory) | Out-Null }};\
+                [System.IO.File]::AppendAllText($runtimeLogPath, ('[' + [DateTime]::UtcNow.ToString('o') + '] [updater-helper][msi] ' + $message + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)));\
+            }} catch {{}}\
+        }};\
         function Describe-MsiExit([int]$code) {{\
             switch ($code) {{\
                 1602 {{ return 'msi install canceled before completion' }}\
@@ -1908,9 +2144,12 @@ fn build_msi_apply_helper_script(
                 if ($targetVersion) {{ $json.stagedVersion = $targetVersion }};\
                 $updated = $json | ConvertTo-Json -Depth 8;\
                 [System.IO.File]::WriteAllText($storePath, $updated, (New-Object System.Text.UTF8Encoding($false)));\
+                Write-Log ('store updated status=' + $status + ' pending=' + $pendingApply + ' error=' + $lastError);\
             }} catch {{}}\
         }};\
+        Write-Log ('helper started pid=' + $pidValue + ' msi=' + $msiPath + ' installRoot=' + $installRoot + ' store=' + $storePath + ' targetVersion=' + $targetVersion);\
         while (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }};\
+        Write-Log 'launcher process exited; starting msi apply';\
         Update-Store 'applying' $null $false;\
         $targetPaths=@();\
         if ($installRoot -and (Test-Path -LiteralPath $installRoot)) {{\
@@ -1934,12 +2173,15 @@ fn build_msi_apply_helper_script(
         foreach ($proc in $runningTargets) {{\
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue;\
         }};\
+        Write-Log ('stopped running targets count=' + $runningTargets.Count);\
         foreach ($proc in $runningTargets) {{\
             try {{\
                 $proc.WaitForExit(15000) | Out-Null;\
             }} catch {{}}\
         }};\
+        Write-Log ('invoking msiexec path=' + $msiPath);\
         $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $msiPath, '/qn', '/norestart') -WindowStyle Hidden -PassThru -Wait;\
+        Write-Log ('msiexec completed exitCode=' + $proc.ExitCode);\
         if ($proc.ExitCode -eq 1602) {{\
             Update-Store 'canceled' (Describe-MsiExit $proc.ExitCode) $false;\
             exit $proc.ExitCode;\
@@ -1958,7 +2200,13 @@ fn build_msi_apply_helper_script(
                 $relaunchInfo.EnvironmentVariables['CERBENA_SELFTEST_REPORT_VERSION_FILE'] = $versionProbe;\
                 $relaunchInfo.EnvironmentVariables['{auto_exit_env}'] = $autoExitAfter;\
             }};\
+            if ($runtimeLogPath) {{\
+                $relaunchInfo.EnvironmentVariables['{helper_log_env}'] = $runtimeLogPath;\
+            }};\
             [System.Diagnostics.Process]::Start($relaunchInfo) | Out-Null;\
+            Write-Log ('relaunch started exe=' + $relaunchExe);\
+        }} else {{\
+            Write-Log 'relaunch skipped because executable is missing';\
         }}",
         pid = pid,
         msi = powershell_quote(msi_path),
@@ -1966,6 +2214,8 @@ fn build_msi_apply_helper_script(
         install = install_root,
         store = store,
         version = version,
+        runtime_log = runtime_log,
+        helper_log_env = UPDATER_HELPER_LOG_ENV,
         auto_exit_env = UPDATER_RELAUNCH_AUTO_EXIT_ENV
     )
 }
@@ -1998,6 +2248,20 @@ fn refresh_update_store_snapshot(state: &AppState) -> Result<AppUpdateStore, Str
     };
     let mut disk_store = disk_store;
     reconcile_update_store_with_current_version(&mut disk_store);
+    push_runtime_log(
+        state,
+        format!(
+            "[updater] update store snapshot refreshed status={} latest={} staged={} handoff={} pending_apply={}",
+            disk_store.status,
+            disk_store.latest_version.as_deref().unwrap_or("none"),
+            disk_store.staged_version.as_deref().unwrap_or("none"),
+            disk_store
+                .updater_handoff_version
+                .as_deref()
+                .unwrap_or("none"),
+            disk_store.pending_apply_on_exit
+        ),
+    );
     let mut guard = state
         .app_update_store
         .lock()
@@ -2487,6 +2751,7 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             Path::new("C:/tmp/update.zip"),
             Path::new("C:/Program Files/Cerbena Browser"),
             Some(Path::new("C:/Program Files/Cerbena Browser/cerbena.exe")),
+            Some("C:/tmp/runtime_logs.log"),
         );
         assert!(script.contains("Stop-Process -Id $proc.Id -Force"));
         assert!(script.contains("WaitForExit(15000)"));
@@ -2494,6 +2759,8 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         assert!(script
             .contains("for ($attempt=0; $attempt -lt 10 -and -not $copySucceeded; $attempt++)"));
         assert!(script.contains("CERBENA_UPDATER_AUTO_EXIT_AFTER_SECONDS"));
+        assert!(script.contains("[updater-helper][zip]"));
+        assert!(script.contains("CERBENA_UPDATER_RUNTIME_LOG"));
     }
 
     #[test]
@@ -2504,6 +2771,7 @@ def456  cerbena-windows-x64/cerbena.exe\n";
             Some(Path::new("C:/Program Files/Cerbena Browser/cerbena.exe")),
             Some("C:/tmp/app_update_store.json"),
             Some("1.2.3"),
+            Some("C:/tmp/runtime_logs.log"),
         );
         assert!(script.contains("Start-Process -FilePath 'msiexec.exe'"));
         assert!(script.contains("'/qn'"));
@@ -2516,6 +2784,8 @@ def456  cerbena-windows-x64/cerbena.exe\n";
         assert!(script.contains("1602"));
         assert!(script.contains("1618"));
         assert!(script.contains("another Windows Installer transaction is already running (1618)"));
+        assert!(script.contains("[updater-helper][msi]"));
+        assert!(script.contains("CERBENA_UPDATER_RUNTIME_LOG"));
     }
 
     #[test]

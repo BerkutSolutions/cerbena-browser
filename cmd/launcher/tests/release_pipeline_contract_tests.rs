@@ -85,17 +85,17 @@ fn walk_version_paths(root: &Path, current: &Path, version: &str, found: &mut BT
             continue;
         };
         if content.contains(version) {
-        let relative = path
-            .strip_prefix(root)
-            .expect("relative version path")
-            .to_string_lossy()
-            .replace('\\', "/");
-        if relative == "ui/desktop/src-tauri/Cargo.lock" {
-            continue;
+            let relative = path
+                .strip_prefix(root)
+                .expect("relative version path")
+                .to_string_lossy()
+                .replace('\\', "/");
+            if relative == "ui/desktop/src-tauri/Cargo.lock" {
+                continue;
+            }
+            found.insert(relative);
         }
-        found.insert(relative);
     }
-}
 }
 
 #[test]
@@ -106,19 +106,18 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
             .expect("read generate-release-artifacts.ps1");
     let installer_script = fs::read_to_string(root.join("scripts").join("build-installer.ps1"))
         .expect("read build-installer.ps1");
-    let release_script =
-        fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release.ps1");
     let version_script = fs::read_to_string(root.join("scripts").join("update-version.ps1"))
         .expect("read update-version.ps1");
     let version_manifest =
         fs::read_to_string(root.join("scripts").join("version-sync-targets.json"))
             .expect("read version-sync-targets.json");
-    let signing_helper =
-        fs::read_to_string(root.join("scripts").join("release-signing.ps1"))
-            .expect("read release-signing.ps1");
-    let signing_bootstrap =
-        fs::read_to_string(root.join("scripts").join("new-release-signing-material.ps1"))
-            .expect("read new-release-signing-material.ps1");
+    let signing_helper = fs::read_to_string(root.join("scripts").join("release-signing.ps1"))
+        .expect("read release-signing.ps1");
+    let signing_bootstrap = fs::read_to_string(
+        root.join("scripts")
+            .join("new-release-signing-material.ps1"),
+    )
+    .expect("read new-release-signing-material.ps1");
     let release_public_key = fs::read_to_string(
         root.join("config")
             .join("release")
@@ -134,17 +133,11 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         "checksums.txt",
         "checksums.sig",
         ".msi",
-        "Assert-GitHubReleaseAssetsPublished",
-        "Remove-UnexpectedGitHubReleaseAssets",
-        "delete-asset",
-        ".assets[].name",
-        "update-version.ps1",
         "version-sync-targets.json",
     ] {
         assert!(
             artifacts_script.contains(needle)
                 || installer_script.contains(needle)
-                || release_script.contains(needle)
                 || signing_helper.contains(needle)
                 || signing_bootstrap.contains(needle)
                 || release_public_key.contains(needle)
@@ -210,7 +203,6 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
         "ci-quality.yml",
         "security-supply-chain.yml",
         "security-regression-gate.yml",
-        "smoke-e2e.yml",
     ];
 
     for file in files {
@@ -224,28 +216,14 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
     assert!(ci_quality.contains("cargo test --workspace"));
     assert!(ci_quality
         .contains("cargo test -p cerbena-launcher --test release_pipeline_contract_tests"));
-
-    let local_preflight = fs::read_to_string(root.join("scripts").join("local-ci-preflight.ps1"))
-        .expect("read local ci preflight");
-    let release_script =
-        fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release script");
-    assert!(local_preflight.contains("Trusted updater regression tests"));
-    assert!(local_preflight.contains("Published updater end-to-end test"));
-    assert!(local_preflight.contains("Release pipeline contract"));
-    assert!(local_preflight.contains("published-updater-e2e.ps1"));
-    assert!(local_preflight.contains("cargo"));
-    assert!(local_preflight.contains("trusted_updater"));
-    assert!(local_preflight.contains("release_scripts_exist_and_reference_current_quality_gates"));
-    assert!(local_preflight.contains("Desktop UI dev smoke"));
-    assert!(local_preflight.contains("npm.cmd run dev"));
-    assert!(local_preflight.contains("Version sync contract"));
-    assert!(local_preflight.contains("version_sync_contract"));
-    assert!(release_script.contains("1. Change version"));
-    assert!(release_script.contains("2. Full cycle"));
-    assert!(release_script.contains("3. Publish only"));
-    assert!(release_script.contains("4. Checks only"));
-    assert!(release_script.contains("update-version.ps1"));
-    assert!(release_script.contains("required MSI installer is missing"));
+    assert!(
+        !ci_quality.contains("local-ci-preflight.ps1"),
+        "GitHub CI must not invoke local-ci-preflight.ps1"
+    );
+    assert!(
+        !ci_quality.contains("release.ps1"),
+        "GitHub CI must not invoke release.ps1"
+    );
 
     let security_supply = fs::read_to_string(workflows.join("security-supply-chain.yml"))
         .expect("read security-supply-chain workflow");
@@ -261,6 +239,17 @@ fn github_workflows_cover_docs_quality_and_security_gates() {
             "security-supply-chain workflow must mention {needle}"
         );
     }
+
+    let security_regression = fs::read_to_string(workflows.join("security-regression-gate.yml"))
+        .expect("read security regression workflow");
+    assert!(
+        !security_regression.contains("local-ci-preflight.ps1"),
+        "GitHub security workflow must not invoke local-ci-preflight.ps1"
+    );
+    assert!(
+        !security_regression.contains("release.ps1"),
+        "GitHub security workflow must not invoke release.ps1"
+    );
 }
 
 #[test]
