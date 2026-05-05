@@ -154,9 +154,14 @@ function Find-CSharpCompiler {
 }
 
 function Find-WixTool([string]$RepoRoot) {
+    $dotnetToolWix = ""
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $dotnetToolWix = Join-Path $env:USERPROFILE ".dotnet\tools\wix.exe"
+    }
     $paths = @(
-        (Join-Path $RepoRoot ".tools\wix.exe"),
-        (Get-Command "wix.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)
+        $dotnetToolWix,
+        (Get-Command "wix.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+        (Join-Path $RepoRoot ".tools\wix.exe")
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
     foreach ($path in $paths) {
@@ -166,6 +171,51 @@ function Find-WixTool([string]$RepoRoot) {
     }
 
     return $null
+}
+
+function Find-WixUiExtension([string]$RepoRoot) {
+    $candidates = @(
+        (Join-Path $RepoRoot ".tools\WixToolset.UI.wixext"),
+        (Join-Path $RepoRoot ".tools\WixToolset.UI.wixext.dll"),
+        (Join-Path $RepoRoot ".tools\wix\WixToolset.UI.wixext"),
+        (Join-Path $RepoRoot ".tools\wix\WixToolset.UI.wixext.dll")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+    return ""
+}
+
+function Test-WixExtensionAvailable([string]$WixPath, [string]$ExtensionId) {
+    if ([string]::IsNullOrWhiteSpace($WixPath)) {
+        return $false
+    }
+    try {
+        $output = & $WixPath extension list 2>&1
+        $exitCode = if (Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue) { $LASTEXITCODE } else { 1 }
+        if ($exitCode -ne 0) {
+            return $false
+        }
+        $text = ($output | Out-String)
+        return $text -match [regex]::Escape($ExtensionId)
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-WixExtensionAvailable([string]$WixPath, [string]$ExtensionId) {
+    if ([string]::IsNullOrWhiteSpace($WixPath)) {
+        return $false
+    }
+    try {
+        $null = & $WixPath extension add $ExtensionId 2>&1
+        $exitCode = if (Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue) { $LASTEXITCODE } else { 1 }
+        return $exitCode -eq 0
+    } catch {
+        return $false
+    }
 }
 
 function Convert-ToInnoPath([string]$Path) {
@@ -304,6 +354,12 @@ function New-MsiInstaller(
     if ([string]::IsNullOrWhiteSpace($wix)) {
         throw "WiX toolset is not installed. Install wix.exe (for example via dotnet tool) before building MSI artifacts."
     }
+    $wixUiExtensionPath = Find-WixUiExtension $RepoRoot
+    $wixUiExtensionId = "WixToolset.UI.wixext"
+    $hasWixUiExtension = (-not [string]::IsNullOrWhiteSpace($wixUiExtensionPath)) `
+        -or (Test-WixExtensionAvailable -WixPath $wix -ExtensionId $wixUiExtensionId) `
+        -or (Ensure-WixExtensionAvailable -WixPath $wix -ExtensionId $wixUiExtensionId)
+    Write-Log ("wix ui extension available={0} path={1} extensionId={2}" -f $hasWixUiExtension, $wixUiExtensionPath, $wixUiExtensionId)
 
     $msiVersion = Convert-VersionToMsiProductVersion $Version
     $wxsPath = Join-Path $InstallerRoot "CerbenaBrowserInstaller.wxs"
@@ -446,7 +502,7 @@ function New-MsiInstaller(
         </Component>
       </DirectoryRef>
       <DirectoryRef Id="DesktopFolder">
-        <Component Id="CmpDesktopShortcut" Guid="$(New-StableGuid 'msi-shortcut-desktop')">
+        <Component Id="CmpDesktopShortcut" Guid="$(New-StableGuid 'msi-shortcut-desktop')" Condition="DESKTOP_SHORTCUT=1">
           <Shortcut Id="ShortcutDesktopCerbena" Name="Cerbena Browser" Target="[INSTALLDIR]cerbena.exe" WorkingDirectory="INSTALLDIR" Icon="CerbenaProductIcon" />
           <RegistryValue Root="HKCU" Key="Software\BerkutSolutions\Cerbena Browser\MSI" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
         </Component>
@@ -489,6 +545,8 @@ function New-MsiInstaller(
     <Property Id="ARPPRODUCTICON" Value="CerbenaProductIcon" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="0" />
+    <Property Id="DESKTOP_SHORTCUT" Value="1" />
+    <Property Id="CERBENA_REMOVE_USER_DATA" Value="0" />
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="INSTALLDIR" Name="Cerbena Browser">
@@ -503,14 +561,32 @@ $shortcutComponent
 
     <InstallExecuteSequence>
       <Custom Action="RunPostInstallRegistration" After="InstallFiles" Condition="NOT REMOVE=&quot;ALL&quot;" />
-      <Custom Action="RunMsiCleanup" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="RunMsiCleanup" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND CERBENA_REMOVE_USER_DATA=&quot;1&quot;" />
     </InstallExecuteSequence>
   </Package>
 </Wix>
 "@
 
+    if ($hasWixUiExtension) {
+        $uiPropertySnippet = @"
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Cerbena Browser" />
+"@
+        $uiSnippet = @"
+    <CustomAction Id="LaunchCerbenaAfterInstall" FileRef="$mainExecutableFileId" Execute="immediate" Return="asyncNoWait" Impersonate="yes" />
+    <UI>
+      <UIRef Id="WixUI_InstallDir" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchCerbenaAfterInstall">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed</Publish>
+    </UI>
+"@
+        $wxs = $wxs.Replace('    <Property Id="CERBENA_REMOVE_USER_DATA" Value="0" />', "    <Property Id=""CERBENA_REMOVE_USER_DATA"" Value=""0"" />`n$uiPropertySnippet")
+        $wxs = $wxs.Replace('    <CustomAction Id="RunMsiCleanup" FileRef="$mainExecutableFileId" ExeCommand="--msi-cleanup" Execute="deferred" Impersonate="yes" Return="ignore" />', "    <CustomAction Id=""RunMsiCleanup"" FileRef=""$mainExecutableFileId"" ExeCommand=""--msi-cleanup"" Execute=""deferred"" Impersonate=""yes"" Return=""ignore"" />`n$uiSnippet")
+    } else {
+        Write-Warning "WixToolset.UI.wixext is unavailable; MSI will be built without advanced wizard UI pages. INSTALLDIR, DESKTOP_SHORTCUT and CERBENA_REMOVE_USER_DATA properties remain available via msiexec arguments."
+    }
+
     [System.IO.File]::WriteAllText($wxsPath, $wxs, $utf8)
-    [void](Invoke-Native $wix @(
+    $wixBuildArgs = @(
         "build",
         $wxsPath,
         "-out",
@@ -519,7 +595,56 @@ $shortcutComponent
         (Join-Path $InstallerRoot "wix-intermediate"),
         "-arch",
         "x64"
-    ))
+    )
+    if ($hasWixUiExtension) {
+        if (-not [string]::IsNullOrWhiteSpace($wixUiExtensionPath)) {
+            $wixBuildArgs += @("-ext", $wixUiExtensionPath)
+        } else {
+            $wixBuildArgs += @("-ext", $wixUiExtensionId)
+        }
+    }
+    $attemptedWixPaths = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    [void]$attemptedWixPaths.Add($wix)
+    $wixBuildSucceeded = $false
+    $lastWixBuildError = $null
+    try {
+        [void](Invoke-Native $wix $wixBuildArgs)
+        $wixBuildSucceeded = $true
+    } catch {
+        $lastWixBuildError = $_
+        Write-Log "primary wix build failed file=$wix error=$($_.Exception.Message)"
+    }
+    if (-not $wixBuildSucceeded) {
+        $fallbackCandidates = @()
+        if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            $fallbackCandidates += (Join-Path $env:USERPROFILE ".dotnet\tools\wix.exe")
+        }
+        $fallbackCandidates += @(
+            (Get-Command "wix.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+            (Join-Path $RepoRoot ".tools\wix.exe")
+        )
+        foreach ($fallbackWix in ($fallbackCandidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
+            if ($attemptedWixPaths.Contains($fallbackWix)) {
+                continue
+            }
+            if (-not (Test-Path -LiteralPath $fallbackWix)) {
+                continue
+            }
+            Write-Log "retrying wix build with fallback tool=$fallbackWix"
+            try {
+                [void](Invoke-Native $fallbackWix $wixBuildArgs)
+                $wixBuildSucceeded = $true
+                $wix = $fallbackWix
+                break
+            } catch {
+                $lastWixBuildError = $_
+                Write-Log "fallback wix build failed file=$fallbackWix error=$($_.Exception.Message)"
+            }
+        }
+    }
+    if (-not $wixBuildSucceeded) {
+        throw $lastWixBuildError
+    }
     if (-not (Test-Path $msiPath)) {
         throw "WiX did not produce MSI output: $msiPath"
     }
@@ -624,6 +749,7 @@ internal static class CerbenaInstallerProgram
     private static void RunUninstaller(bool silent)
     {
         var installRoot = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+        var removeUserData = true;
         var running = FindRunningProductProcesses(installRoot);
         if (running.Count > 0)
         {
@@ -660,21 +786,25 @@ internal static class CerbenaInstallerProgram
         if (!silent)
         {
             var confirmation = MessageBox.Show(
-                "Remove Cerbena Browser and all installed files?",
+                "Choose uninstall mode:\n\nYes - remove application and user data\nNo - remove application only (keep user data)\nCancel - abort uninstall",
                 ProductName,
-                MessageBoxButtons.YesNo,
+                MessageBoxButtons.YesNoCancel,
                 MessageBoxIcon.Question);
-            if (confirmation != DialogResult.Yes)
+            if (confirmation == DialogResult.Cancel)
             {
                 return;
             }
+            removeUserData = confirmation == DialogResult.Yes;
         }
 
         RemoveShortcut(Path.Combine(GetKnownFolderPath(FolderIdPrograms), ShortcutFileName));
         RemoveShortcut(Path.Combine(GetKnownFolderPath(FolderIdDesktop), ShortcutFileName));
         RemoveBrowserRegistration();
         RemoveUninstallRegistration();
-        CleanupManagedNetworkArtifacts(installRoot);
+        if (removeUserData)
+        {
+            CleanupManagedNetworkArtifacts(installRoot);
+        }
         CleanupManagedContainerArtifacts();
         CleanupLegacyAmneziaServices(installRoot);
 
