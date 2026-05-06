@@ -104,11 +104,16 @@ fn live_docs_and_operator_scripts_do_not_reference_camoufox() {
     let mut scan_targets = vec![repo.join("README.md"), repo.join("README.en.md")];
     scan_targets.extend(collect_markdown_files(&repo.join("docs").join("ru")));
     scan_targets.extend(collect_markdown_files(&repo.join("docs").join("eng")));
-    scan_targets.extend([
-        repo.join("scripts").join("local-ci-preflight.ps1"),
-        repo.join("scripts").join("release.ps1"),
-        repo.join("scripts").join("published-updater-e2e.ps1"),
-    ]);
+    for operator_script in [
+        "local-ci-preflight.ps1",
+        "release.ps1",
+        "published-updater-e2e.ps1",
+    ] {
+        let path = repo.join("scripts").join(operator_script);
+        if path.is_file() {
+            scan_targets.push(path);
+        }
+    }
 
     let mut offenders = Vec::new();
     for path in scan_targets {

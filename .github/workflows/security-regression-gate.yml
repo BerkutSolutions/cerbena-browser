@@ -24,9 +24,27 @@ jobs:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
-      - run: npm ci
-      - working-directory: ui/desktop
-        run: npm ci
+      - name: Install root npm deps (retry)
+        shell: pwsh
+        run: |
+          $attempts = 3
+          for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+            npm ci --no-audit
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq $attempts) { throw "npm ci failed after $attempts attempts" }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
+      - name: Install desktop npm deps (retry)
+        shell: pwsh
+        working-directory: ui/desktop
+        run: |
+          $attempts = 3
+          for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+            npm ci --no-audit
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq $attempts) { throw "ui/desktop npm ci failed after $attempts attempts" }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
       - shell: pwsh
         run: |
           & "$env:GITHUB_WORKSPACE\scripts\security-gates-preflight.ps1"
