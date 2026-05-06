@@ -22,7 +22,10 @@ use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::{
-    certificate_runtime::clear_wayfern_profile_certificates,
+    certificate_runtime::{
+        clear_librewolf_profile_certificates,
+        prepare_librewolf_profile_certificates_for_state,
+    },
     device_posture::enforce_launch_posture,
     envelope::ok,
     envelope::UiEnvelope,
@@ -49,6 +52,7 @@ use crate::{
     state::{
         ensure_default_profiles, is_builtin_default_profile_name,
         persist_hidden_default_profiles_store, AppState, ExtensionLibraryItem,
+        ExtensionPackageVariant,
     },
 };
 
@@ -679,6 +683,17 @@ pub async fn launch_profile(
             );
             ensure_keepassxc_bridge_for_profile(state.inner(), &profile, &profile_root)?;
         }
+        if matches!(engine, EngineKind::Librewolf) {
+            emit_profile_launch_progress(
+                &app_handle,
+                profile.id,
+                "keepassxc",
+                "profile.launchProgress.keepassxc",
+                false,
+                None,
+            );
+            ensure_keepassxc_bridge_for_profile(state.inner(), &profile, &profile_root)?;
+        }
         emit_profile_launch_progress(
             &app_handle,
             profile.id,
@@ -701,7 +716,7 @@ pub async fn launch_profile(
             format!("Profile gateway ready on 127.0.0.1:{}", gateway.port),
         );
         let runtime_hardening = assess_profile(&profile).runtime_hardening;
-        if matches!(engine, EngineKind::Camoufox) {
+        if matches!(engine, EngineKind::Librewolf) {
         emit_profile_launch_progress(
             &app_handle,
             profile.id,
@@ -710,7 +725,7 @@ pub async fn launch_profile(
             false,
             None,
         );
-        prepare_camoufox_profile_runtime(
+        prepare_librewolf_profile_runtime(
             &user_data_dir,
             profile.default_start_page.as_deref(),
             profile.default_search_provider.as_deref(),
@@ -721,20 +736,20 @@ pub async fn launch_profile(
         .map_err(|e| e.to_string())?;
         let user_js = user_data_dir.join("user.js");
         eprintln!(
-            "[profile-launch] camoufox preflight user.js_exists={} user.js_path={}",
+            "[profile-launch] librewolf preflight user.js_exists={} user.js_path={}",
             user_js.exists(),
             user_js.display()
         );
         if let Some(existing_pid) = find_profile_process_pid_for_dir(&user_data_dir) {
             if launch_url_requested {
                 eprintln!(
-                    "[profile-launch] camoufox existing process kept for launch_url pid={} profile_dir={}",
+                    "[profile-launch] librewolf existing process kept for launch_url pid={} profile_dir={}",
                     existing_pid,
                     user_data_dir.display()
                 );
             } else {
                 eprintln!(
-                "[profile-launch] camoufox existing profile process detected pid={} profile_dir={}",
+                "[profile-launch] librewolf existing profile process detected pid={} profile_dir={}",
                 existing_pid,
                 user_data_dir.display()
             );
@@ -760,9 +775,9 @@ pub async fn launch_profile(
             None,
         );
         let installation = ensure_engine_ready(&app_handle, &state, &runtime, engine).await?;
-        if matches!(engine, EngineKind::Camoufox) {
-            neutralize_camoufox_builtin_theme(&installation.binary_path).map_err(|e| e.to_string())?;
-            apply_camoufox_website_filter(&state, &profile.id, &installation.binary_path)
+        if matches!(engine, EngineKind::Librewolf) {
+            neutralize_librewolf_builtin_theme(&installation.binary_path).map_err(|e| e.to_string())?;
+            apply_librewolf_website_filter(&state, &profile.id, &installation.binary_path)
                 .map_err(|e| e.to_string())?;
         }
         let start_page = profile
@@ -807,8 +822,8 @@ pub async fn launch_profile(
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string());
-        if pid_result.is_err() && matches!(engine, EngineKind::Wayfern) {
-            clear_wayfern_profile_certificates(&app_handle, profile_id);
+        if pid_result.is_err() && matches!(engine, EngineKind::Librewolf) {
+            clear_librewolf_profile_certificates(&app_handle, profile_id);
         }
         let pid = pid_result?;
         persist_identity_applied_marker(&profile_root, session_engine, identity_policy_hash.as_deref())
@@ -924,7 +939,7 @@ fn wait_for_profile_process_startup(
     ))
 }
 
-fn prepare_camoufox_profile_runtime(
+fn prepare_librewolf_profile_runtime(
     profile_dir: &std::path::Path,
     default_start_page: Option<&str>,
     default_search_provider: Option<&str>,
@@ -1050,7 +1065,7 @@ fn prepare_camoufox_profile_runtime(
         user_js_lines.push(format!("user_pref(\"network.proxy.ssl_port\", {port});"));
         user_js_lines.push("user_pref(\"network.proxy.no_proxies_on\", \"\");".to_string());
     }
-    apply_camoufox_identity_prefs(&mut user_js_lines, identity_preset);
+    apply_librewolf_identity_prefs(&mut user_js_lines, identity_preset);
     let user_js = user_js_lines.join("\n");
     fs::write(profile_dir.join("user.js"), format!("{user_js}\n"))?;
 
@@ -1076,7 +1091,7 @@ fn prepare_camoufox_profile_runtime(
     fs::write(chrome_dir.join("userChrome.css"), user_chrome.trim_start())?;
 
     eprintln!(
-        "[profile-launch] camoufox profile prepared dir={} cleaned=true",
+        "[profile-launch] librewolf profile prepared dir={} cleaned=true",
         profile_dir.display()
     );
     Ok(())
@@ -1091,7 +1106,7 @@ fn load_identity_preset_for_profile(state: &AppState, profile_id: Uuid) -> Optio
         .and_then(|store| store.items.get(&key).cloned())
 }
 
-fn apply_camoufox_identity_prefs(
+fn apply_librewolf_identity_prefs(
     user_js_lines: &mut Vec<String>,
     identity_preset: Option<&IdentityPreset>,
 ) {
@@ -1325,18 +1340,13 @@ fn prepare_profile_wayfern_extensions(
 
     for item in collect_active_profile_extensions(state, profile.id, &profile.tags, Engine::Wayfern)
     {
-        let Some(package_path) = item
-            .package_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(package_path) = extension_package_path_for_engine(&item, Engine::Wayfern) else {
             continue;
         };
         let destination = extensions_root.join(sanitize_extension_dir_name(&item.id));
         fs::create_dir_all(&destination)
             .map_err(|e| format!("create wayfern extension dir: {e}"))?;
-        unpack_extension_archive(Path::new(package_path), &destination)?;
+        unpack_extension_archive(Path::new(&package_path), &destination)?;
     }
     Ok(())
 }
@@ -1429,6 +1439,9 @@ fn is_keepassxc_extension(item: &ExtensionLibraryItem) -> bool {
         || item
             .id
             .eq_ignore_ascii_case("oboonakemofpalcgghocfoadofidjkkk")
+        || item
+            .id
+            .eq_ignore_ascii_case("keepassxc-browser@keepassxc.org")
 }
 
 fn is_system_access_extension(item: &ExtensionLibraryItem) -> bool {
@@ -1442,10 +1455,47 @@ fn is_system_access_extension(item: &ExtensionLibraryItem) -> bool {
 
 fn extension_scope_matches_engine(engine_scope: &str, engine: Engine) -> bool {
     match engine_scope.trim().to_ascii_lowercase().as_str() {
-        "firefox" => matches!(engine, Engine::Camoufox),
+        "firefox" => matches!(engine, Engine::Librewolf),
         "chromium" => matches!(engine, Engine::Wayfern),
         _ => true,
     }
+}
+
+fn extension_package_path_for_engine(item: &ExtensionLibraryItem, engine: Engine) -> Option<String> {
+    extension_variants(item)
+        .into_iter()
+        .find(|variant| extension_scope_matches_engine(&variant.engine_scope, engine.clone()))
+        .and_then(|variant| {
+            variant
+                .package_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            item.package_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn extension_variants(item: &ExtensionLibraryItem) -> Vec<ExtensionPackageVariant> {
+    if !item.package_variants.is_empty() {
+        return item.package_variants.clone();
+    }
+    vec![ExtensionPackageVariant {
+        engine_scope: item.engine_scope.clone(),
+        version: item.version.clone(),
+        source_kind: item.source_kind.clone(),
+        source_value: item.source_value.clone(),
+        logo_url: item.logo_url.clone(),
+        store_url: item.store_url.clone(),
+        package_path: item.package_path.clone(),
+        package_file_name: item.package_file_name.clone(),
+    }]
 }
 
 fn sanitize_extension_dir_name(value: &str) -> String {
@@ -1519,17 +1569,19 @@ fn extract_crx_zip_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(bytes[offset..].to_vec())
 }
 
-fn apply_camoufox_website_filter(
+fn apply_librewolf_website_filter(
     state: &State<'_, AppState>,
     profile_id: &Uuid,
     binary_path: &std::path::Path,
-) -> Result<(), std::io::Error> {
+) -> Result<(), String> {
     let Some(engine_dir) = binary_path.parent() else {
         return Ok(());
     };
     let distribution_dir = engine_dir.join("distribution");
-    fs::create_dir_all(&distribution_dir)?;
-    write_firefox_search_plugin_bundle(&distribution_dir)?;
+    fs::create_dir_all(&distribution_dir)
+        .map_err(|error| format!("create LibreWolf distribution dir: {error}"))?;
+    write_firefox_search_plugin_bundle(&distribution_dir)
+        .map_err(|error| format!("write Firefox search plugin bundle: {error}"))?;
 
     let mut blocked_domains: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
@@ -1575,11 +1627,11 @@ fn apply_camoufox_website_filter(
     let mut extension_install_urls: Vec<String> = Vec::new();
     if let Ok(manager) = state.manager.lock() {
         if let Ok(profile) = manager.get_profile(*profile_id) {
-            cert_paths.extend(resolve_profile_certificate_paths(
-                state,
+            cert_paths.extend(prepare_librewolf_profile_certificates_for_state(
+                state.inner(),
                 *profile_id,
                 &profile.tags,
-            ));
+            )?);
             extension_install_urls.extend(resolve_profile_extension_install_urls(
                 state,
                 *profile_id,
@@ -1611,7 +1663,8 @@ fn apply_camoufox_website_filter(
     fs::write(
         distribution_dir.join("policies.json"),
         serde_json::to_vec_pretty(&policy).unwrap_or_default(),
-    )?;
+    )
+    .map_err(|error| format!("write LibreWolf policies.json: {error}"))?;
     Ok(())
 }
 
@@ -1737,7 +1790,18 @@ fn profile_uses_isolated_certificates(
     tags: &[String],
 ) -> bool {
     if let Some(profile_id) = profile_id {
-        !resolve_profile_certificate_paths(state, profile_id, tags).is_empty()
+        has_global_isolated_certificates(state)
+            || tags_request_isolated_certificates(tags)
+            || load_global_security_record(state)
+                .map(|record| {
+                    record.certificates.into_iter().any(|item| {
+                        item.profile_ids
+                            .iter()
+                            .any(|value| value == &profile_id.to_string())
+                            && !item.path.trim().is_empty()
+                    })
+                })
+                .unwrap_or(false)
     } else {
         tags_request_isolated_certificates(tags) || has_global_isolated_certificates(state)
     }
@@ -1761,7 +1825,7 @@ fn reset_profile_runtime_workspace(state: &State<'_, AppState>, profile_id: Uuid
     if let Ok(mut launched) = state.launched_processes.lock() {
         launched.remove(&profile_id);
     }
-    clear_wayfern_profile_certificates(&state.app_handle, profile_id);
+    clear_librewolf_profile_certificates(&state.app_handle, profile_id);
     let profile_root = state.profile_root.join(profile_id.to_string());
     if !profile_root.exists() {
         return Ok(());
@@ -1803,7 +1867,7 @@ fn purge_profile_related_state(state: &State<'_, AppState>, profile_id: Uuid) ->
     terminate_profile_processes(&user_data_dir);
     let _ = revoke_launch_session(state.inner(), profile_id, None);
     stop_profile_network_stack(&state.app_handle, profile_id);
-    clear_wayfern_profile_certificates(&state.app_handle, profile_id);
+    clear_librewolf_profile_certificates(&state.app_handle, profile_id);
     if let Ok(mut launched) = state.launched_processes.lock() {
         launched.remove(&profile_id);
     }
@@ -1854,45 +1918,12 @@ fn purge_profile_related_state(state: &State<'_, AppState>, profile_id: Uuid) ->
     Ok(())
 }
 
-fn resolve_profile_certificate_paths(
-    state: &State<'_, AppState>,
-    profile_id: Uuid,
-    tags: &[String],
-) -> Vec<String> {
-    let selected_ids = tags
-        .iter()
-        .filter_map(|tag| tag.strip_prefix("cert-id:").map(|v| v.to_string()))
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut paths = std::collections::BTreeSet::new();
-    if let Ok(record) = load_global_security_record(state) {
-        for item in record.certificates {
-            let assigned = item
-                .profile_ids
-                .iter()
-                .any(|value| value == &profile_id.to_string());
-            if !item.path.trim().is_empty()
-                && (item.apply_globally || assigned || selected_ids.contains(&item.id))
-            {
-                paths.insert(item.path.trim().to_string());
-            }
-        }
-    }
-    for tag in tags {
-        if let Some(path) = tag.strip_prefix("cert:") {
-            if path != "global" && !path.trim().is_empty() {
-                paths.insert(path.trim().to_string());
-            }
-        }
-    }
-    paths.into_iter().collect()
-}
-
 fn resolve_profile_extension_install_urls(
     state: &State<'_, AppState>,
     profile_id: Uuid,
     tags: &[String],
 ) -> Vec<String> {
-    collect_active_profile_extensions(state, profile_id, tags, Engine::Camoufox)
+    collect_active_profile_extensions(state, profile_id, tags, Engine::Librewolf)
         .into_iter()
         .filter_map(|item| {
             item.package_path
@@ -1921,7 +1952,7 @@ fn global_startup_page(state: &State<'_, AppState>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn neutralize_camoufox_builtin_theme(binary_path: &std::path::Path) -> Result<(), std::io::Error> {
+fn neutralize_librewolf_builtin_theme(binary_path: &std::path::Path) -> Result<(), std::io::Error> {
     let Some(engine_dir) = binary_path.parent() else {
         return Ok(());
     };
@@ -1945,7 +1976,7 @@ fn neutralize_camoufox_builtin_theme(binary_path: &std::path::Path) -> Result<()
         "/* launcher-neutralized: restore default Firefox chrome UI */\n",
     )?;
     eprintln!(
-        "[profile-launch] camoufox builtin chrome.css neutralized path={}",
+        "[profile-launch] librewolf builtin chrome.css neutralized path={}",
         chrome_css.display()
     );
     Ok(())
@@ -1986,7 +2017,7 @@ pub fn stop_profile(
     close_panic_frame(&state.app_handle, profile_id);
     revoke_launch_session(&state, profile_id, tracked_pid)?;
     stop_profile_network_stack(&state.app_handle, profile_id);
-    clear_wayfern_profile_certificates(&state.app_handle, profile_id);
+    clear_librewolf_profile_certificates(&state.app_handle, profile_id);
     clear_profile_process(
         &state.app_handle,
         profile_id,
@@ -2097,7 +2128,7 @@ pub async fn ensure_engine_binaries(
     let runtime =
         EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
     let mut ready = Vec::new();
-    for engine in [EngineKind::Wayfern, EngineKind::Camoufox] {
+    for engine in [EngineKind::Wayfern, EngineKind::Librewolf] {
         let installation = ensure_engine_ready(&app_handle, &state, &runtime, engine).await?;
         ready.push(format!(
             "{} {}",
@@ -2359,7 +2390,7 @@ pub fn import_profile(
 fn parse_engine(engine: &str) -> Result<Engine, String> {
     match engine {
         "wayfern" => Ok(Engine::Wayfern),
-        "camoufox" => Ok(Engine::Camoufox),
+        "librewolf" => Ok(Engine::Librewolf),
         _ => Err(format!("unsupported engine: {engine}")),
     }
 }
@@ -2367,14 +2398,14 @@ fn parse_engine(engine: &str) -> Result<Engine, String> {
 fn engine_session_key(engine: &Engine) -> &'static str {
     match engine {
         Engine::Wayfern => "wayfern",
-        Engine::Camoufox => "camoufox",
+        Engine::Librewolf => "librewolf",
     }
 }
 
 fn engine_kind(engine: Engine) -> EngineKind {
     match engine {
         Engine::Wayfern => EngineKind::Wayfern,
-        Engine::Camoufox => EngineKind::Camoufox,
+        Engine::Librewolf => EngineKind::Librewolf,
     }
 }
 
@@ -2667,7 +2698,7 @@ fn copy_engine_cookies(
                 | copy_cookie_path(source_root, target_root, "Default\\Cookies")?
                 | copy_cookie_path(source_root, target_root, "Default\\Cookies-journal")?
         }
-        Engine::Camoufox => {
+        Engine::Librewolf => {
             copy_cookie_path(source_root, target_root, "cookies.sqlite")?
                 | copy_cookie_path(source_root, target_root, "cookies.sqlite-wal")?
                 | copy_cookie_path(source_root, target_root, "cookies.sqlite-shm")?
@@ -2816,7 +2847,7 @@ mod tests {
     use super::{
         build_firefox_search_plugin_xml, extension_allowed_for_launch,
         firefox_search_engine_policy_entries, locked_app_policy_for_profile,
-        normalize_start_page_url, prepare_camoufox_profile_runtime,
+        normalize_start_page_url, prepare_librewolf_profile_runtime,
     };
     use browser_fingerprint::IdentityPreset;
     use crate::state::ExtensionLibraryItem;
@@ -2828,13 +2859,13 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn camoufox_profile_runtime_applies_homepage_and_search_provider() {
+    fn librewolf_profile_runtime_applies_homepage_and_search_provider() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time before epoch")
             .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("cerbena-camoufox-profile-{unique}"));
-        prepare_camoufox_profile_runtime(
+        let temp_dir = std::env::temp_dir().join(format!("cerbena-librewolf-profile-{unique}"));
+        prepare_librewolf_profile_runtime(
             &temp_dir,
             Some("https://duckduckgo.com"),
             Some("startpage"),
@@ -2842,7 +2873,7 @@ mod tests {
             false,
             None,
         )
-        .expect("prepare camoufox profile runtime");
+        .expect("prepare librewolf profile runtime");
 
         let user_js = fs::read_to_string(temp_dir.join("user.js")).expect("read user.js");
         assert!(user_js.contains("browser.startup.homepage\", \"https://duckduckgo.com\""));
@@ -2855,13 +2886,13 @@ mod tests {
     }
 
     #[test]
-    fn camoufox_profile_runtime_applies_hardening_when_requested() {
+    fn librewolf_profile_runtime_applies_hardening_when_requested() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time before epoch")
             .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("cerbena-camoufox-hardened-{unique}"));
-        prepare_camoufox_profile_runtime(
+        let temp_dir = std::env::temp_dir().join(format!("cerbena-librewolf-hardened-{unique}"));
+        prepare_librewolf_profile_runtime(
             &temp_dir,
             Some("https://duckduckgo.com"),
             Some("duckduckgo"),
@@ -2869,7 +2900,7 @@ mod tests {
             true,
             None,
         )
-        .expect("prepare camoufox hardened runtime");
+        .expect("prepare librewolf hardened runtime");
 
         let user_js = fs::read_to_string(temp_dir.join("user.js")).expect("read user.js");
         assert!(user_js.contains("signon.rememberSignons\", false"));
@@ -2893,12 +2924,12 @@ mod tests {
     }
 
     #[test]
-    fn camoufox_profile_runtime_applies_identity_locale_and_user_agent() {
+    fn librewolf_profile_runtime_applies_identity_locale_and_user_agent() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time before epoch")
             .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("cerbena-camoufox-identity-{unique}"));
+        let temp_dir = std::env::temp_dir().join(format!("cerbena-librewolf-identity-{unique}"));
         let identity = IdentityPreset {
             mode: browser_fingerprint::IdentityPresetMode::Manual,
             auto_platform: None,
@@ -2963,7 +2994,7 @@ mod tests {
                 level: 1.0,
             },
         };
-        prepare_camoufox_profile_runtime(
+        prepare_librewolf_profile_runtime(
             &temp_dir,
             Some("https://duckduckgo.com"),
             Some("duckduckgo"),
@@ -2971,7 +3002,7 @@ mod tests {
             false,
             Some(&identity),
         )
-        .expect("prepare camoufox identity runtime");
+        .expect("prepare librewolf identity runtime");
 
         let user_js = fs::read_to_string(temp_dir.join("user.js")).expect("read user.js");
         assert!(user_js.contains("general.useragent.override"));
@@ -2984,12 +3015,12 @@ mod tests {
     }
 
     #[test]
-    fn camoufox_real_mode_keeps_native_user_agent() {
+    fn librewolf_real_mode_keeps_native_user_agent() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time before epoch")
             .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("cerbena-camoufox-real-{unique}"));
+        let temp_dir = std::env::temp_dir().join(format!("cerbena-librewolf-real-{unique}"));
         let identity = IdentityPreset {
             mode: browser_fingerprint::IdentityPresetMode::Real,
             auto_platform: None,
@@ -3054,7 +3085,7 @@ mod tests {
                 level: 1.0,
             },
         };
-        prepare_camoufox_profile_runtime(
+        prepare_librewolf_profile_runtime(
             &temp_dir,
             Some("https://duckduckgo.com"),
             Some("duckduckgo"),
@@ -3062,7 +3093,7 @@ mod tests {
             false,
             Some(&identity),
         )
-        .expect("prepare camoufox identity runtime");
+        .expect("prepare librewolf identity runtime");
 
         let user_js = fs::read_to_string(temp_dir.join("user.js")).expect("read user.js");
         assert!(!user_js.contains("general.useragent.override"));
@@ -3160,6 +3191,7 @@ mod tests {
             protect_data_from_panic_wipe: false,
             package_path: None,
             package_file_name: None,
+            package_variants: Vec::new(),
         }
     }
 

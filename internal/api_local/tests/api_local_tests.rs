@@ -31,7 +31,7 @@ fn local_api_enforces_profile_scope_grants() {
             name: "P2".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Camoufox,
+            engine: Engine::Librewolf,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,

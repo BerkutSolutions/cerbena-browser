@@ -2,7 +2,7 @@ use std::{fs, sync::Mutex};
 
 use browser_engine::{
     contract::{EngineAdapter, LaunchRequest},
-    CamoufoxAdapter, WayfernAdapter,
+    LibrewolfAdapter, WayfernAdapter,
 };
 use browser_fingerprint::{
     generate_auto_preset, validate_consistency, validate_identity_preset, AutoPlatform,
@@ -109,9 +109,9 @@ fn firefox_profile_creation_and_fingerprint_values_are_applied() {
     let profile = manager
         .create_profile(CreateProfileInput {
             name: "Firefox Profile".to_string(),
-            description: Some("Camoufox firefox test".to_string()),
+            description: Some("LibreWolf firefox test".to_string()),
             tags: vec!["firefox".to_string(), "e2e".to_string()],
-            engine: Engine::Camoufox,
+            engine: Engine::Librewolf,
             default_start_page: Some("https://mozilla.org".to_string()),
             default_search_provider: Some("startpage".to_string()),
             ephemeral_mode: false,
@@ -157,14 +157,14 @@ fn firefox_profile_creation_and_fingerprint_values_are_applied() {
     assert_eq!(preset.core.brand, "Firefox");
     assert_eq!(preset.locale.timezone_iana, "America/New_York");
 
-    let adapter = CamoufoxAdapter {
+    let adapter = LibrewolfAdapter {
         install_root: tmp.path().join("install"),
         cache_dir: tmp.path().join("cache"),
     };
     let req = LaunchRequest {
         profile_id: profile.id,
         profile_root: tmp.path().join(profile.id.to_string()),
-        binary_path: tmp.path().join("bin").join("camoufox.exe"),
+        binary_path: tmp.path().join("bin").join("librewolf.exe"),
         args: vec![
             format!("--user-agent={}", preset.core.user_agent),
             format!("--lang={}", preset.locale.navigator_language),

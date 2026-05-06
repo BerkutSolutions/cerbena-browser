@@ -450,7 +450,7 @@ mod tests {
         .expect("write marker");
 
         let trusted =
-            validate_record(&record, record.pid, "camoufox", &root, &workspace).expect("validate");
+            validate_record(&record, record.pid, "librewolf", &root, &workspace).expect("validate");
         assert!(!trusted);
         let _ = fs::remove_dir_all(root);
     }

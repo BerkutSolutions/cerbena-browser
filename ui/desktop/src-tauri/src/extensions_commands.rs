@@ -2,6 +2,7 @@ use crate::{
     envelope::{ok, UiEnvelope},
     state::{
         persist_extension_library_store, AppState, ExtensionLibraryItem, ExtensionLibraryStore,
+        ExtensionPackageVariant,
     },
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -81,6 +82,7 @@ pub struct SetExtensionProfilesRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RemoveExtensionRequest {
     pub extension_id: String,
+    pub variant_engine_scope: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +128,21 @@ struct ExtensionLibraryTransferItem {
     preserve_on_panic_wipe: bool,
     #[serde(default)]
     protect_data_from_panic_wipe: bool,
+    package_file_name: Option<String>,
+    package_relative_path: Option<String>,
+    #[serde(default)]
+    variants: Vec<ExtensionLibraryTransferVariant>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionLibraryTransferVariant {
+    engine_scope: String,
+    version: String,
+    source_kind: String,
+    source_value: String,
+    logo_url: Option<String>,
+    store_url: Option<String>,
     package_file_name: Option<String>,
     package_relative_path: Option<String>,
 }
@@ -177,6 +194,10 @@ pub fn list_extensions(
         .values()
         .filter(|item| item.assigned_profile_ids.iter().any(|id| id == &profile_id))
         .cloned()
+        .map(|mut item| {
+            sync_extension_item_legacy_fields(&mut item);
+            item
+        })
         .collect::<Vec<_>>();
     let json = serde_json::to_string_pretty(&ProfileExtensionList {
         profile_id,
@@ -195,7 +216,11 @@ pub fn list_extension_library(
         .extension_library
         .lock()
         .map_err(|_| "extension library lock poisoned".to_string())?;
-    let json = serde_json::to_string_pretty(&*library).map_err(|e| e.to_string())?;
+    let mut normalized = library.clone();
+    for item in normalized.items.values_mut() {
+        sync_extension_item_legacy_fields(item);
+    }
+    let json = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
     Ok(ok(correlation_id, json))
 }
 
@@ -263,6 +288,7 @@ pub fn update_extension_library_item(
     if let Some(protect_data_from_panic_wipe) = request.protect_data_from_panic_wipe {
         item.protect_data_from_panic_wipe = protect_data_from_panic_wipe;
     }
+    sync_extension_item_legacy_fields(item);
     persist_library(&state, &library)?;
     Ok(ok(correlation_id, true))
 }
@@ -350,10 +376,59 @@ pub fn remove_extension_library_item(
         .extension_library
         .lock()
         .map_err(|_| "extension library lock poisoned".to_string())?;
-    let removed = library.items.remove(&request.extension_id);
+    let removed = if let Some(variant_engine_scope) = request
+        .variant_engine_scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let normalized_scope = normalize_engine_scope(variant_engine_scope);
+        let mut remove_item = false;
+        let removed_variant_path;
+        {
+            let item = library
+                .items
+                .get_mut(&request.extension_id)
+                .ok_or_else(|| "extension not found".to_string())?;
+            let mut variants = normalized_extension_variants(item);
+            let before = variants.len();
+            let mut removed_variant = None;
+            variants.retain(|variant| {
+                let matches = normalize_engine_scope(&variant.engine_scope) == normalized_scope;
+                if matches && removed_variant.is_none() {
+                    removed_variant = Some(variant.clone());
+                }
+                !matches
+            });
+            if before == variants.len() {
+                return Err("extension variant not found".to_string());
+            }
+            removed_variant_path = removed_variant.and_then(|variant| variant.package_path);
+            if variants.is_empty() {
+                remove_item = true;
+            } else {
+                item.package_variants = variants;
+                sync_extension_item_legacy_fields(item);
+            }
+        }
+        if remove_item {
+            let removed = library.items.remove(&request.extension_id);
+            if removed.is_none() {
+                delete_extension_package(removed_variant_path.as_deref());
+            }
+            removed
+        } else {
+            delete_extension_package(removed_variant_path.as_deref());
+            None
+        }
+    } else {
+        library.items.remove(&request.extension_id)
+    };
     persist_library(&state, &library)?;
     if let Some(item) = removed {
-        delete_extension_package(item.package_path.as_deref());
+        for variant in normalized_extension_variants(&item) {
+            delete_extension_package(variant.package_path.as_deref());
+        }
     }
     Ok(ok(correlation_id, true))
 }
@@ -451,9 +526,14 @@ fn import_extension_library_item_impl(
         .logo_url
         .clone()
         .filter(|value| !value.trim().is_empty());
-    let normalized_tags = normalize_tags(request.tags.unwrap_or_default());
+    let normalized_tags = normalize_tags(request.tags.clone().unwrap_or_default());
     let is_single_import = package_metadata_batch.len() == 1;
     let mut imported_ids = Vec::new();
+    let normalized_store_url = normalized_store_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let logo_url_override = logo_url_override.as_deref().map(str::trim).filter(|value| !value.is_empty());
 
     for package_metadata in package_metadata_batch {
         let seed = display_name_override
@@ -463,52 +543,102 @@ fn import_extension_library_item_impl(
             .or(package_metadata.display_name.as_deref())
             .or(normalized_store_url.as_deref())
             .unwrap_or(&request.source_value);
-        let id = build_extension_id(seed, &library);
         let inferred_name = display_name_override
             .clone()
             .filter(|_| is_single_import)
-            .or(package_metadata.display_name)
+            .or(package_metadata.display_name.clone())
             .unwrap_or_else(|| {
-                infer_extension_name(normalized_store_url.as_deref(), &request.source_value)
+                infer_extension_name(normalized_store_url, &request.source_value)
             });
         let inferred_engine = engine_scope_override
             .clone()
-            .or(package_metadata.engine_scope)
+            .or(package_metadata.engine_scope.clone())
             .unwrap_or_else(|| {
-                infer_engine_scope(normalized_store_url.as_deref(), &request.source_value)
+                infer_engine_scope(normalized_store_url, &request.source_value)
             });
         validate_assigned_profiles(state, &inferred_engine, &request.assigned_profile_ids)?;
+        let merge_target_id =
+            find_merge_target_extension_id(&library, &inferred_name, &inferred_engine);
+        let persist_id = merge_target_id
+            .clone()
+            .unwrap_or_else(|| build_extension_id(seed, &library));
         let (package_path, package_file_name) = persist_extension_package(
             state,
-            &id,
+            &persist_id,
             package_metadata.package_bytes.as_deref(),
             package_metadata.package_extension.as_deref(),
             package_metadata.package_file_name.as_deref(),
         )?;
-        let item = ExtensionLibraryItem {
+        let version = version_override
+            .clone()
+            .filter(|_| is_single_import)
+            .or(package_metadata.version.clone())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        let variant = build_package_variant(
+            &request,
+            &package_metadata,
+            &inferred_engine,
+            &version,
+            package_path,
+            package_file_name,
+            normalized_store_url,
+            logo_url_override,
+        );
+        if let Some(existing_id) = merge_target_id {
+            let item = library
+                .items
+                .get_mut(&existing_id)
+                .ok_or_else(|| "extension not found during merge".to_string())?;
+            if !display_name_override.as_deref().unwrap_or("").trim().is_empty() || item.display_name.trim().is_empty() {
+                item.display_name = inferred_name.clone();
+            }
+            item.tags = normalize_tags([item.tags.clone(), normalized_tags.clone()].concat());
+            item.assigned_profile_ids = {
+                let mut merged = item.assigned_profile_ids.clone();
+                merged.extend(request.assigned_profile_ids.clone());
+                merged.sort();
+                merged.dedup();
+                merged
+            };
+            item.auto_update_enabled = request.auto_update_enabled.unwrap_or(item.auto_update_enabled);
+            item.preserve_on_panic_wipe =
+                request.preserve_on_panic_wipe.unwrap_or(item.preserve_on_panic_wipe);
+            item.protect_data_from_panic_wipe =
+                request.protect_data_from_panic_wipe.unwrap_or(item.protect_data_from_panic_wipe);
+            let mut variants = normalized_extension_variants(item);
+            variants.retain(|existing| {
+                normalize_engine_scope(&existing.engine_scope)
+                    != normalize_engine_scope(&variant.engine_scope)
+            });
+            variants.push(variant);
+            item.package_variants = variants;
+            sync_extension_item_legacy_fields(item);
+            imported_ids.push(existing_id);
+            continue;
+        }
+
+        let id = persist_id;
+        let mut item = ExtensionLibraryItem {
             id: id.clone(),
             display_name: inferred_name,
-            version: version_override
-                .clone()
-                .filter(|_| is_single_import)
-                .or(package_metadata.version)
-                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+            version,
             engine_scope: inferred_engine,
             source_kind: request.source_kind.clone(),
             source_value: request.source_value.clone(),
             logo_url: logo_url_override
-                .clone()
-                .filter(|_| is_single_import)
+                .map(str::to_string)
                 .or(package_metadata.logo_url),
-            store_url: normalized_store_url.clone(),
+            store_url: normalized_store_url.map(str::to_string),
             tags: normalized_tags.clone(),
             assigned_profile_ids: request.assigned_profile_ids.clone(),
             auto_update_enabled: request.auto_update_enabled.unwrap_or(false),
             preserve_on_panic_wipe: request.preserve_on_panic_wipe.unwrap_or(false),
             protect_data_from_panic_wipe: request.protect_data_from_panic_wipe.unwrap_or(false),
-            package_path,
-            package_file_name,
+            package_path: None,
+            package_file_name: None,
+            package_variants: vec![variant],
         };
+        sync_extension_item_legacy_fields(&mut item);
         library.items.insert(id.clone(), item);
         imported_ids.push(id);
     }
@@ -644,18 +774,35 @@ fn export_extension_links_file(
             .items
             .values()
             .filter_map(|item| {
-                let linkable = item
-                    .store_url
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|value| !value.is_empty())
-                    || item.source_value.trim().starts_with("http://")
-                    || item.source_value.trim().starts_with("https://");
+                let linkable = normalized_extension_variants(item).iter().any(|variant| {
+                    variant
+                        .store_url
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|value| !value.is_empty())
+                        || variant.source_value.trim().starts_with("http://")
+                        || variant.source_value.trim().starts_with("https://")
+                });
                 if !linkable {
                     skipped += 1;
                     return None;
                 }
-                Some(transfer_item_from_library_item(item.clone(), None))
+                Some(transfer_item_from_library_item(
+                    item.clone(),
+                    normalized_extension_variants(item)
+                        .into_iter()
+                        .map(|variant| ExtensionLibraryTransferVariant {
+                            engine_scope: variant.engine_scope,
+                            version: variant.version,
+                            source_kind: variant.source_kind,
+                            source_value: variant.source_value,
+                            logo_url: variant.logo_url,
+                            store_url: variant.store_url,
+                            package_file_name: variant.package_file_name,
+                            package_relative_path: None,
+                        })
+                        .collect(),
+                ))
             })
             .collect(),
     };
@@ -691,42 +838,61 @@ fn export_extension_archive_folder(
     let mut manifest_items = Vec::new();
 
     for item in library.items.values() {
-        let package_relative_path = item.package_path.as_deref().and_then(|package_path| {
-            let source_path = PathBuf::from(package_path);
-            if !source_path.is_file() {
-                errors.push(format!("{}: package file is missing", item.display_name));
-                return None;
-            }
-            let file_name = item
-                .package_file_name
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| {
-                    source_path
-                        .file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("extension.zip")
-                        .to_string()
+        let variant_transfers = normalized_extension_variants(item)
+            .into_iter()
+            .map(|variant| {
+                let package_relative_path = variant.package_path.as_deref().and_then(|package_path| {
+                    let source_path = PathBuf::from(package_path);
+                    if !source_path.is_file() {
+                        errors.push(format!("{}: package file is missing", item.display_name));
+                        return None;
+                    }
+                    let file_name = variant
+                        .package_file_name
+                        .clone()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| {
+                            source_path
+                                .file_name()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or("extension.zip")
+                                .to_string()
+                        });
+                    let safe_name = sanitize_file_name(&file_name);
+                    let unique_name = unique_archive_file_name(
+                        &packages_dir,
+                        &format!("{}-{}", item.id, normalize_engine_scope(&variant.engine_scope)),
+                        &safe_name,
+                    );
+                    let dest_path = packages_dir.join(&unique_name);
+                    match fs::copy(&source_path, &dest_path) {
+                        Ok(_) => Some(format!(
+                            "{EXTENSION_ARCHIVE_PACKAGES_DIR_NAME}/{unique_name}"
+                        )),
+                        Err(error) => {
+                            errors.push(format!(
+                                "{}: copy package failed: {error}",
+                                item.display_name
+                            ));
+                            None
+                        }
+                    }
                 });
-            let safe_name = sanitize_file_name(&file_name);
-            let unique_name = unique_archive_file_name(&packages_dir, &item.id, &safe_name);
-            let dest_path = packages_dir.join(&unique_name);
-            match fs::copy(&source_path, &dest_path) {
-                Ok(_) => Some(format!(
-                    "{EXTENSION_ARCHIVE_PACKAGES_DIR_NAME}/{unique_name}"
-                )),
-                Err(error) => {
-                    errors.push(format!(
-                        "{}: copy package failed: {error}",
-                        item.display_name
-                    ));
-                    None
+                ExtensionLibraryTransferVariant {
+                    engine_scope: normalize_engine_scope(&variant.engine_scope),
+                    version: variant.version,
+                    source_kind: variant.source_kind,
+                    source_value: variant.source_value,
+                    logo_url: variant.logo_url,
+                    store_url: variant.store_url,
+                    package_file_name: variant.package_file_name,
+                    package_relative_path,
                 }
-            }
-        });
+            })
+            .collect::<Vec<_>>();
         manifest_items.push(transfer_item_from_library_item(
             item.clone(),
-            package_relative_path,
+            variant_transfers,
         ));
     }
 
@@ -793,21 +959,23 @@ fn import_transfer_manifest(
     let mut errors = Vec::new();
 
     for item in &manifest.items {
-        let import_request = match build_import_request_from_transfer_item(item, base_dir, mode) {
-            Ok(Some(request)) => request,
-            Ok(None) => {
+        let import_requests = match build_import_requests_from_transfer_item(item, base_dir, mode) {
+            Ok(requests) if requests.is_empty() => {
                 skipped += 1;
                 continue;
             }
+            Ok(requests) => requests,
             Err(error) => {
                 errors.push(format!("{}: {error}", item.display_name));
                 skipped += 1;
                 continue;
             }
         };
-        match import_extension_library_item_impl(state, import_request) {
-            Ok(ids) => imported += ids.len(),
-            Err(error) => errors.push(format!("{}: {error}", item.display_name)),
+        for import_request in import_requests {
+            match import_extension_library_item_impl(state, import_request) {
+                Ok(ids) => imported += ids.len(),
+                Err(error) => errors.push(format!("{}: {error}", item.display_name)),
+            }
         }
     }
 
@@ -826,7 +994,7 @@ fn import_transfer_manifest(
 
 fn transfer_item_from_library_item(
     item: ExtensionLibraryItem,
-    package_relative_path: Option<String>,
+    variants: Vec<ExtensionLibraryTransferVariant>,
 ) -> ExtensionLibraryTransferItem {
     ExtensionLibraryTransferItem {
         display_name: item.display_name,
@@ -841,71 +1009,95 @@ fn transfer_item_from_library_item(
         preserve_on_panic_wipe: item.preserve_on_panic_wipe,
         protect_data_from_panic_wipe: item.protect_data_from_panic_wipe,
         package_file_name: item.package_file_name,
-        package_relative_path,
+        package_relative_path: variants
+            .first()
+            .and_then(|variant| variant.package_relative_path.clone()),
+        variants,
     }
 }
 
-fn build_import_request_from_transfer_item(
+fn build_import_requests_from_transfer_item(
     item: &ExtensionLibraryTransferItem,
     base_dir: &Path,
     mode: TransferMode,
-) -> Result<Option<ImportExtensionLibraryRequest>, String> {
-    let package_bytes_base64 = match mode {
-        TransferMode::Archive => match item.package_relative_path.as_deref() {
-            Some(relative_path) => {
-                let package_path = base_dir.join(relative_path.replace('/', "\\"));
-                if !package_path.is_file() {
-                    None
-                } else {
-                    let bytes = fs::read(&package_path)
-                        .map_err(|e| format!("read package {}: {e}", package_path.display()))?;
-                    Some(BASE64_STANDARD.encode(bytes))
+) -> Result<Vec<ImportExtensionLibraryRequest>, String> {
+    let variants = if item.variants.is_empty() {
+        vec![ExtensionLibraryTransferVariant {
+            engine_scope: item.engine_scope.clone(),
+            version: item.version.clone(),
+            source_kind: item.source_kind.clone(),
+            source_value: item.source_value.clone(),
+            logo_url: item.logo_url.clone(),
+            store_url: item.store_url.clone(),
+            package_file_name: item.package_file_name.clone(),
+            package_relative_path: item.package_relative_path.clone(),
+        }]
+    } else {
+        item.variants.clone()
+    };
+
+    let mut requests = Vec::new();
+    for variant in variants {
+        let package_bytes_base64 = match mode {
+            TransferMode::Archive => match variant.package_relative_path.as_deref() {
+                Some(relative_path) => {
+                    let package_path = base_dir.join(relative_path.replace('/', "\\"));
+                    if !package_path.is_file() {
+                        None
+                    } else {
+                        let bytes = fs::read(&package_path)
+                            .map_err(|e| format!("read package {}: {e}", package_path.display()))?;
+                        Some(BASE64_STANDARD.encode(bytes))
+                    }
                 }
-            }
-            None => None,
-        },
-        TransferMode::File => None,
-    };
+                None => None,
+            },
+            TransferMode::File => None,
+        };
 
-    let source_kind = if package_bytes_base64.is_some() {
-        "local_file".to_string()
-    } else {
-        item.source_kind.clone()
-    };
-    let source_value = if package_bytes_base64.is_some() {
-        item.package_file_name
+        let source_kind = if package_bytes_base64.is_some() {
+            "local_file".to_string()
+        } else {
+            variant.source_kind.clone()
+        };
+        let source_value = if package_bytes_base64.is_some() {
+            variant
+                .package_file_name
+                .clone()
+                .unwrap_or_else(|| item.display_name.clone())
+        } else if let Some(store_url) = variant
+            .store_url
             .clone()
-            .unwrap_or_else(|| item.display_name.clone())
-    } else if let Some(store_url) = item
-        .store_url
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-    {
-        store_url
-    } else if item.source_value.trim().starts_with("http://")
-        || item.source_value.trim().starts_with("https://")
-    {
-        item.source_value.clone()
-    } else {
-        return Ok(None);
-    };
+            .filter(|value| !value.trim().is_empty())
+        {
+            store_url
+        } else if variant.source_value.trim().starts_with("http://")
+            || variant.source_value.trim().starts_with("https://")
+        {
+            variant.source_value.clone()
+        } else {
+            continue;
+        };
 
-    Ok(Some(ImportExtensionLibraryRequest {
-        source_kind,
-        source_value: source_value.clone(),
-        store_url: item.store_url.clone(),
-        display_name: Some(item.display_name.clone()),
-        version: Some(item.version.clone()),
-        logo_url: item.logo_url.clone(),
-        engine_scope: Some(item.engine_scope.clone()),
-        tags: Some(item.tags.clone()),
-        assigned_profile_ids: Vec::new(),
-        auto_update_enabled: Some(item.auto_update_enabled),
-        preserve_on_panic_wipe: Some(item.preserve_on_panic_wipe),
-        protect_data_from_panic_wipe: Some(item.protect_data_from_panic_wipe),
-        package_file_name: item.package_file_name.clone(),
-        package_bytes_base64,
-    }))
+        requests.push(ImportExtensionLibraryRequest {
+            source_kind,
+            source_value: source_value.clone(),
+            store_url: variant.store_url.clone(),
+            display_name: Some(item.display_name.clone()),
+            version: Some(variant.version.clone()),
+            logo_url: variant.logo_url.clone().or_else(|| item.logo_url.clone()),
+            engine_scope: Some(variant.engine_scope.clone()),
+            tags: Some(item.tags.clone()),
+            assigned_profile_ids: Vec::new(),
+            auto_update_enabled: Some(item.auto_update_enabled),
+            preserve_on_panic_wipe: Some(item.preserve_on_panic_wipe),
+            protect_data_from_panic_wipe: Some(item.protect_data_from_panic_wipe),
+            package_file_name: variant.package_file_name.clone(),
+            package_bytes_base64,
+        });
+    }
+
+    Ok(requests)
 }
 
 fn sanitize_file_name(value: &str) -> String {
@@ -1050,21 +1242,48 @@ fn refresh_extension_library_item(state: &AppState, extension_id: &str) -> Resul
             .cloned()
             .ok_or_else(|| "extension not found".to_string())?
     };
-
-    let store_url = item_snapshot
-        .store_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "store URL is not configured".to_string())?;
-    let metadata = download_store_extension_metadata(store_url)?;
-    let (package_path, package_file_name) = persist_extension_package(
-        state,
-        &item_snapshot.id,
-        metadata.package_bytes.as_deref(),
-        metadata.package_extension.as_deref(),
-        metadata.package_file_name.as_deref(),
-    )?;
+    let mut refreshed_variants = Vec::new();
+    let mut refreshed_any = false;
+    for variant in normalized_extension_variants(&item_snapshot) {
+        let store_url = variant
+            .store_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(store_url) = store_url {
+            let metadata = download_store_extension_metadata(store_url)?;
+            let (package_path, package_file_name) = persist_extension_package(
+                state,
+                &item_snapshot.id,
+                metadata.package_bytes.as_deref(),
+                metadata.package_extension.as_deref(),
+                metadata.package_file_name.as_deref(),
+            )?;
+            let engine_scope = metadata
+                .engine_scope
+                .clone()
+                .unwrap_or_else(|| variant.engine_scope.clone());
+            refreshed_variants.push(ExtensionPackageVariant {
+                engine_scope,
+                version: metadata
+                    .version
+                    .clone()
+                    .unwrap_or_else(|| variant.version.clone()),
+                source_kind: variant.source_kind.clone(),
+                source_value: variant.source_value.clone(),
+                logo_url: metadata.logo_url.clone().or_else(|| variant.logo_url.clone()),
+                store_url: Some(store_url.to_string()),
+                package_path: package_path.or_else(|| variant.package_path.clone()),
+                package_file_name: package_file_name.or_else(|| variant.package_file_name.clone()),
+            });
+            refreshed_any = true;
+        } else {
+            refreshed_variants.push(variant);
+        }
+    }
+    if !refreshed_any {
+        return Err("store URL is not configured".to_string());
+    }
 
     let mut library = state
         .extension_library
@@ -1076,47 +1295,14 @@ fn refresh_extension_library_item(state: &AppState, extension_id: &str) -> Resul
         .ok_or_else(|| "extension not found".to_string())?;
 
     let mut changed = false;
-    if let Some(display_name) = metadata
-        .display_name
-        .filter(|value| !value.trim().is_empty())
-    {
-        if item.display_name != display_name {
-            item.display_name = display_name;
-            changed = true;
-        }
+    if normalized_extension_variants(item) != refreshed_variants {
+        item.package_variants = refreshed_variants;
+        changed = true;
     }
-    if let Some(version) = metadata.version.filter(|value| !value.trim().is_empty()) {
-        if item.version != version {
-            item.version = version;
-            changed = true;
-        }
-    }
-    if let Some(engine_scope) = metadata
-        .engine_scope
-        .filter(|value| !value.trim().is_empty())
-    {
-        if item.engine_scope != engine_scope {
-            item.engine_scope = engine_scope;
-            changed = true;
-        }
-    }
-    if let Some(logo_url) = metadata.logo_url.filter(|value| !value.trim().is_empty()) {
-        if item.logo_url.as_deref() != Some(logo_url.as_str()) {
-            item.logo_url = Some(logo_url);
-            changed = true;
-        }
-    }
-    if let Some(package_path) = package_path {
-        if item.package_path.as_deref() != Some(package_path.as_str()) {
-            item.package_path = Some(package_path);
-            changed = true;
-        }
-    }
-    if let Some(package_file_name) = package_file_name {
-        if item.package_file_name.as_deref() != Some(package_file_name.as_str()) {
-            item.package_file_name = Some(package_file_name);
-            changed = true;
-        }
+    let before_display_name = item.display_name.clone();
+    sync_extension_item_legacy_fields(item);
+    if item.display_name != before_display_name {
+        item.display_name = before_display_name;
     }
 
     if changed {
@@ -1188,6 +1374,218 @@ struct DerivedExtensionMetadata {
     package_file_name: Option<String>,
 }
 
+fn normalized_extension_variants(item: &ExtensionLibraryItem) -> Vec<ExtensionPackageVariant> {
+    let mut variants = item
+        .package_variants
+        .iter()
+        .filter_map(|variant| {
+            let engine_scope = normalize_engine_scope(&variant.engine_scope);
+            let version = variant.version.trim().to_string();
+            if engine_scope.is_empty() || version.is_empty() {
+                return None;
+            }
+            Some(ExtensionPackageVariant {
+                engine_scope,
+                version,
+                source_kind: variant.source_kind.trim().to_string(),
+                source_value: variant.source_value.trim().to_string(),
+                logo_url: variant
+                    .logo_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                store_url: variant
+                    .store_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                package_path: variant
+                    .package_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                package_file_name: variant
+                    .package_file_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if variants.is_empty() {
+        variants.push(ExtensionPackageVariant {
+            engine_scope: normalize_engine_scope(&item.engine_scope),
+            version: item.version.trim().to_string(),
+            source_kind: item.source_kind.trim().to_string(),
+            source_value: item.source_value.trim().to_string(),
+            logo_url: item
+                .logo_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            store_url: item
+                .store_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            package_path: item
+                .package_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            package_file_name: item
+                .package_file_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        });
+    }
+
+    variants.sort_by(|left, right| left.engine_scope.cmp(&right.engine_scope));
+    variants.dedup_by(|left, right| left.engine_scope == right.engine_scope);
+    variants
+}
+
+fn package_variant_for_engine(
+    item: &ExtensionLibraryItem,
+    engine_scope: &str,
+) -> Option<ExtensionPackageVariant> {
+    let expected = normalize_engine_scope(engine_scope);
+    normalized_extension_variants(item)
+        .into_iter()
+        .find(|variant| normalize_engine_scope(&variant.engine_scope) == expected)
+}
+
+fn primary_extension_variant(item: &ExtensionLibraryItem) -> Option<ExtensionPackageVariant> {
+    let variants = normalized_extension_variants(item);
+    if variants.is_empty() {
+        return None;
+    }
+    variants
+        .iter()
+        .find(|variant| normalize_engine_scope(&variant.engine_scope) == "chromium/firefox")
+        .cloned()
+        .or_else(|| {
+            variants
+                .iter()
+                .find(|variant| normalize_engine_scope(&variant.engine_scope) == "chromium")
+                .cloned()
+        })
+        .or_else(|| variants.iter().find(|variant| normalize_engine_scope(&variant.engine_scope) == "firefox").cloned())
+        .or_else(|| variants.into_iter().next())
+}
+
+fn sync_extension_item_legacy_fields(item: &mut ExtensionLibraryItem) {
+    let variants = normalized_extension_variants(item);
+    item.package_variants = variants.clone();
+    item.engine_scope = combined_engine_scope_from_variants(&variants);
+    if let Some(primary) = primary_extension_variant(item) {
+        item.version = primary.version;
+        item.source_kind = primary.source_kind;
+        item.source_value = primary.source_value;
+        item.logo_url = primary.logo_url;
+        item.store_url = primary.store_url;
+        item.package_path = primary.package_path;
+        item.package_file_name = primary.package_file_name;
+    }
+}
+
+fn combined_engine_scope_from_variants(variants: &[ExtensionPackageVariant]) -> String {
+    let has_chromium = variants
+        .iter()
+        .any(|variant| normalize_engine_scope(&variant.engine_scope) == "chromium");
+    let has_firefox = variants
+        .iter()
+        .any(|variant| normalize_engine_scope(&variant.engine_scope) == "firefox");
+    if has_chromium && has_firefox {
+        "chromium/firefox".to_string()
+    } else if has_firefox {
+        "firefox".to_string()
+    } else if has_chromium {
+        "chromium".to_string()
+    } else {
+        "chromium/firefox".to_string()
+    }
+}
+
+fn build_package_variant(
+    request: &ImportExtensionLibraryRequest,
+    metadata: &DerivedExtensionMetadata,
+    engine_scope: &str,
+    version: &str,
+    package_path: Option<String>,
+    package_file_name: Option<String>,
+    normalized_store_url: Option<&str>,
+    logo_url_override: Option<&str>,
+) -> ExtensionPackageVariant {
+    ExtensionPackageVariant {
+        engine_scope: normalize_engine_scope(engine_scope),
+        version: version.to_string(),
+        source_kind: request.source_kind.clone(),
+        source_value: request.source_value.clone(),
+        logo_url: logo_url_override
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| metadata.logo_url.clone()),
+        store_url: normalized_store_url.map(str::to_string),
+        package_path,
+        package_file_name,
+    }
+}
+
+fn normalized_extension_match_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn find_merge_target_extension_id(
+    library: &ExtensionLibraryStore,
+    display_name: &str,
+    requested_engine_scope: &str,
+) -> Option<String> {
+    let expected_name = normalized_extension_match_name(display_name);
+    let expected_scope = normalize_engine_scope(requested_engine_scope);
+    if expected_name.is_empty() {
+        return None;
+    }
+
+    library
+        .items
+        .values()
+        .find(|item| {
+            normalized_extension_match_name(&item.display_name) == expected_name
+                && package_variant_for_engine(item, &expected_scope).is_none()
+        })
+        .map(|item| item.id.clone())
+        .or_else(|| {
+            library
+                .items
+                .values()
+                .find(|item| normalized_extension_match_name(&item.display_name) == expected_name)
+                .map(|item| item.id.clone())
+        })
+}
+
 fn validate_assigned_profiles(
     state: &AppState,
     engine_scope: &str,
@@ -1215,7 +1613,7 @@ fn validate_assigned_profiles(
 
 fn engine_scope_matches_profile(engine_scope: &str, engine: Engine) -> bool {
     match normalize_engine_scope(engine_scope).as_str() {
-        "firefox" => matches!(engine, Engine::Camoufox),
+        "firefox" => matches!(engine, Engine::Librewolf),
         "chromium" => matches!(engine, Engine::Wayfern),
         _ => true,
     }
@@ -1260,6 +1658,15 @@ fn derive_extension_metadata_batch(
         .map(|metadata| vec![metadata]);
     }
 
+    if matches!(lower_kind.as_str(), "local_folder" | "local_folder_picker" | "dropped_folder") {
+        let folder = if lower_kind == "local_folder_picker" {
+            PathBuf::from(pick_folder()?)
+        } else {
+            PathBuf::from(request.source_value.trim())
+        };
+        return read_extension_directory_metadata_batch(&folder, store_url);
+    }
+
     if matches!(lower_kind.as_str(), "local_file" | "dropped_file") {
         let path = Path::new(&request.source_value);
         if path.exists() {
@@ -1297,6 +1704,54 @@ fn read_extension_archive_metadata_batch(
         .and_then(|value| value.to_str())
         .unwrap_or("extension.zip");
     read_extension_archive_metadata_batch_from_bytes(&bytes, file_name, store_url)
+}
+
+fn read_extension_directory_metadata_batch(
+    path: &Path,
+    store_url: Option<&str>,
+) -> Result<Vec<DerivedExtensionMetadata>, String> {
+    if !path.exists() {
+        return Err(format!("extension directory not found: {}", path.display()));
+    }
+    if !path.is_dir() {
+        return Err(format!(
+            "extension directory path is not a folder: {}",
+            path.display()
+        ));
+    }
+
+    let roots = discover_extension_directory_roots(path)?;
+    if roots.is_empty() {
+        return Err(format!(
+            "extension directory manifest.json not found under {}",
+            path.display()
+        ));
+    }
+
+    let mut batch = Vec::new();
+    for root in roots {
+        let zip_bytes = package_extension_directory(&root)?;
+        let base_name = root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("extension");
+        let provisional_name = format!("{base_name}.zip");
+        let mut metadata =
+            read_extension_archive_metadata_from_bytes(&zip_bytes, &provisional_name, store_url)?;
+        let package_extension = match metadata.engine_scope.as_deref() {
+            Some("firefox") => "xpi",
+            _ => "zip",
+        };
+        metadata.package_bytes = Some(zip_bytes);
+        metadata.package_extension = Some(package_extension.to_string());
+        metadata.package_file_name = Some(package_display_name(
+            &format!("{base_name}.{package_extension}"),
+            package_extension,
+        ));
+        batch.push(metadata);
+    }
+    Ok(batch)
 }
 
 fn read_extension_archive_metadata_from_bytes(
@@ -1420,6 +1875,88 @@ fn discover_nested_extension_roots<R: Read + std::io::Seek>(
         }
     }
     Ok(roots.into_iter().collect())
+}
+
+fn discover_extension_directory_roots(path: &Path) -> Result<Vec<PathBuf>, String> {
+    if path.join("manifest.json").is_file() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+
+    let mut roots = Vec::new();
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = fs::read_dir(&current)
+            .map_err(|error| format!("read extension directory {}: {error}", current.display()))?;
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("read extension directory entry: {error}"))?;
+            let child = entry.path();
+            if !child.is_dir() {
+                continue;
+            }
+            if child.join("manifest.json").is_file() {
+                roots.push(child);
+            } else {
+                stack.push(child);
+            }
+        }
+    }
+
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn package_extension_directory(path: &Path) -> Result<Vec<u8>, String> {
+    let mut output = Cursor::new(Vec::<u8>::new());
+    let mut writer = ZipWriter::new(&mut output);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    write_directory_to_zip(path, path, &mut writer, options)?;
+    writer
+        .finish()
+        .map_err(|error| format!("finalize extension directory archive: {error}"))?;
+    Ok(output.into_inner())
+}
+
+fn write_directory_to_zip(
+    root: &Path,
+    current: &Path,
+    writer: &mut ZipWriter<&mut Cursor<Vec<u8>>>,
+    options: SimpleFileOptions,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(current)
+        .map_err(|error| format!("read extension directory {}: {error}", current.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("read extension directory entries: {error}"))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| format!("strip extension directory prefix: {error}"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative.is_empty() {
+            continue;
+        }
+        if path.is_dir() {
+            writer
+                .add_directory(format!("{relative}/"), options)
+                .map_err(|error| format!("write extension directory entry: {error}"))?;
+            write_directory_to_zip(root, &path, writer, options)?;
+            continue;
+        }
+        writer
+            .start_file(relative, options)
+            .map_err(|error| format!("write extension file header: {error}"))?;
+        let bytes =
+            fs::read(&path).map_err(|error| format!("read extension file {}: {error}", path.display()))?;
+        writer
+            .write_all(&bytes)
+            .map_err(|error| format!("write extension file {}: {error}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn repackage_nested_extension(bytes: &[u8], root: &str) -> Result<Vec<u8>, String> {
@@ -1981,6 +2518,7 @@ fn delete_extension_package(package_path: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn build_zip(entries: &[(&str, &str)]) -> Vec<u8> {
         let mut output = Cursor::new(Vec::<u8>::new());
@@ -2027,5 +2565,50 @@ mod tests {
         assert_eq!(batch[1].display_name.as_deref(), Some("Beta"));
         assert_eq!(batch[0].package_file_name.as_deref(), Some("alpha.zip"));
         assert_eq!(batch[1].package_file_name.as_deref(), Some("beta.zip"));
+    }
+
+    #[test]
+    fn reads_extension_directory_metadata_for_firefox_folder() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join("manifest.json"),
+            r#"{"name":"Folder Fox","version":"3.1.0","browser_specific_settings":{"gecko":{"id":"folder-fox@example.com"}}}"#,
+        )
+        .expect("write manifest");
+        fs::create_dir_all(temp.path().join("icons")).expect("create icons");
+        fs::write(temp.path().join("icons").join("icon.png"), b"png").expect("write icon");
+
+        let batch = read_extension_directory_metadata_batch(temp.path(), None).expect("read folder");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].display_name.as_deref(), Some("Folder Fox"));
+        assert_eq!(batch[0].engine_scope.as_deref(), Some("firefox"));
+        assert_eq!(batch[0].package_extension.as_deref(), Some("xpi"));
+        assert!(batch[0].package_bytes.as_ref().is_some_and(|value| !value.is_empty()));
+    }
+
+    #[test]
+    fn reads_nested_extension_directories_when_root_has_no_manifest() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let alpha = temp.path().join("alpha");
+        let beta = temp.path().join("beta");
+        fs::create_dir_all(&alpha).expect("create alpha");
+        fs::create_dir_all(&beta).expect("create beta");
+        fs::write(
+            alpha.join("manifest.json"),
+            r#"{"name":"Alpha Dir","version":"1.0.0","minimum_chrome_version":"120"}"#,
+        )
+        .expect("write alpha manifest");
+        fs::write(
+            beta.join("manifest.json"),
+            r#"{"name":"Beta Dir","version":"2.0.0","browser_specific_settings":{"gecko":{"id":"beta-dir@example.com"}}}"#,
+        )
+        .expect("write beta manifest");
+
+        let batch = read_extension_directory_metadata_batch(temp.path(), None).expect("read nested folders");
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].display_name.as_deref(), Some("Alpha Dir"));
+        assert_eq!(batch[0].package_extension.as_deref(), Some("zip"));
+        assert_eq!(batch[1].display_name.as_deref(), Some("Beta Dir"));
+        assert_eq!(batch[1].package_extension.as_deref(), Some("xpi"));
     }
 }

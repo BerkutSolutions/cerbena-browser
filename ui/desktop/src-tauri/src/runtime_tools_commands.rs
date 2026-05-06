@@ -36,7 +36,7 @@ pub struct RuntimeToolStatusView {
 enum RuntimeToolId {
     Docker,
     Wayfern,
-    Camoufox,
+    Librewolf,
     SingBox,
     OpenVpn,
     AmneziaWg,
@@ -48,7 +48,7 @@ impl RuntimeToolId {
         match value.trim().to_ascii_lowercase().as_str() {
             "docker" => Some(Self::Docker),
             "wayfern" => Some(Self::Wayfern),
-            "camoufox" => Some(Self::Camoufox),
+            "librewolf" => Some(Self::Librewolf),
             "sing-box" => Some(Self::SingBox),
             "openvpn" => Some(Self::OpenVpn),
             "amneziawg" => Some(Self::AmneziaWg),
@@ -61,7 +61,7 @@ impl RuntimeToolId {
         match self {
             Self::Docker => "docker",
             Self::Wayfern => "wayfern",
-            Self::Camoufox => "camoufox",
+            Self::Librewolf => "librewolf",
             Self::SingBox => "sing-box",
             Self::OpenVpn => "openvpn",
             Self::AmneziaWg => "amneziawg",
@@ -73,7 +73,7 @@ impl RuntimeToolId {
         match self {
             Self::Docker => "settings.tools.docker",
             Self::Wayfern => "settings.tools.wayfern",
-            Self::Camoufox => "settings.tools.camoufox",
+            Self::Librewolf => "settings.tools.librewolf",
             Self::SingBox => "settings.tools.singBox",
             Self::OpenVpn => "settings.tools.openvpn",
             Self::AmneziaWg => "settings.tools.amneziawg",
@@ -108,11 +108,11 @@ pub async fn install_runtime_tool(
         .ok_or_else(|| format!("unsupported runtime tool id: {}", request.tool_id))?;
     match tool {
         RuntimeToolId::Docker => return Err("docker must be installed manually".to_string()),
-        RuntimeToolId::Wayfern | RuntimeToolId::Camoufox => {
+        RuntimeToolId::Wayfern | RuntimeToolId::Librewolf => {
             let engine = if matches!(tool, RuntimeToolId::Wayfern) {
                 EngineKind::Wayfern
             } else {
-                EngineKind::Camoufox
+                EngineKind::Librewolf
             };
             let runtime =
                 EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
@@ -150,7 +150,7 @@ fn collect_runtime_tools_status(state: &AppState) -> Result<Vec<RuntimeToolStatu
     Ok(vec![
         docker_view(&docker),
         engine_view(state, EngineKind::Wayfern)?,
-        engine_view(state, EngineKind::Camoufox)?,
+        engine_view(state, EngineKind::Librewolf)?,
         network_tool_view(state, NetworkTool::SingBox, &docker)?,
         network_tool_view(state, NetworkTool::OpenVpn, &docker)?,
         network_tool_view(state, NetworkTool::AmneziaWg, &docker)?,
@@ -192,7 +192,7 @@ fn engine_view(state: &AppState, engine: EngineKind) -> Result<RuntimeToolStatus
         id: engine.as_key().to_string(),
         name_key: match engine {
             EngineKind::Wayfern => RuntimeToolId::Wayfern.name_key(),
-            EngineKind::Camoufox => RuntimeToolId::Camoufox.name_key(),
+            EngineKind::Librewolf => RuntimeToolId::Librewolf.name_key(),
         }
         .to_string(),
         status: if installation.is_some() {

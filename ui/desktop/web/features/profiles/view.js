@@ -73,7 +73,7 @@ function escapeHtml(value) {
 }
 
 function engineIcon(engine) {
-  if (engine === "camoufox") {
+  if (engine === "librewolf") {
     return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 4h10l2 4-1 8-4 4H10l-4-4-1-8 2-4z"/><path d="M9 9h.01M15 9h.01"/><path d="M9 14c1 1 2 1.5 3 1.5S14 15 15 14"/></svg>`;
   }
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 4.5 6 4.5 9S15 18 12 21c-3-3-4.5-6-4.5-9S9 6 12 3z"/></svg>`;
@@ -538,7 +538,7 @@ function globalBlocklistOptions(globalSecurity) {
 
 function extensionScopeAllowed(item, profile) {
   const scope = String(item.engineScope ?? "chromium/firefox").toLowerCase();
-  if (scope === "firefox") return profile?.engine === "camoufox";
+  if (scope === "firefox") return profile?.engine === "librewolf";
   if (scope === "chromium") return profile?.engine === "wayfern";
   return true;
 }
@@ -915,7 +915,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
           <div class="tab-pane" data-pane="general">
             <div class="grid-two profile-modal-grid">
               <label>${t("profile.field.name")}<input name="name" value="${profile?.name ?? ""}" required /></label>
-              <label>${t("profile.field.engine")}<select name="engine" id="profile-engine">${option("wayfern", "Wayfern Chromium", profile?.engine === "wayfern")}${option("camoufox", "Camoufox Firefox", profile?.engine === "camoufox")}</select></label>
+              <label>${t("profile.field.engine")}<select name="engine" id="profile-engine">${option("wayfern", "Wayfern Chromium", profile?.engine === "wayfern")}${option("librewolf", "LibreWolf Firefox", profile?.engine === "librewolf")}</select></label>
               <label class="profile-modal-span-2 profile-description-field">${t("profile.field.description")}<textarea name="description" rows="4">${escapeHtml(profile?.description ?? "")}</textarea></label>
               <label class="profile-modal-span-2">${t("profile.field.tags")}
                 ${buildTagPickerMarkup({
@@ -2207,7 +2207,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
   const renderCertificateEngineGuard = () => {
     const engine = profileEngineField?.value ?? "wayfern";
     const hasCertificates = hasAssignedProfileCertificates(certificateState);
-    const certificatesSupported = engine === "camoufox";
+    const certificatesSupported = engine === "librewolf";
     if (!profileCertificateEngineGuard) return;
     let message = "";
     if (!certificatesSupported && hasCertificates) {
@@ -2215,7 +2215,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
     } else if (!certificatesSupported) {
       message = t("profile.security.certificateIsolationHint");
     } else if (hasCertificates) {
-      message = t("profile.security.certificateIsolationCamoufox");
+      message = t("profile.security.certificateIsolationLibreWolf");
     }
     profileCertificateEngineGuard.innerHTML = message
       ? `

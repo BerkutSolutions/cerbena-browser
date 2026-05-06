@@ -3,7 +3,7 @@ use std::{fs, sync::Mutex};
 use browser_engine::{
     contract::{EngineAdapter, LaunchRequest},
     wayfern::WayfernAdapter,
-    CamoufoxAdapter,
+    LibrewolfAdapter,
 };
 use tempfile::tempdir;
 use uuid::Uuid;
@@ -11,16 +11,16 @@ use uuid::Uuid;
 static APPDATA_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn camoufox_builds_launch_plan() {
+fn librewolf_builds_launch_plan() {
     let tmp = tempdir().expect("tempdir");
-    let adapter = CamoufoxAdapter {
+    let adapter = LibrewolfAdapter {
         install_root: tmp.path().join("install"),
         cache_dir: tmp.path().join("cache"),
     };
     let req = LaunchRequest {
         profile_id: Uuid::new_v4(),
         profile_root: tmp.path().join("profile"),
-        binary_path: tmp.path().join("bin").join("camoufox.exe"),
+        binary_path: tmp.path().join("bin").join("librewolf.exe"),
         args: vec!["--profile".to_string(), "x".to_string()],
         env: vec![("LANG".to_string(), "en-US.UTF-8".to_string())],
     };

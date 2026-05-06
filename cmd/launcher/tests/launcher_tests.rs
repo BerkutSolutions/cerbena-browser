@@ -13,7 +13,7 @@ fn launcher_can_init_and_list_profiles() {
         "--name".to_string(),
         "CLI Profile".to_string(),
         "--engine".to_string(),
-        "camoufox".to_string(),
+        "librewolf".to_string(),
     ])
     .expect("init profile");
     assert!(!out.trim().is_empty());

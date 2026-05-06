@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use browser_engine::{
-    CamoufoxAdapter, EngineAdapter, EngineUpdateArtifact, EngineUpdatePolicy, EngineUpdateService,
+    EngineAdapter, EngineUpdateArtifact, EngineUpdatePolicy, EngineUpdateService,
+    LibrewolfAdapter,
     LaunchRequest, UpdateMode, WayfernAdapter,
 };
 use browser_profile::{CreateProfileInput, Engine, ProfileManager};
@@ -33,8 +34,8 @@ fn cmd_init_profile(args: &[String]) -> Result<String, String> {
             tags: vec!["cli".to_string()],
             engine: match engine.as_str() {
                 "wayfern" => Engine::Wayfern,
-                "camoufox" => Engine::Camoufox,
-                _ => return Err("engine must be wayfern|camoufox".to_string()),
+                "librewolf" => Engine::Librewolf,
+                _ => return Err("engine must be wayfern|librewolf".to_string()),
             },
             default_start_page: Some("https://duckduckgo.com".to_string()),
             default_search_provider: None,
@@ -105,8 +106,8 @@ fn cmd_build_launch_plan(args: &[String]) -> Result<String, String> {
                 .map_err(|e| e.to_string())?;
             Ok(format!("{:?}", plan.engine))
         }
-        Engine::Camoufox => {
-            let adapter = CamoufoxAdapter {
+        Engine::Librewolf => {
+            let adapter = LibrewolfAdapter {
                 install_root: PathBuf::from(".launcher").join("engines"),
                 cache_dir: PathBuf::from(".launcher").join("cache"),
             };
@@ -151,7 +152,7 @@ fn parse_flag(args: &[String], flag: &str) -> Result<String, String> {
 pub fn help() -> String {
     [
         "usage:",
-        "  launcher init-profile --root <dir> --name <name> --engine wayfern|camoufox",
+        "  launcher init-profile --root <dir> --name <name> --engine wayfern|librewolf",
         "  launcher list-profiles --root <dir>",
         "  launcher ack-wayfern-tos --root <dir> --profile-id <uuid>",
         "  launcher build-launch-plan --root <dir> --profile-id <uuid> --binary <path>",

@@ -7,7 +7,7 @@ A Cerbena Browser profile is an isolated browser-state container with its own da
 
 ## What a profile stores
 
-- name, description, tags, and engine (`Wayfern` or `Camoufox`);
+- name, description, tags, and engine (`Wayfern` or `LibreWolf`);
 - start page and search provider, or a strict single-page app-window mode;
 - `Identity`, `Network`, `DNS`, `Extensions`, `Security`, and `Sync` settings;
 - runtime state, audit trail, and cache;

@@ -145,6 +145,21 @@ pub struct ConnectionTemplate {
     pub updated_at_epoch_ms: u128,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionPackageVariant {
+    pub engine_scope: String,
+    pub version: String,
+    pub source_kind: String,
+    pub source_value: String,
+    pub logo_url: Option<String>,
+    pub store_url: Option<String>,
+    #[serde(default)]
+    pub package_path: Option<String>,
+    #[serde(default)]
+    pub package_file_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionLibraryItem {
@@ -169,6 +184,8 @@ pub struct ExtensionLibraryItem {
     pub package_path: Option<String>,
     #[serde(default)]
     pub package_file_name: Option<String>,
+    #[serde(default)]
+    pub package_variants: Vec<ExtensionPackageVariant>,
 }
 
 pub struct AppState {
@@ -525,9 +542,9 @@ pub(crate) fn ensure_default_profiles(
         manager
             .create_profile(CreateProfileInput {
                 name: "Firefox Default".to_string(),
-                description: Some("Default isolated Firefox profile (Camoufox).".to_string()),
-                tags: vec!["default".to_string(), "engine:camoufox".to_string()],
-                engine: Engine::Camoufox,
+                description: Some("Default isolated Firefox profile (LibreWolf).".to_string()),
+                tags: vec!["default".to_string(), "engine:librewolf".to_string()],
+                engine: Engine::Librewolf,
                 default_start_page: Some("https://duckduckgo.com".to_string()),
                 default_search_provider: Some("duckduckgo".to_string()),
                 ephemeral_mode: false,
@@ -573,9 +590,9 @@ pub(crate) fn ensure_default_profiles(
                 tags: vec![
                     "default".to_string(),
                     "private".to_string(),
-                    "engine:camoufox".to_string(),
+                    "engine:librewolf".to_string(),
                 ],
-                engine: Engine::Camoufox,
+                engine: Engine::Librewolf,
                 default_start_page: Some("https://duckduckgo.com".to_string()),
                 default_search_provider: Some("duckduckgo".to_string()),
                 ephemeral_mode: true,

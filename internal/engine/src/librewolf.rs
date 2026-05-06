@@ -9,14 +9,14 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct CamoufoxAdapter {
+pub struct LibrewolfAdapter {
     pub install_root: PathBuf,
     pub cache_dir: PathBuf,
 }
 
-impl EngineAdapter for CamoufoxAdapter {
+impl EngineAdapter for LibrewolfAdapter {
     fn engine_kind(&self) -> EngineKind {
-        EngineKind::Camoufox
+        EngineKind::Librewolf
     }
 
     fn prepare(&self, spec: &ArtifactSpec) -> Result<PathBuf, EngineError> {
@@ -26,7 +26,7 @@ impl EngineAdapter for CamoufoxAdapter {
     }
 
     fn install(&self, downloaded_path: &Path) -> Result<PathBuf, EngineError> {
-        install_binary(downloaded_path, &self.install_root, "camoufox", "current")
+        install_binary(downloaded_path, &self.install_root, "librewolf", "current")
     }
 
     fn build_launch_plan(&self, request: LaunchRequest) -> Result<LaunchPlan, EngineError> {
@@ -36,7 +36,7 @@ impl EngineAdapter for CamoufoxAdapter {
             .map(Path::to_path_buf)
             .unwrap_or(request.profile_root.clone());
         Ok(LaunchPlan {
-            engine: EngineKind::Camoufox,
+            engine: EngineKind::Librewolf,
             binary_path: request.binary_path,
             args: request.args,
             env: request.env,
@@ -47,7 +47,7 @@ impl EngineAdapter for CamoufoxAdapter {
     fn launch(&self, request: LaunchRequest) -> Result<u32, EngineError> {
         let plan = self.build_launch_plan(request)?;
         eprintln!(
-            "[camoufox-adapter] spawn binary={} cwd={} args={:?}",
+            "[librewolf-adapter] spawn binary={} cwd={} args={:?}",
             plan.binary_path.display(),
             plan.cwd.display(),
             plan.args
@@ -58,7 +58,7 @@ impl EngineAdapter for CamoufoxAdapter {
             .envs(plan.env.iter().map(|(key, value)| (key, value)))
             .spawn()
             .map_err(|e| EngineError::Launch(format!("spawn failed: {e}")))?;
-        eprintln!("[camoufox-adapter] spawned pid={}", child.id());
+        eprintln!("[librewolf-adapter] spawned pid={}", child.id());
         Ok(child.id())
     }
 }

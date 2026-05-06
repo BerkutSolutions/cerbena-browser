@@ -82,9 +82,9 @@ fn launcher_multi_profile_listing_remains_stable() {
     let temp = tempdir().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
     let names = [
-        ("Alpha", "camoufox"),
+        ("Alpha", "librewolf"),
         ("Beta", "wayfern"),
-        ("Gamma", "camoufox"),
+        ("Gamma", "librewolf"),
     ];
 
     for (name, engine) in names {

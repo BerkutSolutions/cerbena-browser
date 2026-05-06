@@ -14,7 +14,7 @@ use crate::profile_runtime_logs::append_profile_log;
 use crate::launch_sessions::revoke_launch_session;
 use crate::network_sandbox_lifecycle::stop_profile_network_stack;
 use crate::panic_frame::close_panic_frame;
-use crate::certificate_runtime::clear_wayfern_profile_certificates;
+use crate::certificate_runtime::clear_librewolf_profile_certificates;
 use crate::state::AppState;
 
 pub fn track_profile_process(
@@ -116,7 +116,7 @@ pub fn clear_profile_process(app_handle: &AppHandle, profile_id: Uuid, pid: u32,
     let _ = revoke_launch_session(state.inner(), profile_id, Some(pid));
     stop_profile_network_stack(app_handle, profile_id);
     close_panic_frame(app_handle, profile_id);
-    clear_wayfern_profile_certificates(app_handle, profile_id);
+    clear_librewolf_profile_certificates(app_handle, profile_id);
 
     if let Ok(manager) = state.manager.lock() {
         let _ = manager.update_profile(
@@ -260,7 +260,7 @@ fn matching_profile_processes(system: &System, target: &str) -> Vec<ProfileProce
                 .join(" ")
                 .to_lowercase();
 
-            let firefox_profile_match = (name.contains("camoufox")
+            let firefox_profile_match = (name.contains("librewolf")
                 || name.contains("firefox")
                 || name.contains("private_browsing"))
                 && cmdline.contains("-profile")
@@ -306,7 +306,7 @@ fn find_session_descendant_browser_pid(roots: &[u32]) -> Option<u32> {
             let browser_name = name.contains("wayfern")
                 || name.contains("chrome")
                 || name.contains("chromium")
-                || name.contains("camoufox")
+                || name.contains("librewolf")
                 || name.contains("firefox")
                 || name.contains("private_browsing");
             if !browser_name {

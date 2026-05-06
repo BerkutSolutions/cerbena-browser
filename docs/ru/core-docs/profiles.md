@@ -7,7 +7,7 @@ sidebar_position: 2
 
 ## Что хранит профиль
 
-- имя, описание, теги и engine (`Wayfern` или `Camoufox`);
+- имя, описание, теги и engine (`Wayfern` или `LibreWolf`);
 - стартовую страницу и поисковый провайдер либо строгий одностраничный режим окна приложения;
 - настройки `Identity`, `Network`, `DNS`, `Extensions`, `Security`, `Sync`;
 - runtime-состояние, след аудита и кэш;

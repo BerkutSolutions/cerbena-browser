@@ -63,7 +63,7 @@ function titleFor(progress, t) {
 
 function progressDisplayName(progress) {
   if (progress.engine === "wayfern") return "Wayfern";
-  if (progress.engine === "camoufox") return "Camoufox";
+  if (progress.engine === "librewolf") return "LibreWolf";
   if (progress.tool === "sing-box") return "sing-box";
   if (progress.tool === "openvpn") return "OpenVPN";
   if (progress.tool === "tor-bundle") return "Tor";

@@ -17,7 +17,7 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::{
-    camoufox::CamoufoxAdapter,
+    librewolf::LibrewolfAdapter,
     contract::{EngineAdapter, EngineError, EngineKind},
     progress::EngineDownloadProgress,
     registry::EngineRegistry,
@@ -30,8 +30,9 @@ const WAYFERN_VERSION_URLS: [&str; 2] = [
     "https://download.wayfern.com/version.json",
     "https://donutbrowser.com/wayfern.json",
 ];
-const CAMOUFOX_RELEASES_URL: &str =
-    "https://api.github.com/repos/daijro/camoufox/releases?per_page=20";
+const LIBREWOLF_RELEASES_URL: &str =
+    "https://api.github.com/repos/librewolf-community/browser-windows/releases?per_page=20";
+const LIBREWOLF_WINDOWS_INSTALLATION_URL: &str = "https://librewolf.net/installation/windows/";
 const WAYFERN_POLICY_EXTENSION_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,8 +287,8 @@ impl EngineRuntime {
         let installation = self
             .installed(engine)?
             .ok_or_else(|| EngineError::Launch("engine is not installed".to_string()))?;
-        let binary_path = if matches!(engine, EngineKind::Camoufox) {
-            prefer_camoufox_browser_binary(&installation.binary_path)
+        let binary_path = if matches!(engine, EngineKind::Librewolf) {
+            prefer_librewolf_browser_binary(&installation.binary_path)
         } else {
             installation.binary_path
         };
@@ -322,7 +323,7 @@ impl EngineRuntime {
         );
         match engine {
             EngineKind::Wayfern => self.wayfern_adapter().launch(request),
-            EngineKind::Camoufox => self.camoufox_adapter().launch(request),
+            EngineKind::Librewolf => self.librewolf_adapter().launch(request),
         }
     }
 
@@ -335,8 +336,8 @@ impl EngineRuntime {
         let installation = self
             .installed(engine)?
             .ok_or_else(|| EngineError::Launch("engine is not installed".to_string()))?;
-        let binary_path = if matches!(engine, EngineKind::Camoufox) {
-            prefer_camoufox_browser_binary(&installation.binary_path)
+        let binary_path = if matches!(engine, EngineKind::Librewolf) {
+            prefer_librewolf_browser_binary(&installation.binary_path)
         } else {
             installation.binary_path
         };
@@ -362,7 +363,7 @@ impl EngineRuntime {
     fn resolve_artifact(&self, engine: EngineKind) -> Result<ResolvedArtifact, EngineError> {
         match engine {
             EngineKind::Wayfern => self.resolve_wayfern_artifact(),
-            EngineKind::Camoufox => self.resolve_camoufox_artifact(),
+            EngineKind::Librewolf => self.resolve_librewolf_artifact(),
         }
     }
 
@@ -405,29 +406,33 @@ impl EngineRuntime {
         })))
     }
 
-    fn resolve_camoufox_artifact(&self) -> Result<ResolvedArtifact, EngineError> {
+    fn resolve_librewolf_artifact(&self) -> Result<ResolvedArtifact, EngineError> {
+        if cfg!(target_os = "windows") {
+            return self.resolve_librewolf_windows_artifact();
+        }
+
         let client = http_client()?;
         let response = client
-            .get(CAMOUFOX_RELEASES_URL)
+            .get(LIBREWOLF_RELEASES_URL)
             .send()
             .map_err(|e| EngineError::Download(e.to_string()))?;
         if !response.status().is_success() {
             return Err(EngineError::Download(format!(
-                "camoufox releases request failed with HTTP {}",
+                "librewolf releases request failed with HTTP {}",
                 response.status()
             )));
         }
         let releases: Vec<GithubRelease> = response
             .json()
             .map_err(|e| EngineError::Download(e.to_string()))?;
-        let suffix = camoufox_asset_suffix()?;
+        let suffix = librewolf_asset_suffix()?;
         for release in releases {
             if let Some(asset) = release.assets.into_iter().find(|item| {
                 let lower = item.name.to_lowercase();
-                lower.starts_with("camoufox-") && lower.ends_with(&suffix)
+                lower.contains("librewolf") && lower.ends_with(&suffix)
             }) {
                 return Ok(ResolvedArtifact {
-                    engine: EngineKind::Camoufox,
+                    engine: EngineKind::Librewolf,
                     version: release.tag_name,
                     file_name: asset.name,
                     download_url: asset.browser_download_url,
@@ -435,8 +440,43 @@ impl EngineRuntime {
             }
         }
         Err(EngineError::Download(format!(
-            "no compatible Camoufox asset found for suffix {suffix}"
+            "no compatible LibreWolf asset found for suffix {suffix}"
         )))
+    }
+
+    fn resolve_librewolf_windows_artifact(&self) -> Result<ResolvedArtifact, EngineError> {
+        let client = http_client()?;
+        let response = client
+            .get(LIBREWOLF_WINDOWS_INSTALLATION_URL)
+            .send()
+            .map_err(|e| EngineError::Download(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(EngineError::Download(format!(
+                "librewolf windows releases page request failed with HTTP {}",
+                response.status()
+            )));
+        }
+        let body = response
+            .text()
+            .map_err(|e| EngineError::Download(e.to_string()))?;
+        let asset_marker = librewolf_windows_portable_marker()?;
+        let download_url = extract_librewolf_download_url(&body, &asset_marker).ok_or_else(|| {
+            EngineError::Download(format!(
+                "no compatible LibreWolf Windows download link found for marker {asset_marker}"
+            ))
+        })?;
+        let file_name = file_name_from_url(&download_url, "librewolf")?;
+        let version = parse_librewolf_version_from_file_name(&file_name).ok_or_else(|| {
+            EngineError::Download(format!(
+                "unable to derive LibreWolf version from file name {file_name}"
+            ))
+        })?;
+        Ok(ResolvedArtifact {
+            engine: EngineKind::Librewolf,
+            version,
+            file_name,
+            download_url,
+        })
     }
 
     fn download_artifact<F, C>(
@@ -742,11 +782,9 @@ impl EngineRuntime {
                 "wayfern.exe",
                 "wayfern",
             ]),
-            EngineKind::Camoufox => candidate_names(&[
-                "camoufox.exe",
-                "camoufox-bin.exe",
-                "camoufox",
-                "camoufox-bin",
+            EngineKind::Librewolf => candidate_names(&[
+                "librewolf.exe",
+                "librewolf",
                 "firefox.exe",
                 "firefox",
             ]),
@@ -769,8 +807,8 @@ impl EngineRuntime {
         }
     }
 
-    fn camoufox_adapter(&self) -> CamoufoxAdapter {
-        CamoufoxAdapter {
+    fn librewolf_adapter(&self) -> LibrewolfAdapter {
+        LibrewolfAdapter {
             install_root: self.install_root.clone(),
             cache_dir: self.cache_dir.clone(),
         }
@@ -783,7 +821,7 @@ impl EngineRuntime {
     ) -> Result<EngineInstallation, EngineError> {
         let normalized_binary_path = match engine {
             EngineKind::Wayfern => prefer_wayfern_vendor_binary(&installation.binary_path),
-            EngineKind::Camoufox => installation.binary_path.clone(),
+            EngineKind::Librewolf => installation.binary_path.clone(),
         };
         if normalized_binary_path != installation.binary_path {
             installation.binary_path = normalized_binary_path;
@@ -895,7 +933,7 @@ fn current_platform_key() -> Result<String, EngineError> {
     Ok(format!("{os}-{arch}"))
 }
 
-fn camoufox_asset_suffix() -> Result<String, EngineError> {
+fn librewolf_asset_suffix() -> Result<String, EngineError> {
     let (os, arch) = if cfg!(target_os = "windows") {
         (
             "win",
@@ -929,6 +967,78 @@ fn camoufox_asset_suffix() -> Result<String, EngineError> {
         ));
     };
     Ok(format!("-{os}.{arch}.zip"))
+}
+
+fn librewolf_windows_portable_marker() -> Result<String, EngineError> {
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        return Err(EngineError::Install(
+            "unsupported LibreWolf Windows architecture".to_string(),
+        ));
+    };
+    Ok(format!("windows-{arch}-portable.zip"))
+}
+
+fn extract_librewolf_download_url(html: &str, asset_marker: &str) -> Option<String> {
+    extract_html_hrefs(html)
+        .into_iter()
+        .find(|href| href.to_ascii_lowercase().contains(&asset_marker.to_ascii_lowercase()))
+        .map(|href| normalize_href_url(&href))
+}
+
+fn extract_html_hrefs(html: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut rest = html;
+    while let Some(index) = rest.find("href=") {
+        let after = &rest[index + 5..];
+        let mut chars = after.chars();
+        let quote = match chars.next() {
+            Some('"') => '"',
+            Some('\'') => '\'',
+            _ => {
+                rest = after;
+                continue;
+            }
+        };
+        let quoted = &after[1..];
+        let Some(end) = quoted.find(quote) else {
+            break;
+        };
+        let href = quoted[..end].trim();
+        if !href.is_empty() {
+            urls.push(href.to_string());
+        }
+        rest = &quoted[end + 1..];
+    }
+    urls
+}
+
+fn normalize_href_url(href: &str) -> String {
+    if href.starts_with("https://") || href.starts_with("http://") {
+        href.to_string()
+    } else if href.starts_with("//") {
+        format!("https:{href}")
+    } else if href.starts_with('/') {
+        format!("https://librewolf.net{href}")
+    } else {
+        format!("https://librewolf.net/{href}")
+    }
+}
+
+fn parse_librewolf_version_from_file_name(file_name: &str) -> Option<String> {
+    let prefix = "librewolf-";
+    let middle = "-windows-";
+    let stripped = file_name.strip_prefix(prefix)?;
+    let end = stripped.find(middle)?;
+    let version = stripped[..end].trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
 }
 
 fn file_name_from_url(url: &str, fallback: &str) -> Result<String, EngineError> {
@@ -1009,12 +1119,12 @@ fn find_first_match(root: &Path, candidates: &[String]) -> Option<PathBuf> {
     None
 }
 
-fn prefer_camoufox_browser_binary(current: &Path) -> PathBuf {
+fn prefer_librewolf_browser_binary(current: &Path) -> PathBuf {
     let Some(root) = current.parent() else {
         return current.to_path_buf();
     };
-    let camoufox_candidates = candidate_names(&["camoufox.exe", "camoufox"]);
-    if let Some(path) = find_first_match(root, &camoufox_candidates) {
+    let librewolf_candidates = candidate_names(&["librewolf.exe", "librewolf"]);
+    if let Some(path) = find_first_match(root, &librewolf_candidates) {
         return path;
     }
     let firefox_candidates = candidate_names(&["firefox.exe", "firefox"]);
@@ -1107,7 +1217,7 @@ fn launch_args(
             }
             Ok(args)
         }
-        EngineKind::Camoufox => {
+        EngineKind::Librewolf => {
             let mut args = vec![
                 "-profile".to_string(),
                 runtime_dir.to_string_lossy().to_string(),
@@ -1142,7 +1252,7 @@ fn reopen_args(
             }
             args
         }
-        EngineKind::Camoufox => vec![
+        EngineKind::Librewolf => vec![
             "-profile".to_string(),
             runtime_dir.to_string_lossy().to_string(),
             "-new-tab".to_string(),
@@ -1197,7 +1307,7 @@ fn apply_wayfern_identity_args(
 fn launch_environment(engine: EngineKind, profile_root: &Path) -> Vec<(String, String)> {
     match engine {
         EngineKind::Wayfern => wayfern_launch_environment(profile_root),
-        EngineKind::Camoufox => Vec::new(),
+        EngineKind::Librewolf => Vec::new(),
     }
 }
 
@@ -1616,7 +1726,8 @@ fn blocked_domains_for_profile(profile_root: &Path) -> Result<Vec<String>, Engin
 mod tests {
     use super::{
         blocked_domains_for_profile, build_accept_language_header, chromium_extension_version,
-        launch_args, prefer_wayfern_vendor_binary, prepare_wayfern_blocking_extension,
+        extract_librewolf_download_url, launch_args, parse_librewolf_version_from_file_name,
+        prefer_wayfern_vendor_binary, prepare_wayfern_blocking_extension,
         wayfern_launch_environment, EngineKind, EngineRuntime, WAYFERN_POLICY_EXTENSION_VERSION,
     };
     use std::fs;
@@ -1927,6 +2038,32 @@ mod tests {
 
         assert_eq!(resolved, chrome);
     }
+
+    #[test]
+    fn extracts_official_librewolf_windows_portable_download_url() {
+        let html = r#"
+        <a href="https://dl.librewolf.net/release/windows/x86_64/librewolf-150.0.1-1-windows-x86_64-portable.zip">
+            Download portable
+        </a>
+        "#;
+
+        let url = extract_librewolf_download_url(html, "windows-x86_64-portable.zip")
+            .expect("portable url");
+        assert_eq!(
+            url,
+            "https://dl.librewolf.net/release/windows/x86_64/librewolf-150.0.1-1-windows-x86_64-portable.zip"
+        );
+    }
+
+    #[test]
+    fn parses_librewolf_version_from_windows_file_name() {
+        assert_eq!(
+            parse_librewolf_version_from_file_name(
+                "librewolf-150.0.1-1-windows-x86_64-portable.zip"
+            ),
+            Some("150.0.1-1".to_string())
+        );
+    }
 }
 
 fn now_epoch_ms() -> u128 {
@@ -1940,7 +2077,7 @@ impl EngineKind {
     pub fn as_key(&self) -> &'static str {
         match self {
             EngineKind::Wayfern => "wayfern",
-            EngineKind::Camoufox => "camoufox",
+            EngineKind::Librewolf => "librewolf",
         }
     }
 }

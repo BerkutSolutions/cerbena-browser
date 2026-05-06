@@ -126,12 +126,12 @@ function writeMockShellPreferences(value) {
 
 function readMockRuntimeTools() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_RUNTIME_TOOLS_KEY) ?? "{\"docker\":false,\"wayfern\":true,\"camoufox\":true,\"sing-box\":true,\"openvpn\":false,\"amneziawg\":false,\"tor-bundle\":true}");
+    return JSON.parse(localStorage.getItem(MOCK_RUNTIME_TOOLS_KEY) ?? "{\"docker\":false,\"wayfern\":true,\"librewolf\":true,\"sing-box\":true,\"openvpn\":false,\"amneziawg\":false,\"tor-bundle\":true}");
   } catch {
     return {
       docker: false,
       wayfern: true,
-      camoufox: true,
+      librewolf: true,
       "sing-box": true,
       openvpn: false,
       amneziawg: false,
@@ -445,11 +445,11 @@ function mockProfileCommand(command, args) {
         detailKey: null
       },
       {
-        id: "camoufox",
-        nameKey: "settings.tools.camoufox",
-        status: tools.camoufox ? "installed" : "missing",
-        version: tools.camoufox ? APP_VERSION : null,
-        action: tools.camoufox ? "none" : "internal",
+        id: "librewolf",
+        nameKey: "settings.tools.librewolf",
+        status: tools.librewolf ? "installed" : "missing",
+        version: tools.librewolf ? APP_VERSION : null,
+        action: tools.librewolf ? "none" : "internal",
         detailKey: null
       },
       {

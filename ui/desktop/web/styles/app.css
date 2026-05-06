@@ -695,6 +695,17 @@ button.danger:hover {
   gap: 12px;
 }
 
+.extension-library-stack {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.extension-library-stack.is-expanded .extension-library-card {
+  border-color: rgba(157, 184, 255, 0.52);
+  box-shadow: 0 18px 34px rgba(12, 21, 41, 0.36), 0 0 0 1px rgba(166, 191, 255, 0.12);
+}
+
 .extension-library-card {
   position: relative;
   display: grid;
@@ -718,13 +729,6 @@ button.danger:hover {
   box-shadow: 0 18px 34px rgba(12, 21, 41, 0.36), 0 0 0 1px rgba(166, 191, 255, 0.12);
   background: linear-gradient(180deg, rgba(14, 20, 33, 0.98), rgba(9, 14, 23, 1));
   outline: none;
-}
-
-.extension-library-delete {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 2;
 }
 
 .extension-library-logo {
@@ -819,11 +823,98 @@ button.danger:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.extension-library-engine-badge.engine-wayfern {
+  color: rgba(190, 214, 255, 0.95);
+  background: rgba(20, 36, 66, 0.92);
+}
+
+.extension-library-engine-badge.engine-librewolf {
+  color: rgba(255, 211, 186, 0.95);
+  background: rgba(65, 37, 24, 0.92);
+}
+
+.extension-library-engine-badge.engine-hybrid {
+  color: rgba(244, 247, 255, 0.98);
+  background: rgba(16, 24, 40, 0.86);
+}
+
+.extension-library-engine-badge.engine-hybrid::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 9px;
+  background: linear-gradient(90deg, rgba(25, 51, 92, 0.96) 0 50%, rgba(84, 45, 24, 0.96) 50% 100%);
+  z-index: -1;
 }
 
 .extension-library-engine-badge svg {
   width: 18px;
   height: 18px;
+}
+
+.extension-library-details {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(125, 155, 255, 0.18);
+  background: rgba(7, 11, 20, 0.9);
+}
+
+.extension-library-details-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.extension-library-variant-list {
+  display: grid;
+  gap: 8px;
+}
+
+.extension-library-variant-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(125, 155, 255, 0.14);
+  background: rgba(12, 18, 29, 0.78);
+}
+
+.extension-library-variant-copy {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.extension-library-variant-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.extension-library-variant-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 155, 255, 0.18);
+  background: rgba(16, 24, 40, 0.78);
+  color: rgba(233, 240, 255, 0.9);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.extension-library-variant-remove {
+  align-self: center;
 }
 
 .extension-library-modal {
@@ -832,16 +923,58 @@ button.danger:hover {
   overflow: visible;
 }
 
-.extension-library-modal-head {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
+.extension-library-modal-window {
+  width: min(980px, calc(100vw - 48px));
 }
 
-.extension-library-modal-meta {
+.extension-library-modal-layout {
   display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.extension-library-modal-rail {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 4px 12px 0 0;
+  border-right: 1px solid rgba(125, 155, 255, 0.24);
+}
+
+.extension-library-modal-identity {
+  display: grid;
+  justify-items: center;
   gap: 10px;
+}
+
+.extension-library-modal-name {
+  color: rgba(238, 244, 255, 0.94);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.extension-library-modal-engine-chip {
+  justify-self: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 155, 255, 0.26);
+  background: rgba(16, 24, 40, 0.78);
+  color: rgba(233, 240, 255, 0.9);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.extension-library-modal-main {
+  display: grid;
+  gap: 12px;
 }
 
 .extension-library-store-link {
@@ -856,11 +989,16 @@ button.danger:hover {
 
 .extension-library-modal-settings {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .extension-library-modal-frame {
   margin-top: 0;
+  border: 1px solid rgba(125, 155, 255, 0.2);
+  border-radius: 14px;
+  background: rgba(11, 16, 27, 0.74);
+  padding: 14px;
+  gap: 12px;
 }
 
 .extension-library-profile-picker {
@@ -886,6 +1024,10 @@ button.danger:hover {
 
 .extension-library-profile-menu .dns-dropdown-option input[type="checkbox"] {
   margin: 0;
+}
+
+.extension-library-modal .modal-actions {
+  margin-top: 8px;
 }
 
 .extension-actions-dropdown {
@@ -1308,7 +1450,7 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   color: rgba(190, 214, 255, 0.95);
 }
 
-.engine-camoufox {
+.engine-librewolf {
   color: rgba(255, 211, 186, 0.95);
 }
 
@@ -1359,6 +1501,15 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   display: grid;
   gap: 8px;
   min-width: 0;
+}
+
+.extension-library-modal .security-frame.extension-library-modal-frame {
+  margin-top: 0;
+  padding: 14px;
+  border: 1px solid rgba(125, 155, 255, 0.2);
+  border-radius: 14px;
+  background: rgba(11, 16, 27, 0.74);
+  gap: 12px;
 }
 
 :where(.panel, .security-frame, .tab-pane, .profiles-modal-window, .profile-card, .settings-card, .feature-page, .feature-page-head) > * {

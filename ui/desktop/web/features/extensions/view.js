@@ -40,7 +40,7 @@ function normalizeEngineScope(value) {
 }
 
 function profileMatchesScope(profile, scope) {
-  if (scope === "firefox") return profile.engine === "camoufox";
+  if (scope === "firefox") return profile.engine === "librewolf";
   if (scope === "chromium") return profile.engine === "wayfern";
   return true;
 }
@@ -61,6 +61,48 @@ function profileSummary(item, profiles, t) {
 
 function sourceLabel(item) {
   return item.storeUrl || item.packageFileName || item.sourceValue || "";
+}
+
+function packageVariants(item) {
+  const variants = Array.isArray(item?.packageVariants) && item.packageVariants.length
+    ? item.packageVariants
+    : [{
+        engineScope: item?.engineScope,
+        version: item?.version,
+        sourceKind: item?.sourceKind,
+        sourceValue: item?.sourceValue,
+        logoUrl: item?.logoUrl,
+        storeUrl: item?.storeUrl,
+        packagePath: item?.packagePath,
+        packageFileName: item?.packageFileName
+      }];
+  return variants
+    .map((variant) => ({
+      ...variant,
+      engineScope: normalizeEngineScope(variant.engineScope),
+      version: String(variant.version ?? item?.version ?? APP_VERSION).trim() || APP_VERSION
+    }))
+    .sort((left, right) => left.engineScope.localeCompare(right.engineScope));
+}
+
+function variantSourceLabel(variant) {
+  return variant.storeUrl || variant.packageFileName || variant.sourceValue || "";
+}
+
+function variantSummaryVersion(item, t) {
+  const variants = packageVariants(item);
+  if (variants.length === 1) return variants[0].version;
+  const versions = [...new Set(variants.map((variant) => variant.version).filter(Boolean))];
+  return versions.length === 1
+    ? versions[0]
+    : t("extensions.version.multiple").replace("{count}", String(variants.length));
+}
+
+function engineScopeLabel(scope, t) {
+  const normalized = normalizeEngineScope(scope);
+  if (normalized === "firefox") return t("extensions.filter.firefox");
+  if (normalized === "chromium") return t("extensions.filter.chromium");
+  return t("extensions.filter.hybrid");
 }
 
 function libraryFilterOptions(t) {
@@ -96,11 +138,28 @@ function engineIcon(engineScope) {
   if (scope === "chromium") {
     return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 4.5 6 4.5 9S15 18 12 21c-3-3-4.5-6-4.5-9S9 6 12 3z"/></svg>`;
   }
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16v10H4z"/><path d="M9 7v10"/><path d="M15 7v10"/></svg>`;
+  return `
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8">
+      <defs>
+        <clipPath id="ext-split-left"><rect x="0" y="0" width="12" height="24" /></clipPath>
+        <clipPath id="ext-split-right"><rect x="12" y="0" width="12" height="24" /></clipPath>
+      </defs>
+      <g clip-path="url(#ext-split-left)" stroke="#8ec5ff">
+        <circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 4.5 6 4.5 9S15 18 12 21c-3-3-4.5-6-4.5-9S9 6 12 3z"/>
+      </g>
+      <g clip-path="url(#ext-split-right)" stroke="#ffb37a">
+        <path d="M7 4h10l2 4-1 8-4 4H10l-4-4-1-8 2-4z"/><path d="M9 9h.01M15 9h.01"/><path d="M9 14c1 1 2 1.5 3 1.5S14 15 15 14"/>
+      </g>
+    </svg>
+  `;
 }
 
 function trashIcon() {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>`;
+}
+
+function pencilIcon() {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5z"/></svg>`;
 }
 
 function extensionPlaceholderIcon() {
@@ -116,18 +175,12 @@ function extensionLogo(item) {
 
 function extensionCard(item, profiles, t) {
   const name = item.displayName ?? "Extension";
-  const version = item.version ?? APP_VERSION;
+  const version = variantSummaryVersion(item, t);
   const assigned = profileSummary(item, profiles, t);
   const primaryTag = (item.tags ?? [])[0] ?? "";
+  const scope = normalizeEngineScope(item.engineScope);
   return `
     <article class="extension-library-card" data-extension-id="${item.id}" tabindex="0" role="button" aria-label="${escapeHtml(name)}">
-      <button
-        type="button"
-        class="profiles-icon-btn danger extension-library-delete"
-        data-action="remove"
-        aria-label="${t("extensions.remove")}"
-        title="${t("extensions.remove")}"
-      >${trashIcon()}</button>
       <div class="extension-library-logo">
         ${extensionLogo(item)}
       </div>
@@ -137,7 +190,7 @@ function extensionCard(item, profiles, t) {
         ${primaryTag ? `<div class="extension-library-tag">${escapeHtml(primaryTag)}</div>` : ""}
         <div class="extension-library-assignment" title="${escapeHtml(assigned)}">${escapeHtml(assigned)}</div>
       </div>
-      <div class="extension-library-engine-badge" title="${escapeHtml(item.engineScope ?? "chromium/firefox")}">
+      <div class="extension-library-engine-badge engine-${scope === "firefox" ? "librewolf" : scope === "chromium" ? "wayfern" : "hybrid"}" title="${escapeHtml(engineScopeLabel(item.engineScope, t))}">
         ${engineIcon(item.engineScope)}
       </div>
     </article>
@@ -174,67 +227,95 @@ function profileDropdownMarkup(item, profiles, t, mode = "modal") {
   `;
 }
 
+function variantDetailCard(item, variant, t) {
+  const source = variantSourceLabel(variant);
+  const link = variant.storeUrl?.trim()
+    ? `<a href="${escapeHtml(variant.storeUrl)}" target="_blank" rel="noreferrer" class="extension-library-store-link">${escapeHtml(variant.storeUrl)}</a>`
+    : `<span class="meta">${source ? escapeHtml(source) : t("extensions.noStoreUrl")}</span>`;
+  return `
+    <div class="extension-library-variant-card">
+      <div class="extension-library-variant-copy">
+        ${link}
+        <div class="extension-library-variant-meta">
+          <span class="extension-library-variant-chip">${escapeHtml(engineScopeLabel(variant.engineScope, t))}</span>
+          <span class="extension-library-variant-chip">${escapeHtml(t("extensions.version"))}: ${escapeHtml(variant.version)}</span>
+        </div>
+      </div>
+      <button
+        type="button"
+        class="profiles-icon-btn danger extension-library-variant-remove"
+        data-action="remove-variant"
+        data-engine-scope="${escapeHtml(normalizeEngineScope(variant.engineScope))}"
+        aria-label="${t("extensions.remove")}"
+        title="${t("extensions.remove")}"
+      >${trashIcon()}</button>
+    </div>
+  `;
+}
+
+function combinedScopeFromVariants(variants) {
+  const scopes = new Set((variants ?? []).map((variant) => normalizeEngineScope(variant.engineScope)));
+  if (scopes.has("chromium") && scopes.has("firefox")) return "chromium/firefox";
+  if (scopes.has("firefox")) return "firefox";
+  return "chromium";
+}
+
 function extensionModalHtml(t, profiles, item) {
-  const source = sourceLabel(item);
-  const storeUrl = item.storeUrl?.trim() ?? "";
-  const sourceMeta = source && source !== storeUrl ? source : "";
+  const scopeLabel = engineScopeLabel(item.engineScope, t);
   return `
     <div class="profiles-modal-overlay" id="extension-library-overlay">
-      <div class="profiles-modal-window profiles-modal-window-md extension-library-modal">
+      <div class="profiles-modal-window extension-library-modal extension-library-modal-window">
         <div class="profiles-cookie-head">
           <h3>${escapeHtml(item.displayName ?? t("nav.extensions"))}</h3>
-          <button type="button" class="profiles-icon-btn" id="extension-library-close" aria-label="${t("action.cancel")}"><span class="extension-library-close-glyph">×</span></button>
+          <button type="button" class="profiles-icon-btn" id="extension-library-close" aria-label="${t("action.cancel")}"><span class="extension-library-close-glyph">x</span></button>
         </div>
-        <div class="extension-library-modal-head">
-          <div class="extension-library-logo extension-library-logo-lg">
-            ${extensionLogo(item)}
-          </div>
-          <div class="extension-library-modal-meta">
-            <label>${t("extensions.name")}<input id="extension-name" value="${escapeHtml(item.displayName ?? "")}" /></label>
-            <div class="grid-two">
-              <label>${t("extensions.version")}<input id="extension-version" value="${escapeHtml(item.version ?? APP_VERSION)}" /></label>
-              <label>${t("extensions.engine")}<select id="extension-engine">
-                <option value="chromium" ${normalizeEngineScope(item.engineScope) === "chromium" ? "selected" : ""}>chromium</option>
-                <option value="firefox" ${normalizeEngineScope(item.engineScope) === "firefox" ? "selected" : ""}>firefox</option>
-                <option value="chromium/firefox" ${normalizeEngineScope(item.engineScope) === "chromium/firefox" ? "selected" : ""}>chromium/firefox</option>
-              </select></label>
+        <div class="extension-library-modal-layout">
+          <aside class="extension-library-modal-rail">
+            <div class="extension-library-modal-identity">
+              <div class="extension-library-logo extension-library-logo-lg">
+                ${extensionLogo(item)}
+              </div>
+              <div class="extension-library-modal-name">${escapeHtml(item.displayName ?? t("nav.extensions"))}</div>
             </div>
-            <label>${t("extensions.storeUrl")}
-              ${storeUrl
-                ? `<a href="${escapeHtml(storeUrl)}" target="_blank" rel="noreferrer" class="extension-library-store-link">${escapeHtml(storeUrl)}</a>`
-                : `<span class="meta">${t("extensions.noStoreUrl")}</span>`}
-            </label>
-            ${sourceMeta ? `<div class="meta">${escapeHtml(sourceMeta)}</div>` : ""}
+            <div class="extension-library-modal-engine-chip">${escapeHtml(scopeLabel)}</div>
+            <div class="extension-library-modal-settings">
+              <label class="checkbox-inline">
+                <input type="checkbox" id="extension-auto-update" ${item.autoUpdateEnabled ? "checked" : ""} />
+                <span>${t("extensions.autoUpdate")}</span>
+              </label>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="extension-preserve-on-panic" ${item.preserveOnPanicWipe ? "checked" : ""} />
+                <span>${t("extensions.preserveOnPanicWipe")}</span>
+              </label>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="extension-protect-data-on-panic" ${item.protectDataFromPanicWipe ? "checked" : ""} />
+                <span>${t("extensions.protectDataFromPanicWipe")}</span>
+              </label>
+            </div>
+          </aside>
+          <div class="extension-library-modal-main">
+            <div class="security-frame extension-library-modal-frame">
+              <h4>${t("extensions.sources")}</h4>
+              <div class="extension-library-variant-list">
+                ${packageVariants(item).map((variant) => variantDetailCard(item, variant, t)).join("")}
+              </div>
+            </div>
+            <div class="security-frame extension-library-modal-frame">
+              <h4>${t("extensions.profiles")}</h4>
+              ${profileDropdownMarkup(item, profiles, t, "modal")}
+            </div>
+            <div class="security-frame extension-library-modal-frame">
+              <h4>${t("extensions.tags")}</h4>
+              ${buildTagPickerMarkup({
+                id: "extension-tags",
+                selectedTags: item.tags ?? [],
+                availableTags: [],
+                emptyLabel: t("extensions.tags.empty"),
+                searchPlaceholder: t("extensions.tags.search"),
+                createLabel: (value) => t("extensions.tags.create").replace("{tag}", value)
+              })}
+            </div>
           </div>
-        </div>
-        <div class="extension-library-modal-settings">
-          <label class="checkbox-inline">
-            <input type="checkbox" id="extension-auto-update" ${item.autoUpdateEnabled ? "checked" : ""} />
-            <span>${t("extensions.autoUpdate")}</span>
-          </label>
-          <label class="checkbox-inline">
-            <input type="checkbox" id="extension-preserve-on-panic" ${item.preserveOnPanicWipe ? "checked" : ""} />
-            <span>${t("extensions.preserveOnPanicWipe")}</span>
-          </label>
-          <label class="checkbox-inline">
-            <input type="checkbox" id="extension-protect-data-on-panic" ${item.protectDataFromPanicWipe ? "checked" : ""} />
-            <span>${t("extensions.protectDataFromPanicWipe")}</span>
-          </label>
-        </div>
-        <div class="security-frame extension-library-modal-frame">
-          <h4>${t("extensions.tags")}</h4>
-          ${buildTagPickerMarkup({
-            id: "extension-tags",
-            selectedTags: item.tags ?? [],
-            availableTags: [],
-            emptyLabel: t("extensions.tags.empty"),
-            searchPlaceholder: t("extensions.tags.search"),
-            createLabel: (value) => t("extensions.tags.create").replace("{tag}", value)
-          })}
-        </div>
-        <div class="security-frame extension-library-modal-frame">
-          <h4>${t("extensions.assignProfiles")}</h4>
-          ${profileDropdownMarkup(item, profiles, t, "modal")}
         </div>
         <footer class="modal-actions">
           <button type="button" id="extension-library-cancel">${t("action.cancel")}</button>
@@ -244,7 +325,6 @@ function extensionModalHtml(t, profiles, item) {
     </div>
   `;
 }
-
 function readAssignedProfiles(overlay, itemId) {
   return [...overlay.querySelectorAll(`[data-modal-profile-assign^='${itemId}:']:checked`)]
     .map((checkbox) => checkbox.getAttribute("data-modal-profile-assign").split(":")[1]);
@@ -286,9 +366,8 @@ async function openExtensionModal(t, profiles, item, availableTags) {
     overlay.querySelector("#extension-library-save")?.addEventListener("click", () => {
       close({
         extensionId: item.id,
-        displayName: overlay.querySelector("#extension-name")?.value?.trim() || item.displayName,
-        version: overlay.querySelector("#extension-version")?.value?.trim() || item.version,
-        engineScope: overlay.querySelector("#extension-engine")?.value || item.engineScope,
+        displayName: item.displayName,
+        version: item.version,
         tags: uniqueTags(tagState.selected ?? []),
         assignedProfileIds: readAssignedProfiles(overlay, item.id),
         autoUpdateEnabled: Boolean(overlay.querySelector("#extension-auto-update")?.checked),
@@ -296,6 +375,49 @@ async function openExtensionModal(t, profiles, item, availableTags) {
         protectDataFromPanicWipe: Boolean(overlay.querySelector("#extension-protect-data-on-panic")?.checked)
       });
     });
+    for (const button of overlay.querySelectorAll("[data-action='remove-variant']")) {
+      button.addEventListener("click", async () => {
+        const scope = normalizeEngineScope(button.getAttribute("data-engine-scope"));
+        const confirmed = window.confirm(item.displayName ?? t("extensions.remove"));
+        if (!confirmed) return;
+        button.disabled = true;
+        const result = await removeExtensionLibraryItem(item.id, scope);
+        button.disabled = false;
+        if (!result.ok) return;
+        const nextVariants = packageVariants(item).filter((variant) => normalizeEngineScope(variant.engineScope) !== scope);
+        if (!nextVariants.length) {
+          close({ removedExtensionId: item.id });
+          return;
+        }
+        item.packageVariants = nextVariants;
+        item.engineScope = combinedScopeFromVariants(nextVariants);
+        const variantList = overlay.querySelector(".extension-library-variant-list");
+        if (variantList) {
+          variantList.innerHTML = nextVariants.map((variant) => variantDetailCard(item, variant, t)).join("");
+          for (const nextButton of variantList.querySelectorAll("[data-action='remove-variant']")) {
+            nextButton.addEventListener("click", async () => {
+              const nextScope = normalizeEngineScope(nextButton.getAttribute("data-engine-scope"));
+              const nextConfirmed = window.confirm(item.displayName ?? t("extensions.remove"));
+              if (!nextConfirmed) return;
+              nextButton.disabled = true;
+              const nextResult = await removeExtensionLibraryItem(item.id, nextScope);
+              nextButton.disabled = false;
+              if (!nextResult.ok) return;
+              const refreshedVariants = packageVariants(item).filter((variant) => normalizeEngineScope(variant.engineScope) !== nextScope);
+              if (!refreshedVariants.length) {
+                close({ removedExtensionId: item.id });
+                return;
+              }
+              item.packageVariants = refreshedVariants;
+              item.engineScope = combinedScopeFromVariants(refreshedVariants);
+              variantList.innerHTML = refreshedVariants.map((variant) => variantDetailCard(item, variant, t)).join("");
+            });
+          }
+        }
+        const chip = overlay.querySelector(".extension-library-modal-engine-chip");
+        if (chip) chip.textContent = engineScopeLabel(item.engineScope, t);
+      });
+    }
   });
 }
 
@@ -331,6 +453,14 @@ async function importLocalPackage(file, sourceKind) {
   });
 }
 
+async function importLocalFolder() {
+  return importExtensionLibraryItem({
+    sourceKind: "local_folder_picker",
+    sourceValue: "",
+    assignedProfileIds: []
+  });
+}
+
 export function renderExtensions(t, model) {
   const state = model.extensionLibraryState ?? { autoUpdateEnabled: false, items: {} };
   const items = Object.values(state.items ?? {});
@@ -345,6 +475,7 @@ export function renderExtensions(t, model) {
       <div class="feature-page-head row-between">
         <div>
           <h2>${t("nav.extensions")}</h2>
+          <p class="meta">${t("extensions.subtitle")}</p>
         </div>
         <div class="top-actions">
           <button id="extension-add-url">${t("extensions.addStoreUrl")}</button>
@@ -352,6 +483,7 @@ export function renderExtensions(t, model) {
             <button type="button" class="dns-dropdown-toggle extension-actions-toggle" id="extension-import-toggle">${t("extensions.import")}</button>
             <div class="dns-dropdown-menu hidden extension-actions-menu" id="extension-import-menu">
               <button type="button" class="dns-dropdown-option" data-extension-import-mode="file">${t("extensions.transfer.file")}</button>
+              <button type="button" class="dns-dropdown-option" data-extension-import-mode="local-folder">${t("extensions.source.localFolder")}</button>
               <button type="button" class="dns-dropdown-option" data-extension-import-mode="archive">${t("extensions.transfer.archive")}</button>
             </div>
           </div>
@@ -445,7 +577,6 @@ async function saveExtensionItem(model, rerender, t, item, payload) {
     extensionId: item.id,
     displayName: payload.displayName || item.displayName,
     version: payload.version || item.version,
-    engineScope: payload.engineScope || item.engineScope,
     storeUrl: item.storeUrl || null,
     logoUrl: item.logoUrl || null,
     tags: payload.tags ?? [],
@@ -503,7 +634,22 @@ export function wireExtensions(root, model, rerender, t) {
   for (const button of root.querySelectorAll("[data-extension-import-mode]")) {
     button.addEventListener("click", async () => {
       importMenu?.classList.add("hidden");
-      const result = await importExtensionLibrary(button.getAttribute("data-extension-import-mode"));
+      const mode = button.getAttribute("data-extension-import-mode");
+      if (mode === "local-file") {
+        localPicker?.click();
+        return;
+      }
+      if (mode === "local-folder") {
+        const result = await importLocalFolder();
+        model.extensionNotice = {
+          type: result.ok ? "success" : "error",
+          text: result.ok ? t("extensions.installed") : String(result.data.error)
+        };
+        await hydrateExtensionsModel(model);
+        await rerender();
+        return;
+      }
+      const result = await importExtensionLibrary(mode);
       model.extensionNotice = {
         type: result.ok ? "success" : "error",
         text: result.ok
@@ -583,28 +729,16 @@ export function wireExtensions(root, model, rerender, t) {
       if (!item) return;
       const payload = await openExtensionModal(t, model.profiles ?? [], item, collectExtensionTags(model.extensionLibraryState ?? { items: {} }));
       if (!payload) return;
-      await saveExtensionItem(model, rerender, t, item, payload);
-    };
-
-    card.addEventListener("click", async (event) => {
-      const removeButton = event.target?.closest?.("[data-action='remove']");
-      if (removeButton) {
-        event.preventDefault();
-        event.stopPropagation();
-        const extensionId = card.getAttribute("data-extension-id");
-        const item = model.extensionLibraryState?.items?.[extensionId];
-        if (!item) return;
-        const confirmed = await askConfirmModal(t, {
-          title: t("extensions.remove"),
-          description: item.displayName ?? t("extensions.remove")
-        });
-        if (!confirmed) return;
-        const result = await removeExtensionLibraryItem(extensionId);
-        model.extensionNotice = { type: result.ok ? "success" : "error", text: result.ok ? t("extensions.removed") : String(result.data.error) };
+      if (payload.removedExtensionId) {
+        model.extensionNotice = { type: "success", text: t("extensions.removed") };
         await hydrateExtensionsModel(model);
         await rerender();
         return;
       }
+      await saveExtensionItem(model, rerender, t, item, payload);
+    };
+
+    card.addEventListener("click", async () => {
       await openModal();
     });
 

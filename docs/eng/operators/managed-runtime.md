@@ -7,10 +7,12 @@ Cerbena Browser can provision and use managed runtime binaries for the network c
 
 ## What this includes
 
-- browser runtimes for `Wayfern` and `Camoufox`;
+- browser runtimes for `Wayfern` and `LibreWolf`;
 - route backends `sing-box`, `openvpn`, `amneziawg`, and `tor`;
 - container helper assets for profile-scoped route isolation;
 - local caching, integrity validation, and artifact reuse.
+
+Firefox-family runtime support is now `LibreWolf`-only; the launcher no longer provisions or uses legacy `Camoufox` artifacts.
 
 ## Operator responsibilities
 
@@ -18,6 +20,7 @@ Cerbena Browser can provision and use managed runtime binaries for the network c
 - track route runtime failures through operator/runtime diagnostics and per-profile runtime logs;
 - understand which backend and which isolation strategy were selected for a given profile template;
 - verify that container-backed route helpers, dedicated Docker networks, and helper-image cleanup stay aligned with launcher uninstall behavior.
+- verify that uninstall/janitor cleanup leaves no launcher-managed residue from retired browser/runtime artifacts and only manages current `Wayfern`/`LibreWolf` paths.
 
 ## Runtime-specific notes
 

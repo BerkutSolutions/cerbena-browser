@@ -52,6 +52,7 @@ const UPDATER_STEP_CHECKSUM: &str = "checksum";
 const UPDATER_STEP_INSTALL: &str = "install";
 const UPDATER_STEP_RELAUNCH: &str = "relaunch";
 const UPDATER_HELPER_LOG_ENV: &str = "CERBENA_UPDATER_RUNTIME_LOG";
+const UPDATER_AUTO_CLOSE_AFTER_READY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -514,11 +515,14 @@ fn updater_launch_mode_from_state(state: &AppState) -> Result<UpdaterLaunchMode,
 fn schedule_updater_window_close_for_apply(state: &AppState) {
     push_runtime_log(
         state,
-        "[updater] scheduling updater window close to trigger pending apply",
+        format!(
+            "[updater] scheduling updater window close to trigger pending apply delayMs={}",
+            UPDATER_AUTO_CLOSE_AFTER_READY_DELAY.as_millis()
+        ),
     );
     let app_handle = state.app_handle.clone();
     thread::spawn(move || {
-        thread::sleep(Duration::from_millis(750));
+        thread::sleep(UPDATER_AUTO_CLOSE_AFTER_READY_DELAY);
         if let Some(window) = app_handle.get_webview_window("main") {
             let _ = window.close();
         }

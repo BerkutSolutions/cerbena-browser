@@ -8,7 +8,7 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub enum EngineKind {
     Wayfern,
-    Camoufox,
+    Librewolf,
 }
 
 #[derive(Debug, Clone)]

@@ -32,6 +32,6 @@ export async function setExtensionProfiles(extensionId, assignedProfileIds) {
   return callCommand("set_extension_profiles", { request: { extensionId, assignedProfileIds } });
 }
 
-export async function removeExtensionLibraryItem(extensionId) {
-  return callCommand("remove_extension_library_item", { request: { extensionId } });
+export async function removeExtensionLibraryItem(extensionId, variantEngineScope = null) {
+  return callCommand("remove_extension_library_item", { request: { extensionId, variantEngineScope } });
 }

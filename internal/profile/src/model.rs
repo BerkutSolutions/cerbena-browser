@@ -7,7 +7,7 @@ use crate::errors::ProfileError;
 #[serde(rename_all = "snake_case")]
 pub enum Engine {
     Wayfern,
-    Camoufox,
+    Librewolf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

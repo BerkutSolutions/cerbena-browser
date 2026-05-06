@@ -8,7 +8,7 @@ The Cerbena Browser desktop UI is a local shell on top of `Tauri` backend comman
 ## Real shell sections
 
 - `Home`: the main operational surface for profile creation, bulk actions, launch, stop, import, export, summary metrics, and status.
-- `Extensions`: extension library, import from store links or archives, profile assignment, and engine compatibility.
+- `Extensions`: extension library, import from store links plus `File` / `Folder` / `Archive` actions, profile assignment, and engine compatibility.
 - `Security`: root certificates and global shell security controls.
 - `Identity`: `Automatic` and `Manual` identity modes, generation, and templates.
 - `DNS`: DNS modes, policy-level table/editor, blocklists, service catalog, suffix bans, and domain rules.

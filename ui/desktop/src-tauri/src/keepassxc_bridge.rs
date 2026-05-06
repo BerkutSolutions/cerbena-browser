@@ -1,12 +1,14 @@
 use std::{
     collections::BTreeSet,
     fs,
+    io::{Cursor, Read},
     path::{Path, PathBuf},
     process::Command,
 };
 
-use browser_profile::ProfileMetadata;
+use browser_profile::{Engine, ProfileMetadata};
 use serde_json::Value;
+use zip::ZipArchive;
 
 use crate::{
     launcher_commands::push_runtime_log,
@@ -19,6 +21,7 @@ const KEEPASSXC_HOST_NAME: &str = "org.keepassxc.keepassxc_browser";
 const KEEPASSXC_STORE_EXTENSION_ID: &str = "oboonakemofpalcgghocfoadofidjkkk";
 const KEEPASSXC_STORE_EXTENSION_ORIGIN: &str =
     "chrome-extension://oboonakemofpalcgghocfoadofidjkkk/";
+const KEEPASSXC_FIREFOX_EXTENSION_ID: &str = "keepassxc-browser@keepassxc.org";
 const KEEPASSXC_DEBUG_FLAG_FILE: &str = "keepassxc-native-messaging-debug.flag";
 
 fn keepassxc_debug_flag_path(profile_root: &Path) -> PathBuf {
@@ -46,7 +49,10 @@ pub fn ensure_keepassxc_bridge_for_profile(
         write_keepassxc_log(
             state,
             profile,
-            "Preparing KeePassXC native messaging bridge for Wayfern.",
+            &format!(
+                "Preparing KeePassXC native messaging bridge for {}.",
+                keepassxc_engine_label(&profile.engine)
+            ),
         );
 
         let Some(proxy_path) = discover_keepassxc_proxy_path() else {
@@ -69,14 +75,7 @@ pub fn ensure_keepassxc_bridge_for_profile(
         fs::create_dir_all(&bridge_root)
             .map_err(|e| format!("create KeePassXC bridge directory: {e}"))?;
         let manifest_path = bridge_root.join(format!("{KEEPASSXC_HOST_NAME}.json"));
-        let allowed_origins = collect_keepassxc_allowed_origins(state, profile, profile_root);
-        let manifest = serde_json::json!({
-            "name": KEEPASSXC_HOST_NAME,
-            "description": "KeePassXC bridge for Cerbena Browser / Wayfern",
-            "path": proxy_path,
-            "type": "stdio",
-            "allowed_origins": allowed_origins
-        });
+        let manifest = keepassxc_manifest(state, profile, profile_root, &proxy_path);
         fs::write(
             &manifest_path,
             serde_json::to_vec_pretty(&manifest)
@@ -87,23 +86,13 @@ pub fn ensure_keepassxc_bridge_for_profile(
             state,
             profile,
             &format!(
-                "KeePassXC manifest written to {} with allowed_origins={:?}",
+                "KeePassXC manifest written to {} with {}",
                 manifest_path.display(),
-                manifest
-                    .get("allowed_origins")
-                    .and_then(|value| value.as_array())
-                    .cloned()
-                    .unwrap_or_default()
+                keepassxc_manifest_debug_summary(&manifest)
             ),
         );
 
-        let registry_keys = [
-            format!(r"HKCU\Software\Wayfern\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
-            format!(r"HKCU\Software\Chromium\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
-            format!(r"HKCU\Software\Google\Chrome\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
-            format!(r"HKCU\Software\Vivaldi\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
-        ];
-        for key in registry_keys {
+        for key in keepassxc_registry_keys(&profile.engine) {
             register_native_host_key(state, profile, &key, &manifest_path);
         }
 
@@ -128,6 +117,35 @@ pub fn ensure_keepassxc_bridge_for_profile(
     }
 }
 
+fn keepassxc_manifest(
+    state: &AppState,
+    profile: &ProfileMetadata,
+    profile_root: &Path,
+    proxy_path: &Path,
+) -> Value {
+    let mut manifest = serde_json::json!({
+            "name": KEEPASSXC_HOST_NAME,
+            "description": format!(
+                "KeePassXC bridge for Cerbena Browser / {}",
+                keepassxc_engine_label(&profile.engine)
+            ),
+            "path": proxy_path,
+            "type": "stdio"
+        });
+    match profile.engine {
+        Engine::Wayfern => {
+            let allowed_origins = collect_keepassxc_allowed_origins(state, profile, profile_root);
+            manifest["allowed_origins"] = serde_json::json!(allowed_origins);
+        }
+        Engine::Librewolf => {
+            let allowed_extensions =
+                collect_keepassxc_firefox_extension_ids(state, profile, profile_root);
+            manifest["allowed_extensions"] = serde_json::json!(allowed_extensions);
+        }
+    }
+    manifest
+}
+
 fn collect_keepassxc_allowed_origins(
     state: &AppState,
     profile: &ProfileMetadata,
@@ -139,6 +157,40 @@ fn collect_keepassxc_allowed_origins(
         origins.insert(origin);
     }
     origins.into_iter().collect()
+}
+
+fn collect_keepassxc_firefox_extension_ids(
+    state: &AppState,
+    profile: &ProfileMetadata,
+    profile_root: &Path,
+) -> Vec<String> {
+    let mut ids = BTreeSet::new();
+    ids.insert(KEEPASSXC_FIREFOX_EXTENSION_ID.to_string());
+    let library = match state.extension_library.lock() {
+        Ok(value) => value,
+        Err(_) => return ids.into_iter().collect(),
+    };
+    for item in library.items.values() {
+        if !item
+            .assigned_profile_ids
+            .iter()
+            .any(|value| value == &profile.id.to_string())
+        {
+            continue;
+        }
+        if !item.engine_scope.trim().eq_ignore_ascii_case("firefox") {
+            continue;
+        }
+        if !looks_like_keepassxc_extension(item) {
+            continue;
+        }
+        if let Some(extension_id) = read_firefox_extension_id_for_item(item, profile_root) {
+            ids.insert(extension_id);
+        } else if item.id.contains('@') {
+            ids.insert(item.id.clone());
+        }
+    }
+    ids.into_iter().collect()
 }
 
 fn read_keepassxc_origins_from_secure_preferences(
@@ -273,6 +325,61 @@ fn resolve_keepassxc_extension_paths(profile_root: &Path) -> Vec<PathBuf> {
     paths
 }
 
+fn read_firefox_extension_id_for_item(
+    item: &crate::state::ExtensionLibraryItem,
+    profile_root: &Path,
+) -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Some(package_path) = item
+        .package_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        candidates.push(PathBuf::from(package_path));
+    }
+    if let Some(package_file_name) = item
+        .package_file_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        candidates.push(profile_root.join("extensions").join(package_file_name));
+        candidates.push(profile_root.join("policy").join(package_file_name));
+    }
+    for path in candidates {
+        if let Some(extension_id) = read_firefox_extension_id_from_path(&path) {
+            return Some(extension_id);
+        }
+    }
+    None
+}
+
+fn read_firefox_extension_id_from_path(path: &Path) -> Option<String> {
+    if path.is_dir() {
+        return fs::read_to_string(path.join("manifest.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|manifest| manifest_stable_id(&manifest));
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())?;
+    if extension != "xpi" && extension != "zip" {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let cursor = Cursor::new(bytes);
+    let mut archive = ZipArchive::new(cursor).ok()?;
+    let mut manifest_file = archive.by_name("manifest.json").ok()?;
+    let mut text = String::new();
+    manifest_file.read_to_string(&mut text).ok()?;
+    serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|manifest| manifest_stable_id(&manifest))
+}
+
 fn directory_looks_like_keepassxc(path: &Path) -> bool {
     let manifest_path = path.join("manifest.json");
     let Ok(text) = fs::read_to_string(manifest_path) else {
@@ -292,8 +399,74 @@ fn directory_looks_like_keepassxc(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn looks_like_keepassxc_extension(item: &crate::state::ExtensionLibraryItem) -> bool {
+    item.tags
+        .iter()
+        .any(|tag| tag.trim().eq_ignore_ascii_case("keepassxc"))
+        || [
+            Some(item.id.as_str()),
+            Some(item.display_name.as_str()),
+            Some(item.source_value.as_str()),
+            item.store_url.as_deref(),
+            item.package_file_name.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| value.to_ascii_lowercase().contains("keepassxc"))
+        || item.id.eq_ignore_ascii_case(KEEPASSXC_STORE_EXTENSION_ID)
+        || item.id.eq_ignore_ascii_case(KEEPASSXC_FIREFOX_EXTENSION_ID)
+}
+
+fn manifest_stable_id(manifest_json: &Value) -> Option<String> {
+    manifest_json
+        .get("browser_specific_settings")
+        .and_then(|value| value.get("gecko"))
+        .and_then(|value| value.get("id"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            manifest_json
+                .get("applications")
+                .and_then(|value| value.get("gecko"))
+                .and_then(|value| value.get("id"))
+                .and_then(|value| value.as_str())
+        })
+        .map(|value| value.to_string())
+}
+
 fn normalize_windowsish_path(path: &Path) -> String {
     path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
+}
+
+fn keepassxc_engine_label(engine: &Engine) -> &'static str {
+    match engine {
+        Engine::Wayfern => "Wayfern",
+        Engine::Librewolf => "LibreWolf",
+    }
+}
+
+fn keepassxc_manifest_debug_summary(manifest: &Value) -> String {
+    if let Some(values) = manifest.get("allowed_extensions").and_then(Value::as_array) {
+        return format!("allowed_extensions={values:?}");
+    }
+    if let Some(values) = manifest.get("allowed_origins").and_then(Value::as_array) {
+        return format!("allowed_origins={values:?}");
+    }
+    "no explicit extension list".to_string()
+}
+
+fn keepassxc_registry_keys(engine: &Engine) -> Vec<String> {
+    match engine {
+        Engine::Wayfern => vec![
+            format!(r"HKCU\Software\Wayfern\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
+            format!(r"HKCU\Software\Chromium\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
+            format!(r"HKCU\Software\Google\Chrome\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
+            format!(r"HKCU\Software\Vivaldi\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
+        ],
+        Engine::Librewolf => vec![
+            format!(r"HKCU\Software\Mozilla\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
+            format!(r"HKCU\Software\LibreWolf\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
+        ],
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -409,4 +582,32 @@ fn write_keepassxc_log(state: &AppState, profile: &ProfileMetadata, message: &st
     let line = format!("[keepassxc-bridge] profile={} {}", profile.id, message);
     eprintln!("{line}");
     push_runtime_log(state, line);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{keepassxc_manifest_debug_summary, manifest_stable_id, KEEPASSXC_FIREFOX_EXTENSION_ID};
+
+    #[test]
+    fn extracts_firefox_manifest_id() {
+        let manifest = serde_json::json!({
+            "browser_specific_settings": {
+                "gecko": {
+                    "id": KEEPASSXC_FIREFOX_EXTENSION_ID
+                }
+            }
+        });
+        assert_eq!(
+            manifest_stable_id(&manifest).as_deref(),
+            Some(KEEPASSXC_FIREFOX_EXTENSION_ID)
+        );
+    }
+
+    #[test]
+    fn debug_summary_prefers_allowed_extensions() {
+        let manifest = serde_json::json!({
+            "allowed_extensions": [KEEPASSXC_FIREFOX_EXTENSION_ID]
+        });
+        assert!(keepassxc_manifest_debug_summary(&manifest).contains("allowed_extensions"));
+    }
 }
