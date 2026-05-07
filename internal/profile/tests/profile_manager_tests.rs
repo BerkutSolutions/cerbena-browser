@@ -224,7 +224,7 @@ fn profile_modal_payload_validation_works() {
         },
         dns: browser_profile::profile_modal::DnsTab {
             resolver_mode: "custom".to_string(),
-            servers: vec!["1.1.5.1".to_string()],
+            servers: vec!["1.1.6.1".to_string()],
         },
         extensions: browser_profile::profile_modal::ExtensionsTab {
             enabled_extension_ids: vec![],
