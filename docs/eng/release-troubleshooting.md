@@ -11,7 +11,6 @@ sidebar_position: 91
 - the Russian wiki contains mixed-language fragments;
 - UI smoke or `i18n` validation fails;
 - the update signature flow is invalid;
-- the required `Wayfern ToS` acknowledgement is missing.
 - updater/restart handoff does not complete in expected timing windows.
 - required release artifacts (`.msi`, setup bundle, checksums/signature manifest) are incomplete or mismatched.
 

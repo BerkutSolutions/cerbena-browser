@@ -56,6 +56,7 @@ fn walk_version_paths(root: &Path, current: &Path, version: &str, found: &mut BT
     let skip_dirs = [
         ".docusaurus",
         ".git",
+        ".tools",
         ".work",
         "target",
         "node_modules",

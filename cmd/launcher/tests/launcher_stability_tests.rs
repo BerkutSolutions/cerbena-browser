@@ -1,40 +1,31 @@
 use cerbena_launcher::run_with_args;
-use std::{env, fs, sync::Mutex};
 use tempfile::tempdir;
 
-static APPDATA_ENV_LOCK: Mutex<()> = Mutex::new(());
-
 #[test]
-fn launcher_wayfern_ack_and_launch_plan_are_repeatable() {
-    let _lock = APPDATA_ENV_LOCK.lock().expect("appdata env lock");
+fn launcher_chromium_launch_plan_is_repeatable() {
     let temp = tempdir().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    let appdata = temp.path().join("appdata");
-    fs::create_dir_all(&appdata).expect("create appdata");
-    let previous_appdata = env::var_os("APPDATA");
-    env::set_var("APPDATA", &appdata);
+    let profile_id = run_with_args(&[
+        "init-profile".to_string(),
+        "--root".to_string(),
+        root.clone(),
+        "--name".to_string(),
+        "Stable Chromium".to_string(),
+        "--engine".to_string(),
+        "chromium".to_string(),
+    ])
+    .expect("init profile");
+    let profile_id = profile_id.trim().to_string();
 
-    let result = std::panic::catch_unwind(|| {
-        let profile_id = run_with_args(&[
-            "init-profile".to_string(),
-            "--root".to_string(),
-            root.clone(),
-            "--name".to_string(),
-            "Stable Wayfern".to_string(),
-            "--engine".to_string(),
-            "wayfern".to_string(),
-        ])
-        .expect("init profile");
-        let profile_id = profile_id.trim().to_string();
+    let binary_path = temp
+        .path()
+        .join("bin")
+        .join("chromium.exe")
+        .to_string_lossy()
+        .to_string();
 
-        let binary_path = temp
-            .path()
-            .join("bin")
-            .join("wayfern.exe")
-            .to_string_lossy()
-            .to_string();
-
-        let before_ack = run_with_args(&[
+    for _ in 0..3 {
+        let plan = run_with_args(&[
             "build-launch-plan".to_string(),
             "--root".to_string(),
             root.clone(),
@@ -42,39 +33,10 @@ fn launcher_wayfern_ack_and_launch_plan_are_repeatable() {
             profile_id.clone(),
             "--binary".to_string(),
             binary_path.clone(),
-        ]);
-        assert!(before_ack.is_err(), "launch plan must fail before ToS ack");
-
-        run_with_args(&[
-            "ack-wayfern-tos".to_string(),
-            "--root".to_string(),
-            root.clone(),
-            "--profile-id".to_string(),
-            profile_id.clone(),
         ])
-        .expect("ack wayfern tos");
-
-        for _ in 0..3 {
-            let plan = run_with_args(&[
-                "build-launch-plan".to_string(),
-                "--root".to_string(),
-                root.clone(),
-                "--profile-id".to_string(),
-                profile_id.clone(),
-                "--binary".to_string(),
-                binary_path.clone(),
-            ])
-            .expect("build launch plan");
-            assert!(plan.contains("Wayfern"));
-        }
-    });
-
-    match previous_appdata {
-        Some(value) => env::set_var("APPDATA", value),
-        None => env::remove_var("APPDATA"),
+        .expect("build launch plan");
+        assert!(plan.contains("Chromium"));
     }
-
-    result.expect("wayfern launcher flow");
 }
 
 #[test]
@@ -83,7 +45,7 @@ fn launcher_multi_profile_listing_remains_stable() {
     let root = temp.path().to_string_lossy().to_string();
     let names = [
         ("Alpha", "librewolf"),
-        ("Beta", "wayfern"),
+        ("Beta", "chromium"),
         ("Gamma", "librewolf"),
     ];
 

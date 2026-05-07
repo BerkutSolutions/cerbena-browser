@@ -11,7 +11,7 @@ fn profile_archive_roundtrip_is_encrypted_and_validated() {
             name: "Exportable".to_string(),
             description: None,
             tags: vec!["sync".to_string()],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,

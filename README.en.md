@@ -9,15 +9,14 @@
 [GitHub](https://github.com/BerkutSolutions/cerbena-browser)
 [Wiki](https://berkutsolutions.github.io/cerbena-browser/)
 
-`Cerbena Browser` is a secure desktop browsing platform built around zero-trust enforcement, strong profile isolation, explicit traffic-isolation strategies, and a launcher-managed runtime boundary for `Wayfern` and `LibreWolf`.
+`Cerbena Browser` is a secure desktop browsing platform built around zero-trust enforcement, strong profile isolation, explicit traffic-isolation strategies, and a launcher-managed runtime boundary for `Chromium`, `Ungoogled Chromium`, and `LibreWolf`.
 
-Firefox-family support is now explicitly `LibreWolf`-only: the legacy `Camoufox` runtime path has been fully removed from the product, documentation, and operator flows.
 
 ## Product Overview
 
 Cerbena Browser is not a thin profile manager layered on top of a regular browser. It is a dedicated launcher and runtime boundary that manages:
 
-- isolated profiles for `Wayfern` and `LibreWolf`;
+- isolated profiles for `Chromium`, `Ungoogled Chromium`, and `LibreWolf`;
 - per-profile route modes: `direct`, `proxy`, `vpn`, `tor`, and `hybrid`;
 - explicit isolation strategies: `isolated`, `compatibility-native`, `container`, and `blocked`;
 - DNS policies, blocklists, service restrictions, and domain blacklists;
@@ -80,7 +79,7 @@ The project provides:
 - Frontend: local `web UI`
 - Workspace: `Cargo` multi-crate
 - Documentation: `Docusaurus`
-- Browser engines: `Wayfern`, `LibreWolf`
+- Browser engines: `Chromium`, `Ungoogled Chromium`, `LibreWolf`
 - Managed runtime: `sing-box`, `openvpn`, `amneziawg`, `tor`, Docker-managed container helpers
 
 ## Quick Start

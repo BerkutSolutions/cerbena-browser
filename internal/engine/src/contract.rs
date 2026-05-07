@@ -5,9 +5,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum EngineKind {
-    Wayfern,
+    #[serde(rename = "chromium")]
+    Chromium,
+    #[serde(rename = "ungoogled-chromium")]
+    UngoogledChromium,
+    #[serde(rename = "librewolf")]
     Librewolf,
 }
 
@@ -53,4 +56,18 @@ pub trait EngineAdapter {
     fn install(&self, downloaded_path: &std::path::Path) -> Result<PathBuf, EngineError>;
     fn build_launch_plan(&self, request: LaunchRequest) -> Result<LaunchPlan, EngineError>;
     fn launch(&self, request: LaunchRequest) -> Result<u32, EngineError>;
+}
+
+impl EngineKind {
+    pub fn as_key(&self) -> &'static str {
+        match self {
+            EngineKind::Chromium => "chromium",
+            EngineKind::UngoogledChromium => "ungoogled-chromium",
+            EngineKind::Librewolf => "librewolf",
+        }
+    }
+
+    pub fn is_chromium_family(&self) -> bool {
+        matches!(self, EngineKind::Chromium | EngineKind::UngoogledChromium)
+    }
 }

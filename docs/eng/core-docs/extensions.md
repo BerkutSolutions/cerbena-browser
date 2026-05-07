@@ -21,7 +21,7 @@ Cerbena Browser stores extensions in a shared library, but applies them to profi
 ## Isolation rules
 
 - installation state and local data are per-profile;
-- engine compatibility is validated (`Wayfern` vs `LibreWolf`);
+- engine compatibility is validated (`Chromium-family` vs `LibreWolf`);
 - extension policy must not bypass the profile route or DNS policy.
 
 ## Workflow

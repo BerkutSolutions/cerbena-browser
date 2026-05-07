@@ -21,19 +21,26 @@ use crate::{
     contract::{EngineAdapter, EngineError, EngineKind},
     progress::EngineDownloadProgress,
     registry::EngineRegistry,
-    wayfern::WayfernAdapter,
+    chromium::ChromiumAdapter,
+    ungoogled_chromium::UngoogledChromiumAdapter,
 };
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36";
-const WAYFERN_VERSION_URLS: [&str; 2] = [
-    "https://download.wayfern.com/version.json",
-    "https://donutbrowser.com/wayfern.json",
-];
+const CHROMIUM_SNAPSHOTS_BASE_URL: &str =
+    "https://storage.googleapis.com/chromium-browser-snapshots";
 const LIBREWOLF_RELEASES_URL: &str =
     "https://api.github.com/repos/librewolf-community/browser-windows/releases?per_page=20";
 const LIBREWOLF_WINDOWS_INSTALLATION_URL: &str = "https://librewolf.net/installation/windows/";
-const WAYFERN_POLICY_EXTENSION_VERSION: &str = env!("CARGO_PKG_VERSION");
+const UNGOOGLED_CHROMIUM_WINDOWS_RELEASES_URL: &str =
+    "https://api.github.com/repos/ungoogled-software/ungoogled-chromium-windows/releases?per_page=20";
+const UNGOOGLED_CHROMIUM_MACOS_RELEASES_URL: &str =
+    "https://api.github.com/repos/ungoogled-software/ungoogled-chromium-macos/releases?per_page=20";
+const UNGOOGLED_CHROMIUM_LINUX_RELEASES_URL: &str =
+    "https://api.github.com/repos/ungoogled-software/ungoogled-chromium/releases?per_page=20";
+const CHROMIUM_POLICY_EXTENSION_VERSION: &str = env!("CARGO_PKG_VERSION");
+const DEFAULT_ZERO_BYTES_TIMEOUT_SECS: u64 = 30;
+const GITHUB_ZERO_BYTES_TIMEOUT_SECS: u64 = 180;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineInstallation {
@@ -48,7 +55,6 @@ pub struct EngineRuntime {
     install_root: PathBuf,
     cache_dir: PathBuf,
     registry: EngineRegistry,
-    tos_version: String,
 }
 
 #[derive(Debug, Clone)]
@@ -59,19 +65,13 @@ struct ResolvedArtifact {
     file_name: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct WayfernVersionInfo {
-    version: String,
-    downloads: std::collections::HashMap<String, Option<String>>,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GithubRelease {
     tag_name: String,
     assets: Vec<GithubAsset>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GithubAsset {
     name: String,
     browser_download_url: String,
@@ -143,27 +143,7 @@ impl EngineRuntime {
             install_root,
             cache_dir,
             registry,
-            tos_version: "2026-04".to_string(),
         })
-    }
-
-    pub fn acknowledge_wayfern_tos(
-        &self,
-        profile_root: &Path,
-        profile_id: uuid::Uuid,
-    ) -> Result<(), EngineError> {
-        self.wayfern_adapter()
-            .acknowledge_tos(profile_root, profile_id)
-    }
-
-    pub fn requires_wayfern_tos_ack(
-        &self,
-        profile_root: &Path,
-        profile_id: uuid::Uuid,
-    ) -> Result<bool, EngineError> {
-        Ok(!self
-            .wayfern_adapter()
-            .is_tos_acknowledged(profile_root, profile_id)?)
     }
 
     pub fn installed(&self, engine: EngineKind) -> Result<Option<EngineInstallation>, EngineError> {
@@ -292,14 +272,6 @@ impl EngineRuntime {
         } else {
             installation.binary_path
         };
-        if matches!(engine, EngineKind::Wayfern) {
-            self.wayfern_adapter().finalize_runtime_acceptance(
-                &profile_root,
-                profile_id,
-                &binary_path,
-                &installation.version,
-            )?;
-        }
         let request = crate::contract::LaunchRequest {
             profile_id,
             profile_root: profile_root.clone(),
@@ -322,7 +294,8 @@ impl EngineRuntime {
             request.args
         );
         match engine {
-            EngineKind::Wayfern => self.wayfern_adapter().launch(request),
+            EngineKind::Chromium => self.chromium_adapter().launch(request),
+            EngineKind::UngoogledChromium => self.ungoogled_chromium_adapter().launch(request),
             EngineKind::Librewolf => self.librewolf_adapter().launch(request),
         }
     }
@@ -362,48 +335,45 @@ impl EngineRuntime {
 
     fn resolve_artifact(&self, engine: EngineKind) -> Result<ResolvedArtifact, EngineError> {
         match engine {
-            EngineKind::Wayfern => self.resolve_wayfern_artifact(),
+            EngineKind::Chromium => self.resolve_chromium_artifact(),
+            EngineKind::UngoogledChromium => self.resolve_ungoogled_chromium_artifact(),
             EngineKind::Librewolf => self.resolve_librewolf_artifact(),
         }
     }
 
-    fn resolve_wayfern_artifact(&self) -> Result<ResolvedArtifact, EngineError> {
+    fn resolve_chromium_artifact(&self) -> Result<ResolvedArtifact, EngineError> {
         let client = http_client()?;
-        let mut last_error = None;
-        for url in WAYFERN_VERSION_URLS {
-            match client.get(url).send() {
-                Ok(response) if response.status().is_success() => {
-                    let info: WayfernVersionInfo = response
-                        .json()
-                        .map_err(|e| EngineError::Download(e.to_string()))?;
-                    let platform_key = current_platform_key()?;
-                    let download_url = info
-                        .downloads
-                        .get(&platform_key)
-                        .and_then(|value| value.clone())
-                        .ok_or_else(|| {
-                            EngineError::Install(format!(
-                                "Wayfern has no compatible download for platform {platform_key}"
-                            ))
-                        })?;
-                    return Ok(ResolvedArtifact {
-                        engine: EngineKind::Wayfern,
-                        version: info.version,
-                        file_name: file_name_from_url(&download_url, "wayfern")?,
-                        download_url,
-                    });
-                }
-                Ok(response) => {
-                    last_error = Some(format!("{url}: HTTP {}", response.status()));
-                }
-                Err(error) => {
-                    last_error = Some(format!("{url}: {error}"));
-                }
-            }
+        let platform_dir = chromium_snapshot_platform_dir()?;
+        let last_change_url = format!("{CHROMIUM_SNAPSHOTS_BASE_URL}/{platform_dir}/LAST_CHANGE");
+        let response = client
+            .get(&last_change_url)
+            .send()
+            .map_err(|e| EngineError::Download(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(EngineError::Download(format!(
+                "chromium LAST_CHANGE request failed with HTTP {}",
+                response.status()
+            )));
         }
-        Err(EngineError::Download(last_error.unwrap_or_else(|| {
-            "failed to resolve Wayfern version".to_string()
-        })))
+        let revision = response
+            .text()
+            .map_err(|e| EngineError::Download(e.to_string()))?
+            .trim()
+            .to_string();
+        if revision.is_empty() {
+            return Err(EngineError::Download(
+                "chromium LAST_CHANGE returned an empty revision".to_string(),
+            ));
+        }
+        let archive_name = chromium_snapshot_archive_name()?;
+        let download_url =
+            format!("{CHROMIUM_SNAPSHOTS_BASE_URL}/{platform_dir}/{revision}/{archive_name}");
+        Ok(ResolvedArtifact {
+            engine: EngineKind::Chromium,
+            version: revision,
+            file_name: archive_name.to_string(),
+            download_url,
+        })
     }
 
     fn resolve_librewolf_artifact(&self) -> Result<ResolvedArtifact, EngineError> {
@@ -441,6 +411,38 @@ impl EngineRuntime {
         }
         Err(EngineError::Download(format!(
             "no compatible LibreWolf asset found for suffix {suffix}"
+        )))
+    }
+
+    fn resolve_ungoogled_chromium_artifact(&self) -> Result<ResolvedArtifact, EngineError> {
+        let client = http_client()?;
+        let response = client
+            .get(ungoogled_chromium_releases_url()?)
+            .send()
+            .map_err(|e| EngineError::Download(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(EngineError::Download(format!(
+                "ungoogled-chromium releases request failed with HTTP {}",
+                response.status()
+            )));
+        }
+        let releases: Vec<GithubRelease> = response
+            .json()
+            .map_err(|e| EngineError::Download(e.to_string()))?;
+        for release in releases {
+            if let Some(asset) = select_ungoogled_chromium_asset(&release)? {
+                return Ok(ResolvedArtifact {
+                    engine: EngineKind::UngoogledChromium,
+                    version: release.tag_name,
+                    file_name: asset.name,
+                    download_url: asset.browser_download_url,
+                });
+            }
+        }
+        let suffixes = ungoogled_chromium_asset_suffixes()?;
+        Err(EngineError::Download(format!(
+            "no compatible ungoogled-chromium asset found for suffixes {:?}",
+            suffixes
         )))
     }
 
@@ -490,9 +492,34 @@ impl EngineRuntime {
         C: Fn() -> bool,
     {
         if cfg!(target_os = "windows") {
-            return self.download_artifact_with_curl(artifact, emit, should_cancel);
+            match self.download_artifact_with_curl(artifact, emit, should_cancel) {
+                Ok(path) => return Ok(path),
+                Err(EngineError::Download(message)) if should_fallback_to_reqwest(&message) => {
+                    eprintln!(
+                        "[engine-runtime] curl download fallback {} {} reason={}",
+                        artifact.engine.as_key(),
+                        artifact.version,
+                        message
+                    );
+                    return self.download_artifact_with_reqwest(artifact, emit, should_cancel);
+                }
+                Err(error) => return Err(error),
+            }
         }
 
+        self.download_artifact_with_reqwest(artifact, emit, should_cancel)
+    }
+
+    fn download_artifact_with_reqwest<F, C>(
+        &self,
+        artifact: &ResolvedArtifact,
+        emit: &mut F,
+        should_cancel: &C,
+    ) -> Result<PathBuf, EngineError>
+    where
+        F: FnMut(EngineDownloadProgress),
+        C: Fn() -> bool,
+    {
         let client = http_client()?;
         fs::create_dir_all(&self.cache_dir)?;
         let target = self.cache_dir.join(&artifact.file_name);
@@ -613,6 +640,7 @@ impl EngineRuntime {
         fs::create_dir_all(&self.cache_dir)?;
         let target = self.cache_dir.join(&artifact.file_name);
         let host = host_from_url(&artifact.download_url);
+        let zero_bytes_timeout_secs = zero_bytes_timeout_secs(&host);
         let total = probe_content_length_with_curl(&artifact.download_url);
 
         emit(EngineDownloadProgress {
@@ -687,14 +715,14 @@ impl EngineRuntime {
                 ));
             }
             let downloaded = fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0);
-            if downloaded == 0 && start.elapsed().as_secs() >= 30 {
+            if downloaded == 0 && start.elapsed().as_secs() >= zero_bytes_timeout_secs {
                 let _ = child.kill();
                 let _ = child.wait();
                 let host_label = host
                     .clone()
                     .unwrap_or_else(|| artifact.download_url.clone());
                 return Err(EngineError::Download(format!(
-                    "no bytes received from {host_label} within 30 seconds"
+                    "no bytes received from {host_label} within {zero_bytes_timeout_secs} seconds"
                 )));
             }
 
@@ -775,12 +803,21 @@ impl EngineRuntime {
 
     fn locate_binary(&self, engine: EngineKind, root: &Path) -> Result<PathBuf, EngineError> {
         let candidates = match engine {
-            EngineKind::Wayfern => candidate_names(&[
+            EngineKind::Chromium => candidate_names(&[
                 "chrome.exe",
                 "chrome",
-                "wayfern-browser.exe",
-                "wayfern.exe",
-                "wayfern",
+                "chromium-browser.exe",
+                "chromium.exe",
+                "chromium",
+            ]),
+            EngineKind::UngoogledChromium => candidate_names(&[
+                "chrome.exe",
+                "chrome",
+                "ungoogled-chromium.exe",
+                "ungoogled-chromium",
+                "chromium-browser.exe",
+                "chromium.exe",
+                "chromium",
             ]),
             EngineKind::Librewolf => candidate_names(&[
                 "librewolf.exe",
@@ -799,11 +836,17 @@ impl EngineRuntime {
         Ok(binary)
     }
 
-    fn wayfern_adapter(&self) -> WayfernAdapter {
-        WayfernAdapter {
+    fn chromium_adapter(&self) -> ChromiumAdapter {
+        ChromiumAdapter {
             install_root: self.install_root.clone(),
             cache_dir: self.cache_dir.clone(),
-            tos_version: self.tos_version.clone(),
+        }
+    }
+
+    fn ungoogled_chromium_adapter(&self) -> UngoogledChromiumAdapter {
+        UngoogledChromiumAdapter {
+            install_root: self.install_root.clone(),
+            cache_dir: self.cache_dir.clone(),
         }
     }
 
@@ -820,7 +863,9 @@ impl EngineRuntime {
         mut installation: EngineInstallation,
     ) -> Result<EngineInstallation, EngineError> {
         let normalized_binary_path = match engine {
-            EngineKind::Wayfern => prefer_wayfern_vendor_binary(&installation.binary_path),
+            EngineKind::Chromium | EngineKind::UngoogledChromium => {
+                prefer_chromium_vendor_binary(&installation.binary_path)
+            }
             EngineKind::Librewolf => installation.binary_path.clone(),
         };
         if normalized_binary_path != installation.binary_path {
@@ -911,26 +956,52 @@ fn extract_tar_xz(archive_path: &Path, target_dir: &Path) -> Result<(), EngineEr
     Ok(())
 }
 
-fn current_platform_key() -> Result<String, EngineError> {
-    let os = if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "linux") {
-        "linux"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else {
+fn chromium_snapshot_platform_dir() -> Result<&'static str, EngineError> {
+    if cfg!(target_os = "windows") {
+        if cfg!(target_arch = "x86_64") {
+            return Ok("Win_x64");
+        }
         return Err(EngineError::Install(
-            "unsupported operating system".to_string(),
+            "unsupported Chromium Windows architecture".to_string(),
         ));
-    };
-    let arch = if cfg!(target_arch = "x86_64") {
-        "x64"
-    } else if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        return Err(EngineError::Install("unsupported architecture".to_string()));
-    };
-    Ok(format!("{os}-{arch}"))
+    }
+    if cfg!(target_os = "linux") {
+        if cfg!(target_arch = "x86_64") {
+            return Ok("Linux_x64");
+        }
+        return Err(EngineError::Install(
+            "unsupported Chromium Linux architecture".to_string(),
+        ));
+    }
+    if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "x86_64") {
+            return Ok("Mac");
+        }
+        if cfg!(target_arch = "aarch64") {
+            return Ok("Mac_Arm");
+        }
+        return Err(EngineError::Install(
+            "unsupported Chromium macOS architecture".to_string(),
+        ));
+    }
+    Err(EngineError::Install(
+        "unsupported Chromium operating system".to_string(),
+    ))
+}
+
+fn chromium_snapshot_archive_name() -> Result<&'static str, EngineError> {
+    if cfg!(target_os = "windows") {
+        return Ok("chrome-win.zip");
+    }
+    if cfg!(target_os = "linux") {
+        return Ok("chrome-linux.zip");
+    }
+    if cfg!(target_os = "macos") {
+        return Ok("chrome-mac.zip");
+    }
+    Err(EngineError::Install(
+        "unsupported Chromium archive format".to_string(),
+    ))
 }
 
 fn librewolf_asset_suffix() -> Result<String, EngineError> {
@@ -1093,6 +1164,24 @@ fn host_from_url(url: &str) -> Option<String> {
         .and_then(|parsed| parsed.host_str().map(|value| value.to_string()))
 }
 
+fn zero_bytes_timeout_secs(host: &Option<String>) -> u64 {
+    let Some(host) = host.as_deref() else {
+        return DEFAULT_ZERO_BYTES_TIMEOUT_SECS;
+    };
+    let host = host.to_ascii_lowercase();
+    if host == "github.com" || host.ends_with(".github.com") || host.ends_with("githubusercontent.com") {
+        return GITHUB_ZERO_BYTES_TIMEOUT_SECS;
+    }
+    DEFAULT_ZERO_BYTES_TIMEOUT_SECS
+}
+
+fn should_fallback_to_reqwest(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("curl download failed: curl: (28) connection timed out")
+        || normalized.contains("curl download failed: curl: (28) failed to connect")
+        || normalized.contains("no bytes received from")
+}
+
 fn candidate_names(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
@@ -1138,7 +1227,7 @@ fn prefer_librewolf_browser_binary(current: &Path) -> PathBuf {
     current.to_path_buf()
 }
 
-fn prefer_wayfern_vendor_binary(current: &Path) -> PathBuf {
+fn prefer_chromium_vendor_binary(current: &Path) -> PathBuf {
     let Some(parent) = current.parent() else {
         return current.to_path_buf();
     };
@@ -1167,7 +1256,7 @@ fn launch_args(
 ) -> Result<Vec<String>, EngineError> {
     let runtime_dir = profile_root.join("engine-profile");
     match engine {
-        EngineKind::Wayfern => {
+        EngineKind::Chromium | EngineKind::UngoogledChromium => {
             let locked_app = load_locked_app_config(profile_root)?;
             let identity_policy = load_identity_launch_policy(profile_root);
             // Keep launch command size bounded on Windows. Huge domain blocklists can
@@ -1194,13 +1283,13 @@ fn launch_args(
             }
             if gateway_proxy_port.is_none() {
                 if let Some(host_rules) =
-                    wayfern_host_resolver_rules(profile_root, MAX_HOST_RESOLVER_RULES_LEN)
+                    chromium_host_resolver_rules(profile_root, MAX_HOST_RESOLVER_RULES_LEN)
                 {
                     args.push(format!("--host-resolver-rules={host_rules}"));
                 }
             }
-            apply_wayfern_identity_args(profile_root, identity_policy.as_ref(), &mut args)?;
-            let extension_dirs = prepare_wayfern_extension_dirs(profile_root)?;
+            apply_chromium_identity_args(profile_root, identity_policy.as_ref(), &mut args)?;
+            let extension_dirs = prepare_chromium_extension_dirs(profile_root)?;
             if !extension_dirs.is_empty() {
                 let joined = extension_dirs
                     .iter()
@@ -1239,7 +1328,7 @@ fn reopen_args(
 ) -> Result<Vec<String>, EngineError> {
     let runtime_dir = profile_root.join("engine-profile");
     Ok(match engine {
-        EngineKind::Wayfern => {
+        EngineKind::Chromium | EngineKind::UngoogledChromium => {
             let locked_app = load_locked_app_config(profile_root)?;
             let mut args = vec![format!("--user-data-dir={}", runtime_dir.to_string_lossy())];
             if let Some(config) = locked_app {
@@ -1267,7 +1356,7 @@ fn load_identity_launch_policy(profile_root: &Path) -> Option<IdentityLaunchPoli
     serde_json::from_slice(&raw).ok()
 }
 
-fn apply_wayfern_identity_args(
+fn apply_chromium_identity_args(
     profile_root: &Path,
     identity: Option<&IdentityLaunchPolicy>,
     args: &mut Vec<String>,
@@ -1298,20 +1387,22 @@ fn apply_wayfern_identity_args(
     );
     if !languages.is_empty() {
         args.push(format!("--accept-lang={}", languages.join(",")));
-        write_wayfern_language_preferences(profile_root, &languages)?;
-        write_wayfern_local_state_locale(profile_root, &languages)?;
+        write_chromium_language_preferences(profile_root, &languages)?;
+        write_chromium_local_state_locale(profile_root, &languages)?;
     }
     Ok(())
 }
 
 fn launch_environment(engine: EngineKind, profile_root: &Path) -> Vec<(String, String)> {
     match engine {
-        EngineKind::Wayfern => wayfern_launch_environment(profile_root),
+        EngineKind::Chromium | EngineKind::UngoogledChromium => {
+            chromium_launch_environment(profile_root)
+        }
         EngineKind::Librewolf => Vec::new(),
     }
 }
 
-fn wayfern_launch_environment(profile_root: &Path) -> Vec<(String, String)> {
+fn chromium_launch_environment(profile_root: &Path) -> Vec<(String, String)> {
     let Some(identity) = load_identity_launch_policy(profile_root) else {
         return Vec::new();
     };
@@ -1380,7 +1471,7 @@ fn build_accept_language_header(languages: &[String]) -> String {
         .join(",")
 }
 
-fn write_wayfern_language_preferences(
+fn write_chromium_language_preferences(
     profile_root: &Path,
     languages: &[String],
 ) -> Result<(), EngineError> {
@@ -1400,7 +1491,7 @@ fn write_wayfern_language_preferences(
         value = serde_json::json!({});
     }
     let root = value.as_object_mut().ok_or_else(|| {
-        EngineError::Launch("wayfern preferences root is not an object".to_string())
+        EngineError::Launch("chromium preferences root is not an object".to_string())
     })?;
     let intl = root
         .entry("intl".to_string())
@@ -1415,7 +1506,7 @@ fn write_wayfern_language_preferences(
     Ok(())
 }
 
-fn write_wayfern_local_state_locale(
+fn write_chromium_local_state_locale(
     profile_root: &Path,
     languages: &[String],
 ) -> Result<(), EngineError> {
@@ -1432,7 +1523,7 @@ fn write_wayfern_local_state_locale(
         value = serde_json::json!({});
     }
     let root = value.as_object_mut().ok_or_else(|| {
-        EngineError::Launch("wayfern local state root is not an object".to_string())
+        EngineError::Launch("chromium local state root is not an object".to_string())
     })?;
     let intl = root
         .entry("intl".to_string())
@@ -1447,7 +1538,7 @@ fn write_wayfern_local_state_locale(
     Ok(())
 }
 
-fn wayfern_host_resolver_rules(profile_root: &Path, max_len: usize) -> Option<String> {
+fn chromium_host_resolver_rules(profile_root: &Path, max_len: usize) -> Option<String> {
     let path = profile_root.join("policy").join("blocked-domains.json");
     let raw = fs::read(path).ok()?;
     let domains: Vec<String> = serde_json::from_slice(&raw).ok()?;
@@ -1502,7 +1593,7 @@ fn chromium_extension_version(raw: &str) -> String {
     }
 }
 
-fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<PathBuf>, EngineError> {
+fn prepare_chromium_blocking_extension(profile_root: &Path) -> Result<Option<PathBuf>, EngineError> {
     let blocked_domains = blocked_domains_for_profile(profile_root)?;
     let locked_app = load_locked_app_config(profile_root)?;
     let identity = load_identity_launch_policy(profile_root);
@@ -1516,12 +1607,12 @@ fn prepare_wayfern_blocking_extension(profile_root: &Path) -> Result<Option<Path
         return Ok(None);
     }
 
-    let extension_dir = profile_root.join("policy").join("wayfern-policy-extension");
+    let extension_dir = profile_root.join("policy").join("chromium-policy-extension");
     fs::create_dir_all(&extension_dir)?;
     let manifest = serde_json::json!({
         "manifest_version": 3,
         "name": "Cerbena Policy Firewall",
-        "version": chromium_extension_version(WAYFERN_POLICY_EXTENSION_VERSION),
+        "version": chromium_extension_version(CHROMIUM_POLICY_EXTENSION_VERSION),
         "description": "Profile-scoped outbound policy enforcement for blocked domains.",
         "declarative_net_request": {
             "rule_resources": [
@@ -1687,12 +1778,12 @@ fn resolve_locked_app_target_url(config: &LockedAppConfig, requested_url: &str) 
     }
 }
 
-fn prepare_wayfern_extension_dirs(profile_root: &Path) -> Result<Vec<PathBuf>, EngineError> {
+fn prepare_chromium_extension_dirs(profile_root: &Path) -> Result<Vec<PathBuf>, EngineError> {
     let mut dirs = Vec::new();
-    if let Some(blocking_extension) = prepare_wayfern_blocking_extension(profile_root)? {
+    if let Some(blocking_extension) = prepare_chromium_blocking_extension(profile_root)? {
         dirs.push(blocking_extension);
     }
-    let profile_extensions_root = profile_root.join("policy").join("wayfern-extensions");
+    let profile_extensions_root = profile_root.join("policy").join("chromium-extensions");
     if profile_extensions_root.exists() {
         let mut discovered = fs::read_dir(profile_extensions_root)?
             .flatten()
@@ -1727,13 +1818,14 @@ mod tests {
     use super::{
         blocked_domains_for_profile, build_accept_language_header, chromium_extension_version,
         extract_librewolf_download_url, launch_args, parse_librewolf_version_from_file_name,
-        prefer_wayfern_vendor_binary, prepare_wayfern_blocking_extension,
-        wayfern_launch_environment, EngineKind, EngineRuntime, WAYFERN_POLICY_EXTENSION_VERSION,
+        prefer_chromium_vendor_binary, prepare_chromium_blocking_extension,
+        chromium_launch_environment, select_ungoogled_chromium_asset, EngineKind, EngineRuntime,
+        GithubAsset, GithubRelease, CHROMIUM_POLICY_EXTENSION_VERSION,
     };
     use std::fs;
 
     #[test]
-    fn prepares_wayfern_blocking_extension_from_blocked_domains() {
+    fn prepares_chromium_blocking_extension_from_blocked_domains() {
         let temp = tempfile::tempdir().expect("tempdir");
         let policy_dir = temp.path().join("policy");
         fs::create_dir_all(&policy_dir).expect("policy dir");
@@ -1748,7 +1840,7 @@ mod tests {
         )
         .expect("write blocked domains");
 
-        let extension_dir = prepare_wayfern_blocking_extension(temp.path())
+        let extension_dir = prepare_chromium_blocking_extension(temp.path())
             .expect("prepare extension")
             .expect("extension dir");
 
@@ -1758,7 +1850,7 @@ mod tests {
         assert!(manifest_raw.contains("\"manifest_version\": 3"));
         assert!(manifest_raw.contains(&format!(
             "\"version\": \"{}\"",
-            chromium_extension_version(WAYFERN_POLICY_EXTENSION_VERSION)
+            chromium_extension_version(CHROMIUM_POLICY_EXTENSION_VERSION)
         )));
         assert!(rules_raw.contains("||youtube.com^"));
         assert!(rules_raw.contains("||example.com^"));
@@ -1772,7 +1864,7 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_blocked_domains_for_wayfern_extension() {
+    fn normalizes_blocked_domains_for_chromium_extension() {
         let temp = tempfile::tempdir().expect("tempdir");
         let policy_dir = temp.path().join("policy");
         fs::create_dir_all(&policy_dir).expect("policy dir");
@@ -1792,7 +1884,7 @@ mod tests {
     }
 
     #[test]
-    fn prepares_locked_app_block_rule_for_wayfern_extension() {
+    fn prepares_locked_app_block_rule_for_chromium_extension() {
         let temp = tempfile::tempdir().expect("tempdir");
         let policy_dir = temp.path().join("policy");
         fs::create_dir_all(&policy_dir).expect("policy dir");
@@ -1806,7 +1898,7 @@ mod tests {
         )
         .expect("write locked app");
 
-        let extension_dir = prepare_wayfern_blocking_extension(temp.path())
+        let extension_dir = prepare_chromium_blocking_extension(temp.path())
             .expect("prepare extension")
             .expect("extension dir");
         let rules_raw = fs::read_to_string(extension_dir.join("rules.json")).expect("rules");
@@ -1816,7 +1908,7 @@ mod tests {
     }
 
     #[test]
-    fn prepares_accept_language_rule_for_wayfern_extension() {
+    fn prepares_accept_language_rule_for_chromium_extension() {
         let temp = tempfile::tempdir().expect("tempdir");
         let policy_dir = temp.path().join("policy");
         fs::create_dir_all(&policy_dir).expect("policy dir");
@@ -1832,7 +1924,7 @@ mod tests {
         )
         .expect("write identity policy");
 
-        let extension_dir = prepare_wayfern_blocking_extension(temp.path())
+        let extension_dir = prepare_chromium_blocking_extension(temp.path())
             .expect("prepare extension")
             .expect("extension dir");
         let manifest_raw =
@@ -1859,10 +1951,10 @@ mod tests {
     }
 
     #[test]
-    fn wayfern_launch_args_skip_accept_terms_flag() {
+    fn chromium_launch_args_skip_accept_terms_flag() {
         let temp = tempfile::tempdir().expect("tempdir");
         let args = launch_args(
-            EngineKind::Wayfern,
+            EngineKind::Chromium,
             temp.path(),
             "https://duckduckgo.com",
             false,
@@ -1879,7 +1971,30 @@ mod tests {
     }
 
     #[test]
-    fn wayfern_launch_args_apply_identity_policy_overrides() {
+    fn ungoogled_chromium_launch_args_reuse_chromium_family_behavior() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let args = launch_args(
+            EngineKind::UngoogledChromium,
+            temp.path(),
+            "https://duckduckgo.com",
+            true,
+            None,
+            true,
+        )
+        .expect("launch args");
+
+        let expected_user_data_dir =
+            format!("--user-data-dir={}", temp.path().join("engine-profile").to_string_lossy());
+        assert!(args
+            .iter()
+            .any(|value| value == &expected_user_data_dir));
+        assert!(args.iter().any(|value| value == "--incognito"));
+        assert!(args.iter().any(|value| value == "--disable-sync"));
+        assert!(args.iter().any(|value| value == "https://duckduckgo.com"));
+    }
+
+    #[test]
+    fn chromium_launch_args_apply_identity_policy_overrides() {
         let temp = tempfile::tempdir().expect("tempdir");
         let policy_dir = temp.path().join("policy");
         fs::create_dir_all(&policy_dir).expect("policy dir");
@@ -1909,7 +2024,7 @@ mod tests {
         .expect("write identity policy");
 
         let args = launch_args(
-            EngineKind::Wayfern,
+            EngineKind::Chromium,
             temp.path(),
             "https://duckduckgo.com",
             false,
@@ -1959,7 +2074,7 @@ mod tests {
             Some("ru,en,en-GB,en-US")
         );
 
-        let env = wayfern_launch_environment(temp.path());
+        let env = chromium_launch_environment(temp.path());
         assert_eq!(
             env,
             vec![
@@ -1971,7 +2086,7 @@ mod tests {
     }
 
     #[test]
-    fn wayfern_real_mode_keeps_native_user_agent() {
+    fn chromium_real_mode_keeps_native_user_agent() {
         let temp = tempfile::tempdir().expect("tempdir");
         let policy_dir = temp.path().join("policy");
         fs::create_dir_all(&policy_dir).expect("policy dir");
@@ -1992,7 +2107,7 @@ mod tests {
         .expect("write identity policy");
 
         let args = launch_args(
-            EngineKind::Wayfern,
+            EngineKind::Chromium,
             temp.path(),
             "https://duckduckgo.com",
             false,
@@ -2011,32 +2126,48 @@ mod tests {
     }
 
     #[test]
-    fn wayfern_prefers_vendor_chrome_binary_over_launcher_alias() {
+    fn chromium_prefers_vendor_chrome_binary_over_launcher_alias() {
         let temp = tempfile::tempdir().expect("tempdir");
         let chrome = temp.path().join("chrome.exe");
-        let alias = temp.path().join("wayfern-browser.exe");
+        let alias = temp.path().join("chromium-browser.exe");
         fs::write(&chrome, b"vendor chrome").expect("write chrome stub");
         fs::write(&alias, b"launcher alias").expect("write alias stub");
 
         let runtime = EngineRuntime::new(temp.path().join("state")).expect("runtime");
         let launch_binary = runtime
-            .locate_binary(EngineKind::Wayfern, temp.path())
-            .expect("locate wayfern binary");
+            .locate_binary(EngineKind::Chromium, temp.path())
+            .expect("locate chromium binary");
 
         assert_eq!(launch_binary, chrome);
     }
 
     #[test]
-    fn wayfern_prefers_vendor_chrome_from_stored_alias_path() {
+    fn chromium_prefers_vendor_chrome_from_stored_alias_path() {
         let temp = tempfile::tempdir().expect("tempdir");
         let chrome = temp.path().join("chrome.exe");
-        let alias = temp.path().join("wayfern-browser.exe");
+        let alias = temp.path().join("chromium-browser.exe");
         fs::write(&chrome, b"vendor chrome").expect("write chrome stub");
         fs::write(&alias, b"launcher alias").expect("write alias stub");
 
-        let resolved = prefer_wayfern_vendor_binary(&alias);
+        let resolved = prefer_chromium_vendor_binary(&alias);
 
         assert_eq!(resolved, chrome);
+    }
+
+    #[test]
+    fn ungoogled_chromium_prefers_vendor_chrome_binary_over_named_wrapper() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let chrome = temp.path().join("chrome.exe");
+        let wrapper = temp.path().join("ungoogled-chromium.exe");
+        fs::write(&chrome, b"vendor chrome").expect("write chrome stub");
+        fs::write(&wrapper, b"wrapper").expect("write wrapper stub");
+
+        let runtime = EngineRuntime::new(temp.path().join("state")).expect("runtime");
+        let launch_binary = runtime
+            .locate_binary(EngineKind::UngoogledChromium, temp.path())
+            .expect("locate ungoogled chromium binary");
+
+        assert_eq!(launch_binary, chrome);
     }
 
     #[test]
@@ -2064,6 +2195,39 @@ mod tests {
             Some("150.0.1-1".to_string())
         );
     }
+
+    #[test]
+    fn selects_exact_ungoogled_chromium_windows_asset_from_release() {
+        let release = GithubRelease {
+            tag_name: "147.0.7727.137-1.1".to_string(),
+            assets: vec![
+                GithubAsset {
+                    name: "ungoogled-chromium_147.0.7727.137-1.1_installer_x64.exe"
+                        .to_string(),
+                    browser_download_url: "https://example.invalid/installer.exe".to_string(),
+                },
+                GithubAsset {
+                    name: "ungoogled-chromium_147.0.7727.137-1.1_windows_x64.zip".to_string(),
+                    browser_download_url:
+                        "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/147.0.7727.137-1.1/ungoogled-chromium_147.0.7727.137-1.1_windows_x64.zip"
+                            .to_string(),
+                },
+            ],
+        };
+
+        let asset = select_ungoogled_chromium_asset(&release)
+            .expect("select asset")
+            .expect("matching asset");
+
+        assert_eq!(
+            asset.name,
+            "ungoogled-chromium_147.0.7727.137-1.1_windows_x64.zip"
+        );
+        assert_eq!(
+            asset.browser_download_url,
+            "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/147.0.7727.137-1.1/ungoogled-chromium_147.0.7727.137-1.1_windows_x64.zip"
+        );
+    }
 }
 
 fn now_epoch_ms() -> u128 {
@@ -2073,11 +2237,79 @@ fn now_epoch_ms() -> u128 {
         .as_millis()
 }
 
-impl EngineKind {
-    pub fn as_key(&self) -> &'static str {
-        match self {
-            EngineKind::Wayfern => "wayfern",
-            EngineKind::Librewolf => "librewolf",
-        }
+fn ungoogled_chromium_releases_url() -> Result<&'static str, EngineError> {
+    if cfg!(target_os = "windows") {
+        Ok(UNGOOGLED_CHROMIUM_WINDOWS_RELEASES_URL)
+    } else if cfg!(target_os = "macos") {
+        Ok(UNGOOGLED_CHROMIUM_MACOS_RELEASES_URL)
+    } else if cfg!(target_os = "linux") {
+        Ok(UNGOOGLED_CHROMIUM_LINUX_RELEASES_URL)
+    } else {
+        Err(EngineError::Download(
+            "ungoogled-chromium is not supported on this platform".to_string(),
+        ))
     }
+}
+
+fn ungoogled_chromium_asset_suffixes() -> Result<Vec<String>, EngineError> {
+    if cfg!(target_os = "windows") {
+        Ok(vec![
+            "_windows_x64.zip".to_string(),
+            "portable_windows_x64.zip".to_string(),
+            "windows_x64.zip".to_string(),
+        ])
+    } else if cfg!(target_os = "macos") {
+        Ok(vec![".dmg".to_string()])
+    } else if cfg!(target_os = "linux") {
+        Ok(vec![".tar.xz".to_string()])
+    } else {
+        Err(EngineError::Download(
+            "ungoogled-chromium is not supported on this platform".to_string(),
+        ))
+    }
+}
+
+fn ungoogled_chromium_asset_candidates(version: &str) -> Result<Vec<String>, EngineError> {
+    if cfg!(target_os = "windows") {
+        Ok(vec![
+            format!("ungoogled-chromium_{version}_windows_x64.zip"),
+            format!("ungoogled-chromium_{version}_portable_windows_x64.zip"),
+            format!("ungoogled-chromium_{version}_installer_x64.exe"),
+        ])
+    } else if cfg!(target_os = "macos") {
+        Ok(vec![format!("ungoogled-chromium_{version}.dmg")])
+    } else if cfg!(target_os = "linux") {
+        Ok(vec![format!("ungoogled-chromium_{version}.tar.xz")])
+    } else {
+        Err(EngineError::Download(
+            "ungoogled-chromium is not supported on this platform".to_string(),
+        ))
+    }
+}
+
+fn select_ungoogled_chromium_asset(
+    release: &GithubRelease,
+) -> Result<Option<GithubAsset>, EngineError> {
+    let candidates = ungoogled_chromium_asset_candidates(&release.tag_name)?;
+    if let Some(asset) = candidates.iter().find_map(|candidate| {
+        release
+            .assets
+            .iter()
+            .find(|item| item.name.eq_ignore_ascii_case(candidate))
+            .cloned()
+    }) {
+        return Ok(Some(asset));
+    }
+
+    let suffixes = ungoogled_chromium_asset_suffixes()?;
+    Ok(release.assets.iter().find_map(|item| {
+        let lower = item.name.to_ascii_lowercase();
+        if lower.contains("ungoogled")
+            && suffixes.iter().any(|suffix| lower.ends_with(suffix))
+        {
+            Some(item.clone())
+        } else {
+            None
+        }
+    }))
 }

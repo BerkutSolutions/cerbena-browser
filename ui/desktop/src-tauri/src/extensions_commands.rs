@@ -1614,7 +1614,7 @@ fn validate_assigned_profiles(
 fn engine_scope_matches_profile(engine_scope: &str, engine: Engine) -> bool {
     match normalize_engine_scope(engine_scope).as_str() {
         "firefox" => matches!(engine, Engine::Librewolf),
-        "chromium" => matches!(engine, Engine::Wayfern),
+        "chromium" => engine.is_chromium_family(),
         _ => true,
     }
 }

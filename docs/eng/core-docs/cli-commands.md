@@ -12,7 +12,7 @@ The CLI launcher is intended for baseline local operations and release validatio
 Create a profile:
 
 ```bash
-cargo run -p cerbena-launcher -- init-profile --root <dir> --name <name> --engine wayfern
+cargo run -p cerbena-launcher -- init-profile --root <dir> --name <name> --engine chromium
 ```
 
 ### `list-profiles`
@@ -21,14 +21,6 @@ List profiles:
 
 ```bash
 cargo run -p cerbena-launcher -- list-profiles --root <dir>
-```
-
-### `ack-wayfern-tos`
-
-Acknowledge required `Wayfern` terms:
-
-```bash
-cargo run -p cerbena-launcher -- ack-wayfern-tos --root <dir> --profile-id <uuid>
 ```
 
 ### `build-launch-plan`

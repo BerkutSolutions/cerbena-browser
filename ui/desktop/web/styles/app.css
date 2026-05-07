@@ -827,7 +827,7 @@ button.danger:hover {
   isolation: isolate;
 }
 
-.extension-library-engine-badge.engine-wayfern {
+.extension-library-engine-badge.engine-chromium {
   color: rgba(190, 214, 255, 0.95);
   background: rgba(20, 36, 66, 0.92);
 }
@@ -1446,7 +1446,7 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   height: 16px;
 }
 
-.engine-wayfern {
+.engine-chromium {
   color: rgba(190, 214, 255, 0.95);
 }
 

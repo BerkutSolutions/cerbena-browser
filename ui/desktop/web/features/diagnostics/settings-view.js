@@ -1,6 +1,5 @@
 import { SEARCH_PROVIDER_PRESETS } from "../../core/catalogs.js";
-import { askConfirmModal } from "../../core/modal.js";
-import { acknowledgeWayfernTos, getWayfernTermsStatus, launchProfile } from "../profiles/api.js";
+import { launchProfile } from "../profiles/api.js";
 import { saveGlobalSecuritySettings } from "../security/api.js";
 import {
   buildGlobalSecuritySaveRequest,
@@ -158,46 +157,6 @@ function buildReleaseUrl(updateState) {
   }
   const version = releaseVersionForLink(updateState);
   return `https://github.com/BerkutSolutions/cerbena-browser/releases/tag/v${encodeURIComponent(version)}`;
-}
-
-function pendingWayfernProfileIds(model) {
-  return new Set(model.wayfernTermsStatus?.pendingProfileIds ?? []);
-}
-
-function wayfernTermsDescriptionHtml(t) {
-  return `${t("profile.wayfernTerms.description")} <a href="https://wayfern.com/terms-and-conditions" target="_blank" rel="noreferrer">${t("profile.wayfernTerms.linkLabel")}</a>`;
-}
-
-async function ensureWayfernTermsAcceptedForProfile(model, profileId, rerender, t) {
-  if (!profileId) {
-    return true;
-  }
-  const statusResult = await getWayfernTermsStatus();
-  if (statusResult.ok) {
-    model.wayfernTermsStatus = statusResult.data ?? { pendingProfileIds: [] };
-  }
-  if (!pendingWayfernProfileIds(model).has(profileId)) {
-    return true;
-  }
-  const accepted = await askConfirmModal(t, {
-    title: t("profile.wayfernTerms.title"),
-    description: t("profile.wayfernTerms.description"),
-    descriptionHtml: wayfernTermsDescriptionHtml(t),
-    submitLabel: t("action.confirm"),
-    cancelLabel: t("action.cancel")
-  });
-  if (!accepted) {
-    return false;
-  }
-  const ackResult = await acknowledgeWayfernTos(profileId);
-  if (!ackResult.ok) {
-    model.settingsNotice = { type: "error", text: String(ackResult.data.error) };
-    await rerender();
-    return false;
-  }
-  const refreshedStatus = await getWayfernTermsStatus();
-  model.wayfernTermsStatus = refreshedStatus.ok ? refreshedStatus.data : { pendingProfileIds: [] };
-  return true;
 }
 
 function renderUpdateCard(t, model) {
@@ -580,9 +539,6 @@ export async function hydrateSettingsModel(model) {
 }
 
 async function launchResolvedLink(model, url, profileId, rerender, t) {
-  if (!(await ensureWayfernTermsAcceptedForProfile(model, profileId, rerender, t))) {
-    return;
-  }
   const result = await launchProfile(profileId, url);
   model.settingsNotice = {
     type: result.ok ? "success" : "error",
@@ -1001,9 +957,6 @@ export function wireLinkLaunchModal(root, model, rerender, t) {
     if (!profileId) {
       model.settingsNotice = { type: "error", text: t("links.notice.profileRequired") };
       await rerender();
-      return;
-    }
-    if (!(await ensureWayfernTermsAcceptedForProfile(model, profileId, rerender, t))) {
       return;
     }
     if (mode === "global") {

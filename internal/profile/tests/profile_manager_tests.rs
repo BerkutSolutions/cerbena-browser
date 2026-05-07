@@ -15,7 +15,7 @@ fn create_profile_builds_isolated_layout_and_metadata() {
             name: "Main".to_string(),
             description: Some("primary profile".to_string()),
             tags: vec!["daily".to_string()],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: Some("https://example.com".to_string()),
             default_search_provider: Some("duckduckgo".to_string()),
             ephemeral_mode: false,
@@ -61,7 +61,7 @@ fn update_profile_changes_state_and_updated_at() {
         .update_profile(
             created.id,
             PatchProfileInput {
-                engine: Some(Engine::Wayfern),
+                engine: Some(Engine::Chromium),
                 state: Some(ProfileState::Ready),
                 tags: Some(vec!["work".to_string(), "isolated".to_string()]),
                 ..PatchProfileInput::default()
@@ -69,7 +69,7 @@ fn update_profile_changes_state_and_updated_at() {
         )
         .expect("update profile");
 
-    assert_eq!(updated.engine, Engine::Wayfern);
+    assert_eq!(updated.engine, Engine::Chromium);
     assert_eq!(updated.state, ProfileState::Ready);
     assert_eq!(updated.tags.len(), 2);
     assert_ne!(updated.updated_at, before);
@@ -84,7 +84,7 @@ fn delete_profile_removes_profile_tree() {
             name: "To Delete".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: true,
@@ -109,7 +109,7 @@ fn encrypted_secret_requires_correct_key() {
             name: "Encrypted".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,
@@ -178,7 +178,7 @@ fn close_profile_cleans_ephemeral_data_but_keeps_whitelist() {
             name: "Ephemeral".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: true,
@@ -247,7 +247,7 @@ fn update_profile_conflict_detected_by_expected_version() {
             name: "Versioned".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,
@@ -328,7 +328,7 @@ fn selective_wipe_removes_requested_data_types() {
             name: "Wipe".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,
@@ -384,7 +384,7 @@ fn selective_wipe_preserves_scoped_domains_in_chromium_sqlite_stores() {
             name: "Chromium Scoped".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,
@@ -542,7 +542,7 @@ fn cache_cleanup_profile_and_global_work() {
             name: "C1".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,
@@ -604,7 +604,7 @@ fn running_profile_rejects_security_flag_changes() {
             name: "Runtime Locked".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,

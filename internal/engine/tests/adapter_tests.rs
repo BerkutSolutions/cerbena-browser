@@ -1,14 +1,11 @@
-use std::{fs, sync::Mutex};
-
 use browser_engine::{
     contract::{EngineAdapter, LaunchRequest},
-    wayfern::WayfernAdapter,
+    chromium::ChromiumAdapter,
+    ungoogled_chromium::UngoogledChromiumAdapter,
     LibrewolfAdapter,
 };
 use tempfile::tempdir;
 use uuid::Uuid;
-
-static APPDATA_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn librewolf_builds_launch_plan() {
@@ -30,41 +27,41 @@ fn librewolf_builds_launch_plan() {
 }
 
 #[test]
-fn wayfern_requires_tos_ack() {
-    let _guard = APPDATA_ENV_LOCK.lock().expect("lock appdata env");
+fn chromium_builds_launch_plan_without_tos_gate() {
     let tmp = tempdir().expect("tempdir");
-    let appdata_root = tmp.path().join("appdata");
-    fs::create_dir_all(&appdata_root).expect("mk appdata");
-    let previous_appdata = std::env::var_os("APPDATA");
-    std::env::set_var("APPDATA", &appdata_root);
-    let profile_root = tmp.path().join("profile");
-    fs::create_dir_all(&profile_root).expect("mk profile");
-    let profile_id = Uuid::new_v4();
-    let adapter = WayfernAdapter {
+    let adapter = ChromiumAdapter {
         install_root: tmp.path().join("install"),
         cache_dir: tmp.path().join("cache"),
-        tos_version: "2026-04".to_string(),
     };
-
     let req = LaunchRequest {
-        profile_id,
-        profile_root: profile_root.clone(),
-        binary_path: tmp.path().join("bin").join("wayfern.exe"),
-        args: vec![],
-        env: vec![],
+        profile_id: Uuid::new_v4(),
+        profile_root: tmp.path().join("profile"),
+        binary_path: tmp.path().join("bin").join("chromium.exe"),
+        args: vec!["--profile-directory=Default".to_string()],
+        env: vec![("LANG".to_string(), "en-US.UTF-8".to_string())],
     };
-    assert!(adapter.build_launch_plan(req.clone()).is_err());
+    let plan = adapter.build_launch_plan(req).expect("plan");
+    assert_eq!(plan.engine, browser_engine::EngineKind::Chromium);
+    assert_eq!(plan.args.len(), 1);
+    assert_eq!(plan.env.len(), 1);
+}
 
-    let result = std::panic::catch_unwind(|| {
-        adapter
-            .acknowledge_tos(&profile_root, profile_id)
-            .expect("ack");
-        assert!(adapter.build_launch_plan(req).is_ok());
-    });
-
-    match previous_appdata {
-        Some(value) => std::env::set_var("APPDATA", value),
-        None => std::env::remove_var("APPDATA"),
-    }
-    result.expect("wayfern ack flow")
+#[test]
+fn ungoogled_chromium_builds_launch_plan_without_vendor_specific_gate() {
+    let tmp = tempdir().expect("tempdir");
+    let adapter = UngoogledChromiumAdapter {
+        install_root: tmp.path().join("install"),
+        cache_dir: tmp.path().join("cache"),
+    };
+    let req = LaunchRequest {
+        profile_id: Uuid::new_v4(),
+        profile_root: tmp.path().join("profile"),
+        binary_path: tmp.path().join("bin").join("ungoogled-chromium.exe"),
+        args: vec!["--profile-directory=Default".to_string()],
+        env: vec![("LANG".to_string(), "en-US.UTF-8".to_string())],
+    };
+    let plan = adapter.build_launch_plan(req).expect("plan");
+    assert_eq!(plan.engine, browser_engine::EngineKind::UngoogledChromium);
+    assert_eq!(plan.args.len(), 1);
+    assert_eq!(plan.env.len(), 1);
 }

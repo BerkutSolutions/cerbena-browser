@@ -20,7 +20,7 @@ fn panic_wipe_requires_confirmation_and_wipes_data() {
             name: "panic".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,

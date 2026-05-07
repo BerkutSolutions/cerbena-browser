@@ -35,18 +35,6 @@ export async function stopProfile(profileId) {
   return callCommand("stop_profile", { request: { profileId } });
 }
 
-export async function acknowledgeWayfernTos(profileId = null) {
-  const request = {};
-  if (profileId) {
-    request.profileId = profileId;
-  }
-  return callCommand("acknowledge_wayfern_tos", { request });
-}
-
-export async function getWayfernTermsStatus() {
-  return callCommand("get_wayfern_terms_status");
-}
-
 export async function readProfileLogs(profileId) {
   return callCommand("read_profile_logs", { request: { profileId } });
 }

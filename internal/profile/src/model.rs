@@ -4,9 +4,12 @@ use uuid::Uuid;
 use crate::errors::ProfileError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum Engine {
-    Wayfern,
+    #[serde(rename = "chromium")]
+    Chromium,
+    #[serde(rename = "ungoogled-chromium")]
+    UngoogledChromium,
+    #[serde(rename = "librewolf")]
     Librewolf,
 }
 
@@ -118,4 +121,18 @@ pub fn validate_tags(tags: &[String]) -> Result<(), ProfileError> {
         }
     }
     Ok(())
+}
+
+impl Engine {
+    pub fn as_key(&self) -> &'static str {
+        match self {
+            Engine::Chromium => "chromium",
+            Engine::UngoogledChromium => "ungoogled-chromium",
+            Engine::Librewolf => "librewolf",
+        }
+    }
+
+    pub fn is_chromium_family(&self) -> bool {
+        matches!(self, Engine::Chromium | Engine::UngoogledChromium)
+    }
 }

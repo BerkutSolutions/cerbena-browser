@@ -15,7 +15,7 @@ fn local_api_enforces_profile_scope_grants() {
             name: "P1".to_string(),
             description: None,
             tags: vec![],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: None,
             default_search_provider: None,
             ephemeral_mode: false,

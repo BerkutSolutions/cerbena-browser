@@ -97,7 +97,6 @@ Updater ownership for Windows is now explicit:
 
 ## Before shipping
 
-- confirm the `Wayfern` flow does not require a missing `ToS` acknowledgement;
 - validate the manual update flow, detached signatures, and `Authenticode` signatures;
 - validate the MSI-first update flow from an installed Windows build, including verified download, `msiexec` handoff, relaunch, and cancellation/failure recovery behavior;
 - confirm that the standalone updater reports the correct `version is current` state for an up-to-date build and that `preview` mode completes without installation;

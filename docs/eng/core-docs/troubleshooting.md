@@ -5,7 +5,6 @@ sidebar_position: 12
 
 ## The profile does not launch
 
-- verify `Wayfern ToS` acknowledgement;
 - verify the binary path exists;
 - check operator/runtime diagnostics for provisioning or startup failures.
 

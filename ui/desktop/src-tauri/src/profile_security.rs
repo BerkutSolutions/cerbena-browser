@@ -111,7 +111,7 @@ mod tests {
             name: "Test".to_string(),
             description: None,
             tags: tags.iter().map(|value| value.to_string()).collect(),
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             state: ProfileState::Ready,
             default_start_page: None,
             default_search_provider: None,

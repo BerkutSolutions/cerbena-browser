@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
 use browser_engine::{
-    EngineAdapter, EngineUpdateArtifact, EngineUpdatePolicy, EngineUpdateService,
-    LibrewolfAdapter,
-    LaunchRequest, UpdateMode, WayfernAdapter,
+    ChromiumAdapter, EngineAdapter, EngineUpdateArtifact, EngineUpdatePolicy,
+    EngineUpdateService, LaunchRequest, LibrewolfAdapter, UngoogledChromiumAdapter, UpdateMode,
 };
 use browser_profile::{CreateProfileInput, Engine, ProfileManager};
 use uuid::Uuid;
@@ -15,7 +14,6 @@ pub fn run_with_args(args: &[String]) -> Result<String, String> {
     match args[0].as_str() {
         "init-profile" => cmd_init_profile(&args[1..]),
         "list-profiles" => cmd_list_profiles(&args[1..]),
-        "ack-wayfern-tos" => cmd_ack_wayfern_tos(&args[1..]),
         "build-launch-plan" => cmd_build_launch_plan(&args[1..]),
         "update-apply" => cmd_update_apply(&args[1..]),
         _ => Err(help()),
@@ -33,9 +31,10 @@ fn cmd_init_profile(args: &[String]) -> Result<String, String> {
             description: None,
             tags: vec!["cli".to_string()],
             engine: match engine.as_str() {
-                "wayfern" => Engine::Wayfern,
+                "chromium" => Engine::Chromium,
+                "ungoogled-chromium" | "ungoogled_chromium" => Engine::UngoogledChromium,
                 "librewolf" => Engine::Librewolf,
-                _ => return Err("engine must be wayfern|librewolf".to_string()),
+                _ => return Err("engine must be chromium|ungoogled-chromium|librewolf".to_string()),
             },
             default_start_page: Some("https://duckduckgo.com".to_string()),
             default_search_provider: None,
@@ -60,25 +59,6 @@ fn cmd_list_profiles(args: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
-fn cmd_ack_wayfern_tos(args: &[String]) -> Result<String, String> {
-    let root = parse_flag(args, "--root")?;
-    let profile_id = parse_flag(args, "--profile-id")?
-        .parse::<Uuid>()
-        .map_err(|e| e.to_string())?;
-    let adapter = WayfernAdapter {
-        install_root: PathBuf::from(".launcher").join("engines"),
-        cache_dir: PathBuf::from(".launcher").join("cache"),
-        tos_version: "2026-04".to_string(),
-    };
-    adapter
-        .acknowledge_tos(
-            &PathBuf::from(root).join(profile_id.to_string()),
-            profile_id,
-        )
-        .map_err(|e| e.to_string())?;
-    Ok("ok".to_string())
-}
-
 fn cmd_build_launch_plan(args: &[String]) -> Result<String, String> {
     let root = parse_flag(args, "--root")?;
     let profile_id = parse_flag(args, "--profile-id")?
@@ -95,11 +75,20 @@ fn cmd_build_launch_plan(args: &[String]) -> Result<String, String> {
         env: vec![],
     };
     match profile.engine {
-        Engine::Wayfern => {
-            let adapter = WayfernAdapter {
+        Engine::Chromium => {
+            let adapter = ChromiumAdapter {
                 install_root: PathBuf::from(".launcher").join("engines"),
                 cache_dir: PathBuf::from(".launcher").join("cache"),
-                tos_version: "2026-04".to_string(),
+            };
+            let plan = adapter
+                .build_launch_plan(request)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("{:?}", plan.engine))
+        }
+        Engine::UngoogledChromium => {
+            let adapter = UngoogledChromiumAdapter {
+                install_root: PathBuf::from(".launcher").join("engines"),
+                cache_dir: PathBuf::from(".launcher").join("cache"),
             };
             let plan = adapter
                 .build_launch_plan(request)
@@ -152,9 +141,8 @@ fn parse_flag(args: &[String], flag: &str) -> Result<String, String> {
 pub fn help() -> String {
     [
         "usage:",
-        "  launcher init-profile --root <dir> --name <name> --engine wayfern|librewolf",
+        "  launcher init-profile --root <dir> --name <name> --engine chromium|ungoogled-chromium|librewolf",
         "  launcher list-profiles --root <dir>",
-        "  launcher ack-wayfern-tos --root <dir> --profile-id <uuid>",
         "  launcher build-launch-plan --root <dir> --profile-id <uuid> --binary <path>",
         "  launcher update-apply --version <semver> --signature <sig>",
     ]

@@ -133,7 +133,7 @@ fn keepassxc_manifest(
             "type": "stdio"
         });
     match profile.engine {
-        Engine::Wayfern => {
+        Engine::Chromium | Engine::UngoogledChromium => {
             let allowed_origins = collect_keepassxc_allowed_origins(state, profile, profile_root);
             manifest["allowed_origins"] = serde_json::json!(allowed_origins);
         }
@@ -220,7 +220,7 @@ fn read_keepassxc_origins_from_secure_preferences(
             profile,
             &format!(
                 "KeePassXC extension directory was not found under {}",
-                profile_root.join("policy").join("wayfern-extensions").display()
+                profile_root.join("policy").join("chromium-extensions").display()
             ),
         );
         return Vec::new();
@@ -303,7 +303,7 @@ fn read_keepassxc_origins_from_secure_preferences(
 }
 
 fn resolve_keepassxc_extension_paths(profile_root: &Path) -> Vec<PathBuf> {
-    let extensions_root = profile_root.join("policy").join("wayfern-extensions");
+    let extensions_root = profile_root.join("policy").join("chromium-extensions");
     let mut paths = Vec::new();
     let store_id_dir = extensions_root.join(KEEPASSXC_STORE_EXTENSION_ID);
     if store_id_dir.is_dir() {
@@ -439,7 +439,8 @@ fn normalize_windowsish_path(path: &Path) -> String {
 
 fn keepassxc_engine_label(engine: &Engine) -> &'static str {
     match engine {
-        Engine::Wayfern => "Wayfern",
+        Engine::Chromium => "Chromium",
+        Engine::UngoogledChromium => "Ungoogled Chromium",
         Engine::Librewolf => "LibreWolf",
     }
 }
@@ -456,8 +457,8 @@ fn keepassxc_manifest_debug_summary(manifest: &Value) -> String {
 
 fn keepassxc_registry_keys(engine: &Engine) -> Vec<String> {
     match engine {
-        Engine::Wayfern => vec![
-            format!(r"HKCU\Software\Wayfern\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
+        Engine::Chromium | Engine::UngoogledChromium => vec![
+            format!(r"HKCU\Software\Chromium\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
             format!(r"HKCU\Software\Chromium\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
             format!(r"HKCU\Software\Google\Chrome\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),
             format!(r"HKCU\Software\Vivaldi\NativeMessagingHosts\{KEEPASSXC_HOST_NAME}"),

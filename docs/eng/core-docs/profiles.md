@@ -7,7 +7,7 @@ A Cerbena Browser profile is an isolated browser-state container with its own da
 
 ## What a profile stores
 
-- name, description, tags, and engine (`Wayfern` or `LibreWolf`);
+- name, description, tags, and engine (`chromium`, `ungoogled-chromium`, or `librewolf`);
 - start page and search provider, or a strict single-page app-window mode;
 - `Identity`, `Network`, `DNS`, `Extensions`, `Security`, and `Sync` settings;
 - runtime state, audit trail, and cache;
@@ -21,8 +21,8 @@ Built-in profiles now include:
 - `Firefox Default`
 - `Chromium Private Memory`
 - `Firefox Private Memory`
-- `Discord` - a strict `Wayfern` app-window limited to Discord domains
-- `Telegram` - a strict `Wayfern` app-window limited to Telegram domains
+- `Discord` - a strict `Chromium` app-window limited to Discord domains
+- `Telegram` - a strict `Chromium` app-window limited to Telegram domains
 
 ## Isolation properties
 
@@ -52,7 +52,7 @@ Built-in profiles now include:
 - `Password lock`: requires explicit unlock before launch.
 - `Ephemeral`: clears volatile data when the profile closes.
 - `Private memory profile`: a built-in variant for private sessions.
-- `Single-page`: available for `Wayfern` profiles; launches a strict app window without a free address bar, hides the default search provider, and restricts navigation to the start-page domain.
+- `Single-page`: available for Chromium-family profiles; launches a strict app window without a free address bar, hides the default search provider, and restricts navigation to the start-page domain.
 
 ## Practical guidance
 

@@ -1,10 +1,8 @@
 import {
-  acknowledgeWayfernTos,
   copyProfileCookies,
   createProfile,
   deleteProfile,
   exportProfile,
-  getWayfernTermsStatus,
   importProfile,
   launchProfile,
   listProfiles,
@@ -336,43 +334,8 @@ function sortedProfiles(model) {
   });
 }
 
-function wayfernTermsDescriptionHtml(t) {
-  return `${escapeHtml(t("profile.wayfernTerms.description"))} <a href="https://wayfern.com/terms-and-conditions" target="_blank" rel="noreferrer">${escapeHtml(t("profile.wayfernTerms.linkLabel"))}</a>`;
-}
-
-async function refreshWayfernTermsStatus(model) {
-  const result = await getWayfernTermsStatus();
-  if (result.ok) {
-    model.wayfernTermsStatus = result.data ?? { pendingProfileIds: [] };
-  }
-  return result;
-}
-
-async function ensureWayfernTermsAcceptedForLaunch(model, profile, t) {
-  if (profile?.engine !== "wayfern" || !profile?.id) {
-    return true;
-  }
-  await refreshWayfernTermsStatus(model);
-  const pending = new Set(model.wayfernTermsStatus?.pendingProfileIds ?? []);
-  if (!pending.has(profile.id)) {
-    return true;
-  }
-  const accepted = await askConfirm(
-    document.body,
-    t,
-    t("profile.wayfernTerms.title"),
-    t("profile.wayfernTerms.description"),
-    wayfernTermsDescriptionHtml(t)
-  );
-  if (!accepted) {
-    return false;
-  }
-  const ackResult = await acknowledgeWayfernTos(profile.id);
-  if (!ackResult.ok) {
-    return false;
-  }
-  await refreshWayfernTermsStatus(model);
-  return !(new Set(model.wayfernTermsStatus?.pendingProfileIds ?? [])).has(profile.id);
+function isChromiumFamilyEngine(engine) {
+  return engine === "chromium" || engine === "ungoogled-chromium";
 }
 
 function rowHtml(profile, isSelected, t) {
@@ -539,7 +502,7 @@ function globalBlocklistOptions(globalSecurity) {
 function extensionScopeAllowed(item, profile) {
   const scope = String(item.engineScope ?? "chromium/firefox").toLowerCase();
   if (scope === "firefox") return profile?.engine === "librewolf";
-  if (scope === "chromium") return profile?.engine === "wayfern";
+  if (scope === "chromium") return isChromiumFamilyEngine(profile?.engine);
   return true;
 }
 
@@ -915,7 +878,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
           <div class="tab-pane" data-pane="general">
             <div class="grid-two profile-modal-grid">
               <label>${t("profile.field.name")}<input name="name" value="${profile?.name ?? ""}" required /></label>
-              <label>${t("profile.field.engine")}<select name="engine" id="profile-engine">${option("wayfern", "Wayfern Chromium", profile?.engine === "wayfern")}${option("librewolf", "LibreWolf Firefox", profile?.engine === "librewolf")}</select></label>
+              <label>${t("profile.field.engine")}<select name="engine" id="profile-engine">${option("chromium", "Chromium", profile?.engine === "chromium")}${option("ungoogled-chromium", "Ungoogled Chromium", profile?.engine === "ungoogled-chromium")}${option("librewolf", "LibreWolf", profile?.engine === "librewolf")}</select></label>
               <label class="profile-modal-span-2 profile-description-field">${t("profile.field.description")}<textarea name="description" rows="4">${escapeHtml(profile?.description ?? "")}</textarea></label>
               <label class="profile-modal-span-2">${t("profile.field.tags")}
                 ${buildTagPickerMarkup({
@@ -1310,7 +1273,7 @@ function resolveProfileErrorMessage(t, errorText) {
     "profile_protection.keepassxc_forbidden": "profile.security.keepassxcBlocked",
     "profile_protection.maximum_policy_extensions_forbidden": "profile.security.maximumPolicyExtensionsBlocked",
     "profile_protection.cookies_copy_blocked": "profile.security.cookiesCopyBlocked",
-    "profile.security.wayfern_certificates_not_supported": "profile.security.wayfernCertificatesBlocked"
+    "profile.security.chromium_certificates_not_supported": "profile.security.chromiumCertificatesBlocked"
   };
   for (const [marker, key] of Object.entries(keyMap)) {
     if (text.includes(marker)) {
@@ -1543,11 +1506,6 @@ export function wireProfiles(root, model, rerender, t) {
         };
         rerender();
         try {
-          if (!(await ensureWayfernTermsAcceptedForLaunch(model, profile, t))) {
-            model.profileLaunchOverlay = null;
-            rerender();
-            return;
-          }
           const launchResult = await launchProfile(profileId);
           if (!launchResult.ok) {
             model.profileLaunchOverlay = null;
@@ -1583,30 +1541,12 @@ export function wireProfiles(root, model, rerender, t) {
                   `${t("devicePosture.refusedDescription")}${detail ? ` ${detail}` : ""}`
                 );
               }
-            } else if (errorText.includes("wayfern_terms_not_acknowledged") || errorText.includes("wayfern_terms_ack_stale")) {
+            } else if (errorText.includes("profile.security.chromium_certificates_not_supported")) {
               const accepted = await askConfirm(
                 root,
                 t,
-                t("profile.wayfernTerms.title"),
-                t("profile.wayfernTerms.description"),
-                wayfernTermsDescriptionHtml(t)
-              );
-              if (accepted) {
-                const ackResult = await acknowledgeWayfernTos(profileId);
-                if (!ackResult.ok) {
-                  setNotice(model, "error", resolveProfileErrorMessage(t, ackResult.data.error));
-                } else {
-                  await refreshWayfernTermsStatus(model);
-                  const relaunched = await launchProfile(profileId);
-                  setNotice(model, relaunched.ok ? "success" : "error", relaunched.ok ? t("profile.notice.launched") : resolveProfileErrorMessage(t, relaunched.data.error));
-                }
-              }
-            } else if (errorText.includes("profile.security.wayfern_certificates_not_supported")) {
-              const accepted = await askConfirm(
-                root,
-                t,
-                t("profile.security.wayfernCertificatesBlockedTitle"),
-                t("profile.security.wayfernCertificatesBlockedDescription")
+                t("profile.security.chromiumCertificatesBlockedTitle"),
+                t("profile.security.chromiumCertificatesBlockedDescription")
               );
               if (accepted) {
                 await openProfileModal(root, model, rerender, t, profile);
@@ -2184,8 +2124,8 @@ async function openProfileModal(root, model, rerender, t, existing) {
   });
   profileTagPicker?.rerender(profileTagState.available, profileTagState.selected);
   const renderSinglePageControls = () => {
-    const engine = profileEngineField?.value ?? "wayfern";
-    const supported = engine === "wayfern";
+    const engine = profileEngineField?.value ?? "chromium";
+    const supported = isChromiumFamilyEngine(engine);
     if (singlePageModeField) {
       if (!supported) {
         singlePageModeField.checked = false;
@@ -2205,7 +2145,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
     }
   };
   const renderCertificateEngineGuard = () => {
-    const engine = profileEngineField?.value ?? "wayfern";
+    const engine = profileEngineField?.value ?? "chromium";
     const hasCertificates = hasAssignedProfileCertificates(certificateState);
     const certificatesSupported = engine === "librewolf";
     if (!profileCertificateEngineGuard) return;
@@ -2689,11 +2629,11 @@ async function openProfileModal(root, model, rerender, t, existing) {
       tag.startsWith("locked-app:") && tag !== "locked-app:custom"
     );
     tags.push(...preservedLockedAppTags);
-    if (form.engine.value === "wayfern" && form.singlePageMode?.checked) {
+    if (isChromiumFamilyEngine(form.engine.value) && form.singlePageMode?.checked) {
       tags.push("locked-app:custom");
     }
     const defaultStartPageValue = String(form.defaultStartPage.value ?? "").trim();
-    if (form.engine.value === "wayfern" && form.singlePageMode?.checked) {
+    if (isChromiumFamilyEngine(form.engine.value) && form.singlePageMode?.checked) {
       const normalizedStartPage = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(defaultStartPageValue)
         ? defaultStartPageValue
         : `https://${defaultStartPageValue}`;
@@ -2914,7 +2854,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
     };
 
     if (existing) {
-      const engineChanged = String(existing.engine ?? "wayfern") !== String(form.engine.value ?? "wayfern");
+      const engineChanged = String(existing.engine ?? "chromium") !== String(form.engine.value ?? "chromium");
       const updateResult = await updateProfile({
         profileId: existing.id,
         name: payload.name,

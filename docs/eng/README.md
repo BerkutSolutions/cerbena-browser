@@ -38,5 +38,5 @@ This page belongs to the current Cerbena Browser documentation branch and serves
 ## Synchronization rule
 
 - The Russian and English branches must keep the same page set.
-- Technical keywords such as `TLS`, `DNS`, `Cloudflare`, `Wayfern`, `LibreWolf`, and `MCP` are preserved consistently across both branches.
+- Technical keywords such as `TLS`, `DNS`, `Cloudflare`, `Chromium`, `LibreWolf`, and `MCP` are preserved consistently across both branches.
 - Every new user-facing capability should be reflected in both `docs/ru` and `docs/eng`.

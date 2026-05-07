@@ -3,14 +3,11 @@ import { createUiState, persistSelectedFeature } from "../core/state.js";
 import { featureRegistry } from "../core/feature-registry.js";
 import { loadDictionaries, createI18n } from "../i18n/runtime.js";
 import { createDebugLogger } from "../core/debug.js";
-import { askConfirmModal } from "../core/modal.js";
 import { initEngineDownloadNotifications } from "../core/engine-downloads.js";
 import { initDnsBlocklistNotifications } from "../core/dns-blocklist-downloads.js";
 import { minimizeWindow, toggleMaximizeWindow, closeWindow } from "../core/window-controls.js";
 import { renderHome, hydrateHomeModel, wireHome } from "../features/home/view.js";
 import {
-  acknowledgeWayfernTos,
-  getWayfernTermsStatus,
   launchProfile,
   updateProfile
 } from "../features/profiles/api.js";
@@ -462,68 +459,6 @@ function renderDefaultLinkProfileModal(i18n, model) {
   `;
 }
 
-function pendingWayfernProfileIds(model) {
-  return new Set(model.wayfernTermsStatus?.pendingProfileIds ?? []);
-}
-
-function wayfernTermsDescriptionHtml(t) {
-  return `${t("profile.wayfernTerms.description")} <a href="https://wayfern.com/terms-and-conditions" target="_blank" rel="noreferrer">${t("profile.wayfernTerms.linkLabel")}</a>`;
-}
-
-async function ensureWayfernTermsAccepted(model, profileId, rerender, t) {
-  if (!profileId || !pendingWayfernProfileIds(model).has(profileId)) {
-    return true;
-  }
-  const accepted = await askConfirmModal(t, {
-    title: t("profile.wayfernTerms.title"),
-    description: t("profile.wayfernTerms.description"),
-    descriptionHtml: wayfernTermsDescriptionHtml(t),
-    submitLabel: t("action.confirm"),
-    cancelLabel: t("action.cancel")
-  });
-  if (!accepted) {
-    return false;
-  }
-  const ackResult = await acknowledgeWayfernTos(profileId);
-  if (!ackResult.ok) {
-    model.settingsNotice = { type: "error", text: String(ackResult.data.error) };
-    await rerender({ refreshProfiles: false, refreshFeature: false });
-    return false;
-  }
-  await hydrateWayfernTermsStatus(model);
-  return true;
-}
-
-async function acknowledgePendingWayfernProfiles(model, rerender, t) {
-  const pending = model.wayfernTermsStatus?.pendingProfileIds ?? [];
-  if (!pending.length) {
-    return true;
-  }
-  const accepted = await askConfirmModal(t, {
-    title: t("profile.wayfernTerms.title"),
-    description: t("profile.wayfernTerms.description"),
-    descriptionHtml: wayfernTermsDescriptionHtml(t),
-    submitLabel: t("action.confirm"),
-    cancelLabel: t("action.cancel")
-  });
-  if (!accepted) {
-    return false;
-  }
-  const ackResult = await acknowledgeWayfernTos(pending[0] ?? null);
-  if (!ackResult.ok) {
-    model.settingsNotice = { type: "error", text: String(ackResult.data.error) };
-    await rerender({ refreshProfiles: false, refreshFeature: false });
-    return false;
-  }
-  await hydrateWayfernTermsStatus(model);
-  return true;
-}
-
-async function hydrateWayfernTermsStatus(model) {
-  const result = await getWayfernTermsStatus();
-  model.wayfernTermsStatus = result.ok ? result.data : { pendingProfileIds: [] };
-}
-
 function renderTrayCloseModal(i18n, model) {
   if (!model.trayClosePromptModal) return "";
   return `
@@ -850,7 +785,6 @@ async function bootstrap() {
     defaultBrowserStartupModal: null,
     defaultLinkProfileModal: null,
     trayClosePromptModal: null,
-    wayfernTermsStatus: { pendingProfileIds: [] },
     panicUi: null,
     systemStartupProfileLaunchHandled: false,
     appLifecycleOverlay: null
@@ -917,10 +851,6 @@ async function bootstrap() {
   await rerender({ refreshProfiles: false, refreshFeature: false, refreshOverlay: false });
   if (!isPanicFrameOverlay()) {
     await hydrateShellExperience(model);
-    await hydrateWayfernTermsStatus(model);
-    if ((model.wayfernTermsStatus?.pendingProfileIds ?? []).length) {
-      await acknowledgePendingWayfernProfiles(model, rerender, i18n.t);
-    }
     await maybeLaunchSystemStartupProfile(model, rerender, i18n.t);
     await consumePendingLinkLaunch(model, rerender, i18n.t);
     await rerender({ refreshProfiles: false, refreshFeature: false });
@@ -1187,9 +1117,6 @@ async function maybeLaunchSystemStartupProfile(model, rerender, t) {
   if (!shellState?.launchedFromSystemStartup || !shellState?.launchOnSystemStartup || !profileId) {
     return;
   }
-  if (!(await ensureWayfernTermsAccepted(model, profileId, rerender, t))) {
-    return;
-  }
   const result = await launchProfile(profileId);
   model.settingsNotice = {
     type: result.ok ? "success" : "error",
@@ -1240,9 +1167,6 @@ function wireShellModals(root, state, model, rerender, t) {
   root.querySelector("#default-link-profile-save")?.addEventListener("click", async () => {
     const profileId = root.querySelector("#default-link-profile-select")?.value ?? "";
     if (!profileId) return;
-    if (!(await ensureWayfernTermsAccepted(model, profileId, rerender, t))) {
-      return;
-    }
     const result = await setDefaultProfileForLinks({ profileId });
     if (result.ok) {
       model.defaultLinkProfileModal = null;

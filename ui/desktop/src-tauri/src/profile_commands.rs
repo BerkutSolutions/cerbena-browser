@@ -56,8 +56,8 @@ use crate::{
     },
 };
 
-const ERR_WAYFERN_PROFILE_CERTIFICATES_UNSUPPORTED: &str =
-    "profile.security.wayfern_certificates_not_supported";
+const ERR_CHROMIUM_PROFILE_CERTIFICATES_UNSUPPORTED: &str =
+    "profile.security.chromium_certificates_not_supported";
 
 fn emit_profile_launch_progress(
     app_handle: &tauri::AppHandle,
@@ -162,18 +162,6 @@ pub struct ImportProfileRequest {
     pub archive_json: String,
     pub expected_profile_id: String,
     pub passphrase: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcknowledgeWayfernTosRequest {
-    pub profile_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WayfernTermsStatus {
-    pub pending_profile_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -663,7 +651,7 @@ pub async fn launch_profile(
         );
         write_profile_blocked_domains(&state, &profile.id, &profile_root).map_err(|e| e.to_string())?;
         write_locked_app_policy(&profile, &profile_root).map_err(|e| e.to_string())?;
-        if matches!(engine, EngineKind::Wayfern) {
+        if engine.is_chromium_family() {
             emit_profile_launch_progress(
                 &app_handle,
                 profile.id,
@@ -672,7 +660,7 @@ pub async fn launch_profile(
                 false,
                 None,
             );
-            prepare_profile_wayfern_extensions(&state, &profile, &profile_root)?;
+            prepare_profile_chromium_extensions(&state, &profile, &profile_root)?;
             emit_profile_launch_progress(
                 &app_handle,
                 profile.id,
@@ -899,7 +887,7 @@ fn wait_for_profile_process_startup(
     spawned_pid: u32,
     engine: EngineKind,
 ) -> Result<u32, String> {
-    let startup_timeout = if matches!(engine, EngineKind::Wayfern) {
+    let startup_timeout = if engine.is_chromium_family() {
         Duration::from_millis(2600)
     } else {
         Duration::from_millis(1400)
@@ -1325,27 +1313,29 @@ fn build_firefox_search_plugin_xml(
     xml
 }
 
-fn prepare_profile_wayfern_extensions(
+fn prepare_profile_chromium_extensions(
     state: &State<'_, AppState>,
     profile: &ProfileMetadata,
     profile_root: &Path,
 ) -> Result<(), String> {
-    let extensions_root = profile_root.join("policy").join("wayfern-extensions");
+    let extensions_root = profile_root.join("policy").join("chromium-extensions");
     if extensions_root.exists() {
         fs::remove_dir_all(&extensions_root)
-            .map_err(|e| format!("clear wayfern extensions dir: {e}"))?;
+            .map_err(|e| format!("clear chromium extensions dir: {e}"))?;
     }
     fs::create_dir_all(&extensions_root)
-        .map_err(|e| format!("create wayfern extensions dir: {e}"))?;
+        .map_err(|e| format!("create chromium extensions dir: {e}"))?;
 
-    for item in collect_active_profile_extensions(state, profile.id, &profile.tags, Engine::Wayfern)
+    for item in collect_active_profile_extensions(state, profile.id, &profile.tags, profile.engine.clone())
     {
-        let Some(package_path) = extension_package_path_for_engine(&item, Engine::Wayfern) else {
+        let Some(package_path) =
+            extension_package_path_for_engine(&item, profile.engine.clone())
+        else {
             continue;
         };
         let destination = extensions_root.join(sanitize_extension_dir_name(&item.id));
         fs::create_dir_all(&destination)
-            .map_err(|e| format!("create wayfern extension dir: {e}"))?;
+            .map_err(|e| format!("create chromium extension dir: {e}"))?;
         unpack_extension_archive(Path::new(&package_path), &destination)?;
     }
     Ok(())
@@ -1456,7 +1446,7 @@ fn is_system_access_extension(item: &ExtensionLibraryItem) -> bool {
 fn extension_scope_matches_engine(engine_scope: &str, engine: Engine) -> bool {
     match engine_scope.trim().to_ascii_lowercase().as_str() {
         "firefox" => matches!(engine, Engine::Librewolf),
-        "chromium" => matches!(engine, Engine::Wayfern),
+        "chromium" => engine.is_chromium_family(),
         _ => true,
     }
 }
@@ -1813,8 +1803,8 @@ fn ensure_engine_supports_isolated_certificates(
     engine: &Engine,
     tags: &[String],
 ) -> Result<(), String> {
-    if matches!(engine, Engine::Wayfern) && profile_uses_isolated_certificates(state, profile_id, tags) {
-        return Err(ERR_WAYFERN_PROFILE_CERTIFICATES_UNSUPPORTED.to_string());
+    if engine.is_chromium_family() && profile_uses_isolated_certificates(state, profile_id, tags) {
+        return Err(ERR_CHROMIUM_PROFILE_CERTIFICATES_UNSUPPORTED.to_string());
     }
     Ok(())
 }
@@ -2037,41 +2027,6 @@ pub fn stop_profile(
 }
 
 #[tauri::command]
-pub fn acknowledge_wayfern_tos(
-    state: State<AppState>,
-    request: AcknowledgeWayfernTosRequest,
-    correlation_id: String,
-) -> Result<UiEnvelope<bool>, String> {
-    let runtime =
-        EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
-    let profile_id = if let Some(profile_id) = request.profile_id.as_deref() {
-        Uuid::parse_str(profile_id).map_err(|e| format!("profile id: {e}"))?
-    } else {
-        let manager = state
-            .manager
-            .lock()
-            .map_err(|_| "lock poisoned".to_string())?;
-        manager
-            .list_profiles()
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|profile| matches!(profile.engine, Engine::Wayfern))
-            .map(|profile| profile.id)
-            .ok_or_else(|| "no wayfern profile available for global terms acceptance".to_string())?
-    };
-    runtime
-        .acknowledge_wayfern_tos(&state.profile_root.join(profile_id.to_string()), profile_id)
-        .map_err(|e| e.to_string())?;
-    append_profile_log(
-        &state.app_handle,
-        profile_id,
-        "launcher",
-        "Wayfern terms accepted in launcher state",
-    );
-    Ok(ok(correlation_id, true))
-}
-
-#[tauri::command]
 pub fn read_profile_logs(
     app_handle: tauri::AppHandle,
     request: ActionProfileRequest,
@@ -2086,40 +2041,6 @@ pub fn read_profile_logs(
 }
 
 #[tauri::command]
-pub fn get_wayfern_terms_status(
-    state: State<AppState>,
-    correlation_id: String,
-) -> Result<UiEnvelope<WayfernTermsStatus>, String> {
-    let runtime =
-        EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
-    let manager = state
-        .manager
-        .lock()
-        .map_err(|_| "lock poisoned".to_string())?;
-    let pending_profile_ids = manager
-        .list_profiles()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|profile| matches!(profile.engine, Engine::Wayfern))
-        .filter_map(|profile| {
-            runtime
-                .requires_wayfern_tos_ack(
-                    &state.profile_root.join(profile.id.to_string()),
-                    profile.id,
-                )
-                .ok()
-                .and_then(|required| required.then_some(profile.id.to_string()))
-        })
-        .collect::<Vec<_>>();
-    Ok(ok(
-        correlation_id,
-        WayfernTermsStatus {
-            pending_profile_ids,
-        },
-    ))
-}
-
-#[tauri::command]
 pub async fn ensure_engine_binaries(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -2128,7 +2049,11 @@ pub async fn ensure_engine_binaries(
     let runtime =
         EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
     let mut ready = Vec::new();
-    for engine in [EngineKind::Wayfern, EngineKind::Librewolf] {
+    for engine in [
+        EngineKind::Chromium,
+        EngineKind::UngoogledChromium,
+        EngineKind::Librewolf,
+    ] {
         let installation = ensure_engine_ready(&app_handle, &state, &runtime, engine).await?;
         ready.push(format!(
             "{} {}",
@@ -2389,22 +2314,21 @@ pub fn import_profile(
 
 fn parse_engine(engine: &str) -> Result<Engine, String> {
     match engine {
-        "wayfern" => Ok(Engine::Wayfern),
+        "chromium" => Ok(Engine::Chromium),
+        "ungoogled-chromium" | "ungoogled_chromium" => Ok(Engine::UngoogledChromium),
         "librewolf" => Ok(Engine::Librewolf),
         _ => Err(format!("unsupported engine: {engine}")),
     }
 }
 
 fn engine_session_key(engine: &Engine) -> &'static str {
-    match engine {
-        Engine::Wayfern => "wayfern",
-        Engine::Librewolf => "librewolf",
-    }
+    engine.as_key()
 }
 
 fn engine_kind(engine: Engine) -> EngineKind {
     match engine {
-        Engine::Wayfern => EngineKind::Wayfern,
+        Engine::Chromium => EngineKind::Chromium,
+        Engine::UngoogledChromium => EngineKind::UngoogledChromium,
         Engine::Librewolf => EngineKind::Librewolf,
     }
 }
@@ -2688,7 +2612,7 @@ fn copy_engine_cookies(
 ) -> Result<(), String> {
     fs::create_dir_all(target_root).map_err(|e| e.to_string())?;
     let copied = match engine {
-        Engine::Wayfern => {
+        Engine::Chromium | Engine::UngoogledChromium => {
             copy_cookie_path(source_root, target_root, "Default\\Network\\Cookies")?
                 | copy_cookie_path(
                     source_root,
@@ -3138,7 +3062,7 @@ mod tests {
             name: "Single Page".to_string(),
             description: None,
             tags: vec!["locked-app:custom".to_string()],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             state: ProfileState::Created,
             default_start_page: Some("docs.example.com".to_string()),
             default_search_provider: None,

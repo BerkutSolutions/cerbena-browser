@@ -344,13 +344,13 @@ mod tests {
         let profile_id = Uuid::new_v4();
         let a = workspace_fingerprint(
             profile_id,
-            "wayfern",
+            "chromium",
             PathBuf::from("C:/profiles/a").as_path(),
             PathBuf::from("C:/profiles/a/engine-profile").as_path(),
         );
         let b = workspace_fingerprint(
             profile_id,
-            "wayfern",
+            "chromium",
             PathBuf::from("C:/profiles/a").as_path(),
             PathBuf::from("C:/profiles/b/engine-profile").as_path(),
         );
@@ -391,10 +391,10 @@ mod tests {
             session_token: "token".to_string(),
             session_token_hash: sha256_hex(b"token"),
             pid: 4242,
-            engine: "wayfern".to_string(),
+            engine: "chromium".to_string(),
             profile_root: root.to_string_lossy().to_string(),
             workspace_dir: workspace.to_string_lossy().to_string(),
-            workspace_fingerprint: workspace_fingerprint(profile_id, "wayfern", &root, &workspace),
+            workspace_fingerprint: workspace_fingerprint(profile_id, "chromium", &root, &workspace),
             started_at_epoch_ms: 1,
             last_verified_at_epoch_ms: 1,
         };
@@ -411,7 +411,7 @@ mod tests {
         .expect("write marker");
 
         let trusted =
-            validate_record(&record, record.pid, "wayfern", &root, &workspace).expect("validate");
+            validate_record(&record, record.pid, "chromium", &root, &workspace).expect("validate");
         assert!(!trusted);
         let _ = fs::remove_dir_all(root);
     }
@@ -430,10 +430,10 @@ mod tests {
             session_token: "token".to_string(),
             session_token_hash: sha256_hex(b"token"),
             pid: 4242,
-            engine: "wayfern".to_string(),
+            engine: "chromium".to_string(),
             profile_root: root.to_string_lossy().to_string(),
             workspace_dir: workspace.to_string_lossy().to_string(),
-            workspace_fingerprint: workspace_fingerprint(profile_id, "wayfern", &root, &workspace),
+            workspace_fingerprint: workspace_fingerprint(profile_id, "chromium", &root, &workspace),
             started_at_epoch_ms: 1,
             last_verified_at_epoch_ms: 1,
         };

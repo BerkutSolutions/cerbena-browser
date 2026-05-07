@@ -1852,7 +1852,7 @@ mod tests {
             name: "Panic".to_string(),
             description: None,
             tags: Vec::new(),
-            engine: browser_profile::Engine::Wayfern,
+            engine: browser_profile::Engine::Chromium,
             state: browser_profile::ProfileState::Ready,
             default_start_page: None,
             default_search_provider: None,

@@ -62,7 +62,8 @@ function titleFor(progress, t) {
 }
 
 function progressDisplayName(progress) {
-  if (progress.engine === "wayfern") return "Wayfern";
+  if (progress.engine === "chromium") return "Chromium";
+  if (progress.engine === "ungoogled-chromium") return "Ungoogled Chromium";
   if (progress.engine === "librewolf") return "LibreWolf";
   if (progress.tool === "sing-box") return "sing-box";
   if (progress.tool === "openvpn") return "OpenVPN";

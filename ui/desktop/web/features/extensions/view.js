@@ -39,9 +39,13 @@ function normalizeEngineScope(value) {
   return "chromium/firefox";
 }
 
+function isChromiumFamilyProfile(profile) {
+  return profile?.engine === "chromium" || profile?.engine === "ungoogled-chromium";
+}
+
 function profileMatchesScope(profile, scope) {
   if (scope === "firefox") return profile.engine === "librewolf";
-  if (scope === "chromium") return profile.engine === "wayfern";
+  if (scope === "chromium") return isChromiumFamilyProfile(profile);
   return true;
 }
 
@@ -190,7 +194,7 @@ function extensionCard(item, profiles, t) {
         ${primaryTag ? `<div class="extension-library-tag">${escapeHtml(primaryTag)}</div>` : ""}
         <div class="extension-library-assignment" title="${escapeHtml(assigned)}">${escapeHtml(assigned)}</div>
       </div>
-      <div class="extension-library-engine-badge engine-${scope === "firefox" ? "librewolf" : scope === "chromium" ? "wayfern" : "hybrid"}" title="${escapeHtml(engineScopeLabel(item.engineScope, t))}">
+      <div class="extension-library-engine-badge engine-${scope === "firefox" ? "librewolf" : scope === "chromium" ? "chromium" : "hybrid"}" title="${escapeHtml(engineScopeLabel(item.engineScope, t))}">
         ${engineIcon(item.engineScope)}
       </div>
     </article>

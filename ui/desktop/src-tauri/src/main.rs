@@ -259,8 +259,6 @@ fn main() {
             profile_commands::duplicate_profile,
             profile_commands::launch_profile,
             profile_commands::stop_profile,
-            profile_commands::acknowledge_wayfern_tos,
-            profile_commands::get_wayfern_terms_status,
             profile_commands::read_profile_logs,
             profile_commands::ensure_engine_binaries,
             profile_commands::copy_profile_cookies,

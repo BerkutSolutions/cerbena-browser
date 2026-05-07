@@ -265,7 +265,7 @@ fn matching_profile_processes(system: &System, target: &str) -> Vec<ProfileProce
                 || name.contains("private_browsing"))
                 && cmdline.contains("-profile")
                 && cmdline.contains(target);
-            let chromium_profile_match = (name.contains("wayfern")
+            let chromium_profile_match = (name.contains("chromium")
                 || name.contains("chrome")
                 || name.contains("chromium"))
                 && (cmdline.contains("--user-data-dir=") || cmdline.contains("--user-data-dir "))
@@ -303,7 +303,7 @@ fn find_session_descendant_browser_pid(roots: &[u32]) -> Option<u32> {
         .values()
         .filter_map(|process| {
             let name = process.name().to_lowercase();
-            let browser_name = name.contains("wayfern")
+            let browser_name = name.contains("chromium")
                 || name.contains("chrome")
                 || name.contains("chromium")
                 || name.contains("librewolf")

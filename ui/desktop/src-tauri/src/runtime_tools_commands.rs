@@ -35,7 +35,8 @@ pub struct RuntimeToolStatusView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeToolId {
     Docker,
-    Wayfern,
+    Chromium,
+    UngoogledChromium,
     Librewolf,
     SingBox,
     OpenVpn,
@@ -47,7 +48,8 @@ impl RuntimeToolId {
     fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "docker" => Some(Self::Docker),
-            "wayfern" => Some(Self::Wayfern),
+            "chromium" => Some(Self::Chromium),
+            "ungoogled-chromium" => Some(Self::UngoogledChromium),
             "librewolf" => Some(Self::Librewolf),
             "sing-box" => Some(Self::SingBox),
             "openvpn" => Some(Self::OpenVpn),
@@ -60,7 +62,8 @@ impl RuntimeToolId {
     fn id(self) -> &'static str {
         match self {
             Self::Docker => "docker",
-            Self::Wayfern => "wayfern",
+            Self::Chromium => "chromium",
+            Self::UngoogledChromium => "ungoogled-chromium",
             Self::Librewolf => "librewolf",
             Self::SingBox => "sing-box",
             Self::OpenVpn => "openvpn",
@@ -72,7 +75,8 @@ impl RuntimeToolId {
     fn name_key(self) -> &'static str {
         match self {
             Self::Docker => "settings.tools.docker",
-            Self::Wayfern => "settings.tools.wayfern",
+            Self::Chromium => "settings.tools.chromium",
+            Self::UngoogledChromium => "settings.tools.ungoogledChromium",
             Self::Librewolf => "settings.tools.librewolf",
             Self::SingBox => "settings.tools.singBox",
             Self::OpenVpn => "settings.tools.openvpn",
@@ -108,11 +112,12 @@ pub async fn install_runtime_tool(
         .ok_or_else(|| format!("unsupported runtime tool id: {}", request.tool_id))?;
     match tool {
         RuntimeToolId::Docker => return Err("docker must be installed manually".to_string()),
-        RuntimeToolId::Wayfern | RuntimeToolId::Librewolf => {
-            let engine = if matches!(tool, RuntimeToolId::Wayfern) {
-                EngineKind::Wayfern
-            } else {
-                EngineKind::Librewolf
+        RuntimeToolId::Chromium | RuntimeToolId::UngoogledChromium | RuntimeToolId::Librewolf => {
+            let engine = match tool {
+                RuntimeToolId::Chromium => EngineKind::Chromium,
+                RuntimeToolId::UngoogledChromium => EngineKind::UngoogledChromium,
+                RuntimeToolId::Librewolf => EngineKind::Librewolf,
+                _ => unreachable!(),
             };
             let runtime =
                 EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
@@ -149,7 +154,8 @@ fn collect_runtime_tools_status(state: &AppState) -> Result<Vec<RuntimeToolStatu
     let docker = docker_status(state);
     Ok(vec![
         docker_view(&docker),
-        engine_view(state, EngineKind::Wayfern)?,
+        engine_view(state, EngineKind::Chromium)?,
+        engine_view(state, EngineKind::UngoogledChromium)?,
         engine_view(state, EngineKind::Librewolf)?,
         network_tool_view(state, NetworkTool::SingBox, &docker)?,
         network_tool_view(state, NetworkTool::OpenVpn, &docker)?,
@@ -191,7 +197,8 @@ fn engine_view(state: &AppState, engine: EngineKind) -> Result<RuntimeToolStatus
     Ok(RuntimeToolStatusView {
         id: engine.as_key().to_string(),
         name_key: match engine {
-            EngineKind::Wayfern => RuntimeToolId::Wayfern.name_key(),
+            EngineKind::Chromium => RuntimeToolId::Chromium.name_key(),
+            EngineKind::UngoogledChromium => RuntimeToolId::UngoogledChromium.name_key(),
             EngineKind::Librewolf => RuntimeToolId::Librewolf.name_key(),
         }
         .to_string(),

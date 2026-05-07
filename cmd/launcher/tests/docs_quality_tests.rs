@@ -93,14 +93,8 @@ fn docs_mandatory_pages_exist() {
 }
 
 #[test]
-fn live_docs_and_operator_scripts_do_not_reference_camoufox() {
+fn live_docs_and_operator_scripts_do_not_reference_retired_runtimes() {
     let repo = repo_root();
-    let allowlisted_docs = BTreeSet::from([
-        "README.md",
-        "README.en.md",
-        "docs/ru/operators/managed-runtime.md",
-        "docs/eng/operators/managed-runtime.md",
-    ]);
     let mut scan_targets = vec![repo.join("README.md"), repo.join("README.en.md")];
     scan_targets.extend(collect_markdown_files(&repo.join("docs").join("ru")));
     scan_targets.extend(collect_markdown_files(&repo.join("docs").join("eng")));
@@ -120,8 +114,10 @@ fn live_docs_and_operator_scripts_do_not_reference_camoufox() {
         let rel = relative_to(&repo, &path);
         let content =
             fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", rel));
-        let contains_camoufox = content.contains("Camoufox") || content.contains("camoufox");
-        if contains_camoufox && !allowlisted_docs.contains(rel.as_str()) {
+        let references_retired_runtime = ["Camoufox", "camoufox", "Wayfern", "wayfern"]
+            .into_iter()
+            .any(|token| content.contains(token));
+        if references_retired_runtime {
             offenders.push(rel);
         }
     }
@@ -129,7 +125,7 @@ fn live_docs_and_operator_scripts_do_not_reference_camoufox() {
     if !offenders.is_empty() {
         offenders.sort();
         panic!(
-            "live docs/operator scripts still reference retired Camoufox path outside the approved decommission notes: {}",
+            "live docs/operator scripts still reference retired runtime names: {}",
             sample(&offenders)
         );
     }
@@ -411,7 +407,6 @@ fn allowed_ru_terms() -> BTreeSet<&'static str> {
         "versions",
         "vpn",
         "urn",
-        "wayfern",
         "webcal",
         "webgl",
         "wiki",

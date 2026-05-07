@@ -9,7 +9,7 @@ Cerbena Browser is designed as a standalone browser launcher platform.
 
 - desktop launcher and profile lifecycle;
 - profile isolation across data, network, extension state, and crypto context;
-- adapters for `Wayfern` and `LibreWolf`;
+- adapters for `Chromium`, `Ungoogled Chromium`, and `LibreWolf`;
 - per-profile `VPN` / `Proxy` / `TOR` / `DNS`;
 - domain and service restrictions;
 - local API and `MCP`;

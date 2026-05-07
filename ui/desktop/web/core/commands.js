@@ -126,11 +126,12 @@ function writeMockShellPreferences(value) {
 
 function readMockRuntimeTools() {
   try {
-    return JSON.parse(localStorage.getItem(MOCK_RUNTIME_TOOLS_KEY) ?? "{\"docker\":false,\"wayfern\":true,\"librewolf\":true,\"sing-box\":true,\"openvpn\":false,\"amneziawg\":false,\"tor-bundle\":true}");
+    return JSON.parse(localStorage.getItem(MOCK_RUNTIME_TOOLS_KEY) ?? "{\"docker\":false,\"chromium\":true,\"ungoogled-chromium\":false,\"librewolf\":true,\"sing-box\":true,\"openvpn\":false,\"amneziawg\":false,\"tor-bundle\":true}");
   } catch {
     return {
       docker: false,
-      wayfern: true,
+      chromium: true,
+      "ungoogled-chromium": false,
       librewolf: true,
       "sing-box": true,
       openvpn: false,
@@ -163,7 +164,7 @@ function mockProfileCommand(command, args) {
       description: request.description ?? null,
       tags: request.tags ?? [],
       state: "ready",
-      engine: request.engine ?? "wayfern",
+      engine: request.engine ?? "chromium",
       default_start_page: request.defaultStartPage ?? null,
       default_search_provider: request.defaultSearchProvider ?? "duckduckgo",
       ephemeral_mode: Boolean(request.ephemeralMode),
@@ -396,10 +397,6 @@ function mockProfileCommand(command, args) {
     return null;
   }
 
-  if (command === "get_wayfern_terms_status") {
-    return { pendingProfileIds: [] };
-  }
-
   if (command === "read_profile_logs") {
     return [
       `[${new Date().toISOString()}][launcher] Mock profile log for ${request.profileId ?? "profile"}`,
@@ -437,11 +434,19 @@ function mockProfileCommand(command, args) {
         detailKey: tools.docker ? "settings.tools.detail.dockerReady" : "settings.tools.detail.dockerMissing"
       },
       {
-        id: "wayfern",
-        nameKey: "settings.tools.wayfern",
-        status: tools.wayfern ? "installed" : "missing",
-        version: tools.wayfern ? APP_VERSION : null,
-        action: tools.wayfern ? "none" : "internal",
+        id: "chromium",
+        nameKey: "settings.tools.chromium",
+        status: tools.chromium ? "installed" : "missing",
+        version: tools.chromium ? APP_VERSION : null,
+        action: tools.chromium ? "none" : "internal",
+        detailKey: null
+      },
+      {
+        id: "ungoogled-chromium",
+        nameKey: "settings.tools.ungoogledChromium",
+        status: tools["ungoogled-chromium"] ? "installed" : "missing",
+        version: tools["ungoogled-chromium"] ? APP_VERSION : null,
+        action: tools["ungoogled-chromium"] ? "none" : "internal",
         detailKey: null
       },
       {

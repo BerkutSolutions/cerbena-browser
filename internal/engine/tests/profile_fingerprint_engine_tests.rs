@@ -1,8 +1,8 @@
-use std::{fs, sync::Mutex};
+use std::fs;
 
 use browser_engine::{
     contract::{EngineAdapter, LaunchRequest},
-    LibrewolfAdapter, WayfernAdapter,
+    LibrewolfAdapter, ChromiumAdapter,
 };
 use browser_fingerprint::{
     generate_auto_preset, validate_consistency, validate_identity_preset, AutoPlatform,
@@ -11,23 +11,16 @@ use browser_fingerprint::{
 use browser_profile::{CreateProfileInput, Engine, ProfileManager};
 use tempfile::tempdir;
 
-static APPDATA_ENV_LOCK: Mutex<()> = Mutex::new(());
-
 #[test]
 fn chromium_profile_creation_and_fingerprint_values_are_applied() {
-    let _guard = APPDATA_ENV_LOCK.lock().expect("lock appdata env");
     let tmp = tempdir().expect("tempdir");
-    let appdata_root = tmp.path().join("appdata");
-    fs::create_dir_all(&appdata_root).expect("mk appdata");
-    let previous_appdata = std::env::var_os("APPDATA");
-    std::env::set_var("APPDATA", &appdata_root);
     let manager = ProfileManager::new(tmp.path()).expect("manager");
     let profile = manager
         .create_profile(CreateProfileInput {
             name: "Chromium Profile".to_string(),
-            description: Some("Wayfern chromium test".to_string()),
+            description: Some("Chromium chromium test".to_string()),
             tags: vec!["chromium".to_string(), "e2e".to_string()],
-            engine: Engine::Wayfern,
+            engine: Engine::Chromium,
             default_start_page: Some("https://example.com".to_string()),
             default_search_provider: Some("duckduckgo".to_string()),
             ephemeral_mode: false,
@@ -64,42 +57,30 @@ fn chromium_profile_creation_and_fingerprint_values_are_applied() {
     assert_eq!(preset.hardware.cpu_threads, 12);
     assert_eq!(preset.locale.timezone_iana, "Europe/Berlin");
 
-    let adapter = WayfernAdapter {
+    let adapter = ChromiumAdapter {
         install_root: tmp.path().join("install"),
         cache_dir: tmp.path().join("cache"),
-        tos_version: "2026-04".to_string(),
     };
     let profile_root = tmp.path().join(profile.id.to_string());
     fs::create_dir_all(&profile_root).expect("profile root");
-    let result = std::panic::catch_unwind(|| {
-        adapter
-            .acknowledge_tos(&profile_root, profile.id)
-            .expect("tos ack");
-        let req = LaunchRequest {
-            profile_id: profile.id,
-            profile_root,
-            binary_path: tmp.path().join("bin").join("wayfern.exe"),
-            args: vec![
-                format!("--user-agent={}", preset.core.user_agent),
-                format!("--lang={}", preset.locale.navigator_language),
-                format!(
-                    "--window-size={},{}",
-                    preset.screen.width, preset.screen.height
-                ),
-                "--engine=chromium".to_string(),
-            ],
-            env: vec![],
-        };
-        let plan = adapter.build_launch_plan(req).expect("launch plan");
-        assert!(plan.args.iter().any(|a| a.contains("Chrome/125")));
-        assert!(plan.args.iter().any(|a| a == "--engine=chromium"));
-    });
-
-    match previous_appdata {
-        Some(value) => std::env::set_var("APPDATA", value),
-        None => std::env::remove_var("APPDATA"),
-    }
-    result.expect("chromium launch plan");
+    let req = LaunchRequest {
+        profile_id: profile.id,
+        profile_root,
+        binary_path: tmp.path().join("bin").join("chromium.exe"),
+        args: vec![
+            format!("--user-agent={}", preset.core.user_agent),
+            format!("--lang={}", preset.locale.navigator_language),
+            format!(
+                "--window-size={},{}",
+                preset.screen.width, preset.screen.height
+            ),
+            "--engine=chromium".to_string(),
+        ],
+        env: vec![],
+    };
+    let plan = adapter.build_launch_plan(req).expect("launch plan");
+    assert!(plan.args.iter().any(|a| a.contains("Chrome/125")));
+    assert!(plan.args.iter().any(|a| a == "--engine=chromium"));
 }
 
 #[test]

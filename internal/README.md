@@ -12,6 +12,6 @@ This folder is intentionally split into focused modules.
 - `audit` - Audit event model, persistence, and query helpers.
 - `api_local` - Local API endpoints and scoped authorization.
 - `api_mcp` - MCP tool bindings and permission envelopes.
-- `engine_wayfern` - Wayfern adapter implementation.
+- `engine_chromium` - Chromium adapter implementation.
 - `engine_librewolf` - LibreWolf adapter implementation.
 - `sync_client` - Encrypted sync and backup client flows.
