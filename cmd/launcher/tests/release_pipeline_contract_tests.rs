@@ -212,7 +212,7 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         "--bundles deb",
         "\"deb\"",
         "\"active\": true",
-        "\"category\": \"Network\"",
+        "\"category\": \"Utility\"",
         "build\\linux",
         "linux-x64",
         "manual_download",

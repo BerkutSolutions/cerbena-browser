@@ -31,7 +31,7 @@
   "bundle": {
     "active": true,
     "targets": ["deb"],
-    "category": "Network",
+    "category": "Utility",
     "shortDescription": "Isolated browser profiles with controlled link routing and network policies.",
     "longDescription": "Cerbena Browser provides isolated browser profiles, launcher-managed runtime controls, and explicit network policy enforcement for controlled desktop browsing sessions.",
     "icon": [
