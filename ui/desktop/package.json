@@ -1,16 +1,17 @@
 {
     "name":  "browser-desktop-ui",
     "private":  true,
-    "version":  "1.1.4",
+    "version":  "1.1.5",
     "type":  "module",
     "scripts":  {
-                    "style:sync":  "powershell -ExecutionPolicy Bypass -File ./scripts/sync-styles.ps1",
+                    "style:sync":  "node ./scripts/sync-styles.mjs",
                     "i18n:check":  "node ./scripts/check-i18n.mjs",
                     "dev:web":  "node ./scripts/dev-web-server.mjs",
-                    "dev:web:stop":  "powershell -ExecutionPolicy Bypass -File ./scripts/stop-dev-web.ps1",
-                    "tauri":  "tauri",
-                    "dev":  "npm run style:sync \u0026\u0026 npm run i18n:check \u0026\u0026 tauri dev --features custom-protocol",
-                    "build":  "npm run style:sync \u0026\u0026 npm run i18n:check \u0026\u0026 tauri build",
+                    "dev:web:stop":  "node ./scripts/stop-dev-web.mjs",
+                    "tauri":  "npm exec -- tauri",
+                    "dev":  "npm run style:sync \u0026\u0026 npm run i18n:check \u0026\u0026 npm run tauri -- dev --features custom-protocol",
+                    "build":  "npm run style:sync \u0026\u0026 npm run i18n:check \u0026\u0026 npm run tauri -- build",
+                    "build:deb":  "npm run style:sync \u0026\u0026 npm run i18n:check \u0026\u0026 npm run tauri -- build --config src-tauri/tauri.linux.conf.json --bundles deb",
                     "test:ui":  "node ./scripts/ui-smoke-test.mjs",
                     "test":  "npm run i18n:check \u0026\u0026 npm run test:ui"
                 },

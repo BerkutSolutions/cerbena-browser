@@ -19,6 +19,7 @@ mod network_sandbox_container;
 mod network_sandbox_container_runtime;
 mod network_sandbox_lifecycle;
 mod panic_frame;
+mod platform;
 mod process_tracking;
 mod profile_commands;
 mod profile_runtime_logs;

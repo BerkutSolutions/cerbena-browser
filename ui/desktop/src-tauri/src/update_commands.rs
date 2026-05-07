@@ -6,7 +6,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -15,6 +14,7 @@ use tauri::{AppHandle, Emitter, LogicalSize, Manager, State};
 use crate::{
     envelope::{ok, UiEnvelope},
     launcher_commands::push_runtime_log,
+    platform::release_security,
     state::{app_local_data_root, persist_app_update_store, AppState},
 };
 
@@ -1818,67 +1818,13 @@ fn verify_release_checksums_signature_variant_with_key(
     signature_b64: &str,
     public_key_xml: &str,
 ) -> Result<(), String> {
-    let script = r#"
-$publicXml = @'
-__PUBLIC_KEY_XML__
-'@
-$checksumsB64 = [Environment]::GetEnvironmentVariable('__CHECKSUMS_ENV__')
-$signatureB64 = [Environment]::GetEnvironmentVariable('__SIGNATURE_ENV__')
-if ([string]::IsNullOrWhiteSpace($checksumsB64) -or [string]::IsNullOrWhiteSpace($signatureB64)) {
-  exit 2
-}
-$checksums = [Convert]::FromBase64String($checksumsB64)
-$signature = [Convert]::FromBase64String($signatureB64)
-$rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
-$rsa.PersistKeyInCsp = $false
-$rsa.FromXmlString($publicXml)
-$sha = [System.Security.Cryptography.SHA256]::Create()
-if (-not $rsa.VerifyData($checksums, $sha, $signature)) {
-  exit 1
-}
-"#
-    .replace("__PUBLIC_KEY_XML__", public_key_xml)
-    .replace("__CHECKSUMS_ENV__", RELEASE_CHECKSUMS_B64_ENV)
-    .replace("__SIGNATURE_ENV__", RELEASE_CHECKSUMS_SIGNATURE_B64_ENV);
-
-    let mut command = Command::new("powershell");
-    command.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        &script,
-    ]);
-    command.env(RELEASE_CHECKSUMS_B64_ENV, B64.encode(checksums_bytes));
-    command.env(RELEASE_CHECKSUMS_SIGNATURE_B64_ENV, signature_b64);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let output = command
-        .output()
-        .map_err(|e| format!("run checksum signature verification: {e}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Err(format!(
-        "release checksum signature verification failed (code {:?}){}{}",
-        output.status.code(),
-        if stderr.is_empty() {
-            String::new()
-        } else {
-            format!(" stderr: {stderr}")
-        },
-        if stdout.is_empty() {
-            String::new()
-        } else {
-            format!(" stdout: {stdout}")
-        }
-    ))
+    release_security::verify_release_checksums_signature(
+        checksums_bytes,
+        signature_b64,
+        public_key_xml,
+        RELEASE_CHECKSUMS_B64_ENV,
+        RELEASE_CHECKSUMS_SIGNATURE_B64_ENV,
+    )
 }
 
 fn signature_verification_variants(checksums_bytes: &[u8]) -> Vec<Vec<u8>> {
@@ -1926,6 +1872,13 @@ fn asset_rank(kind: SelectedAssetKind) -> u8 {
 }
 
 fn can_auto_apply_asset(name: &str) -> bool {
+    can_auto_apply_asset_for_os(std::env::consts::OS, name)
+}
+
+fn can_auto_apply_asset_for_os(os: &str, name: &str) -> bool {
+    if os != "windows" {
+        return false;
+    }
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".zip") || lower.ends_with(".msi")
 }
@@ -2575,7 +2528,8 @@ fn powershell_quote(path: &Path) -> String {
 mod tests {
     use super::{
         asset_rank, build_msi_apply_helper_script, build_release_http_client,
-        build_zip_apply_helper_script, can_auto_apply_asset, default_auto_update_enabled,
+        build_zip_apply_helper_script, can_auto_apply_asset, can_auto_apply_asset_for_os,
+        default_auto_update_enabled,
         download_release_bytes, ensure_asset_matches_verified_checksum,
         extract_checksum_for_asset, fetch_latest_release_from_url, is_version_newer,
         normalize_version, pick_release_asset_for_context,
@@ -2719,6 +2673,8 @@ mod tests {
         assert!(can_auto_apply_asset("cerbena-windows.zip"));
         assert!(can_auto_apply_asset("cerbena-windows.msi"));
         assert!(!can_auto_apply_asset("cerbena-windows.exe"));
+        assert!(!can_auto_apply_asset_for_os("linux", "cerbena-browser-linux.zip"));
+        assert!(!can_auto_apply_asset_for_os("linux", "cerbena-browser_9.9.9_amd64.deb"));
     }
 
     #[test]

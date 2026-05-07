@@ -82,6 +82,13 @@ The project provides:
 - Browser engines: `Chromium`, `Ungoogled Chromium`, `LibreWolf`
 - Managed runtime: `sing-box`, `openvpn`, `amneziawg`, `tor`, Docker-managed container helpers
 
+## Platform support
+
+- Windows (`x86_64`): primary release target with MSI-first install/update flow.
+- Linux (`x86_64`, Debian/Ubuntu class): first delivery slice as `.deb` package.
+- Linux updater strategy in this stage: `manual download` only (no auto-apply handoff).
+- Linux runtime note: Chromium-family sandbox may require AppArmor/userns host setup; Cerbena shows explicit diagnostics and compatibility fallback when sandbox prerequisites are missing.
+
 ## Quick Start
 
 ### Requirements
@@ -89,7 +96,8 @@ The project provides:
 - `Rust` toolchain
 - `Node.js` LTS + `npm`
 - Windows as the primary desktop target
-- `Docker Desktop` if you want to use container-backed traffic isolation
+- Debian/Ubuntu-class Linux host if you want to build `.deb` locally (`npm run build:deb`)
+- Docker runtime (`Docker Desktop` on Windows or Docker Engine on Linux) for container-backed traffic isolation
 
 ### Verification
 
@@ -131,6 +139,12 @@ This preflight now includes the Docker runtime gate, security gate, and vulnerab
 powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -Mode package -CompactOutput
 ```
 
+For automated tagged releases, use GitHub Actions workflow:
+
+- `.github/workflows/release-desktop-bundles.yml` builds Windows `.msi` and Linux `.deb`,
+- signs release metadata (`checksums.txt` + `checksums.sig`),
+- and attaches signed assets to GitHub Release.
+
 ### Build the installer
 
 ```powershell
@@ -142,6 +156,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 GitHub Releases should typically include:
 
 - `cerbena-browser-setup-<version>.exe` as the primary Windows installer;
+- `cerbena-browser-<version>.msi` as the primary Windows updater/install handoff artifact;
+- `cerbena-browser_<version>_amd64.deb` as an optional Debian/Ubuntu package when the Linux slice is included;
 - `cerbena-windows-x64.zip` as the portable release bundle when needed;
 - `cerbena-updater.exe` as the standalone updater executable;
 - `checksums.txt`, `checksums.sig`, and `release-manifest.json` as trusted release metadata artifacts.

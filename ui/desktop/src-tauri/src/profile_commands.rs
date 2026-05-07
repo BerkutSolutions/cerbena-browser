@@ -2,7 +2,6 @@ use std::{
     fs,
     io::{Cursor, Read},
     path::{Path, PathBuf},
-    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -37,6 +36,7 @@ use crate::{
     launcher_commands::{load_global_security_record, persist_global_security_record},
     network_sandbox_lifecycle::{ensure_profile_network_stack, stop_profile_network_stack},
     panic_frame::{close_panic_frame, maybe_start_panic_frame},
+    platform::dialogs,
     process_tracking::{
         clear_profile_process, find_profile_main_window_pid_for_dir,
         find_profile_process_pid_for_dir, is_process_running as is_pid_running,
@@ -2189,45 +2189,7 @@ pub fn validate_profile_modal(
 
 #[tauri::command]
 pub fn pick_certificate_files(correlation_id: String) -> Result<UiEnvelope<Vec<String>>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let script = r#"
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Filter = 'Certificates (*.pem;*.crt;*.cer)|*.pem;*.crt;*.cer'
-$dialog.Multiselect = $true
-$dialog.CheckFileExists = $true
-$dialog.CheckPathExists = $true
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  $dialog.FileNames | ConvertTo-Json -Compress
-}
-"#;
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-Command", script])
-            .output()
-            .map_err(|e| format!("certificate picker failed: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                "certificate picker failed".to_string()
-            } else {
-                format!("certificate picker failed: {stderr}")
-            });
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if stdout.is_empty() {
-            return Ok(ok(correlation_id, Vec::new()));
-        }
-        let files = serde_json::from_str::<Vec<String>>(&stdout)
-            .or_else(|_| serde_json::from_str::<String>(&stdout).map(|item| vec![item]))
-            .map_err(|e| format!("certificate picker parse failed: {e}"))?;
-        return Ok(ok(correlation_id, files));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("certificate picker is not supported on this platform".to_string())
-    }
+    Ok(ok(correlation_id, dialogs::pick_certificate_files()?))
 }
 
 #[tauri::command]

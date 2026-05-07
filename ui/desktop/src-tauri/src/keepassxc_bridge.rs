@@ -1,29 +1,43 @@
+use std::path::Path;
+#[cfg(target_os = "windows")]
 use std::{
     collections::BTreeSet,
     fs,
     io::{Cursor, Read},
-    path::{Path, PathBuf},
-    process::Command,
+    path::PathBuf,
 };
+#[cfg(target_os = "windows")]
+use std::process::Command;
 
-use browser_profile::{Engine, ProfileMetadata};
+use browser_profile::ProfileMetadata;
+#[cfg(target_os = "windows")]
+use browser_profile::Engine;
+#[cfg(any(target_os = "windows", test))]
 use serde_json::Value;
+#[cfg(target_os = "windows")]
 use zip::ZipArchive;
 
-use crate::{
-    launcher_commands::push_runtime_log,
-    profile_security::tags_allow_keepassxc,
-    state::{app_local_data_root, AppState},
-};
+use crate::state::AppState;
+#[cfg(target_os = "windows")]
+use crate::launcher_commands::push_runtime_log;
+#[cfg(target_os = "windows")]
+use crate::{profile_security::tags_allow_keepassxc, state::app_local_data_root};
 
+#[cfg(target_os = "windows")]
 const KEEPASSXC_PROXY_FILE: &str = "keepassxc-proxy.exe";
+#[cfg(target_os = "windows")]
 const KEEPASSXC_HOST_NAME: &str = "org.keepassxc.keepassxc_browser";
+#[cfg(any(target_os = "windows", test))]
 const KEEPASSXC_STORE_EXTENSION_ID: &str = "oboonakemofpalcgghocfoadofidjkkk";
+#[cfg(target_os = "windows")]
 const KEEPASSXC_STORE_EXTENSION_ORIGIN: &str =
     "chrome-extension://oboonakemofpalcgghocfoadofidjkkk/";
+#[cfg(any(target_os = "windows", test))]
 const KEEPASSXC_FIREFOX_EXTENSION_ID: &str = "keepassxc-browser@keepassxc.org";
+#[cfg(target_os = "windows")]
 const KEEPASSXC_DEBUG_FLAG_FILE: &str = "keepassxc-native-messaging-debug.flag";
 
+#[cfg(target_os = "windows")]
 fn keepassxc_debug_flag_path(profile_root: &Path) -> PathBuf {
     profile_root.join("policy").join(KEEPASSXC_DEBUG_FLAG_FILE)
 }
@@ -117,6 +131,7 @@ pub fn ensure_keepassxc_bridge_for_profile(
     }
 }
 
+#[cfg(target_os = "windows")]
 fn keepassxc_manifest(
     state: &AppState,
     profile: &ProfileMetadata,
@@ -146,6 +161,7 @@ fn keepassxc_manifest(
     manifest
 }
 
+#[cfg(target_os = "windows")]
 fn collect_keepassxc_allowed_origins(
     state: &AppState,
     profile: &ProfileMetadata,
@@ -159,6 +175,7 @@ fn collect_keepassxc_allowed_origins(
     origins.into_iter().collect()
 }
 
+#[cfg(target_os = "windows")]
 fn collect_keepassxc_firefox_extension_ids(
     state: &AppState,
     profile: &ProfileMetadata,
@@ -193,6 +210,7 @@ fn collect_keepassxc_firefox_extension_ids(
     ids.into_iter().collect()
 }
 
+#[cfg(target_os = "windows")]
 fn read_keepassxc_origins_from_secure_preferences(
     state: &AppState,
     profile: &ProfileMetadata,
@@ -302,6 +320,7 @@ fn read_keepassxc_origins_from_secure_preferences(
     origins
 }
 
+#[cfg(target_os = "windows")]
 fn resolve_keepassxc_extension_paths(profile_root: &Path) -> Vec<PathBuf> {
     let extensions_root = profile_root.join("policy").join("chromium-extensions");
     let mut paths = Vec::new();
@@ -325,6 +344,7 @@ fn resolve_keepassxc_extension_paths(profile_root: &Path) -> Vec<PathBuf> {
     paths
 }
 
+#[cfg(target_os = "windows")]
 fn read_firefox_extension_id_for_item(
     item: &crate::state::ExtensionLibraryItem,
     profile_root: &Path,
@@ -355,6 +375,7 @@ fn read_firefox_extension_id_for_item(
     None
 }
 
+#[cfg(target_os = "windows")]
 fn read_firefox_extension_id_from_path(path: &Path) -> Option<String> {
     if path.is_dir() {
         return fs::read_to_string(path.join("manifest.json"))
@@ -380,6 +401,7 @@ fn read_firefox_extension_id_from_path(path: &Path) -> Option<String> {
         .and_then(|manifest| manifest_stable_id(&manifest))
 }
 
+#[cfg(target_os = "windows")]
 fn directory_looks_like_keepassxc(path: &Path) -> bool {
     let manifest_path = path.join("manifest.json");
     let Ok(text) = fs::read_to_string(manifest_path) else {
@@ -399,6 +421,7 @@ fn directory_looks_like_keepassxc(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(target_os = "windows")]
 fn looks_like_keepassxc_extension(item: &crate::state::ExtensionLibraryItem) -> bool {
     item.tags
         .iter()
@@ -417,6 +440,7 @@ fn looks_like_keepassxc_extension(item: &crate::state::ExtensionLibraryItem) -> 
         || item.id.eq_ignore_ascii_case(KEEPASSXC_FIREFOX_EXTENSION_ID)
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn manifest_stable_id(manifest_json: &Value) -> Option<String> {
     manifest_json
         .get("browser_specific_settings")
@@ -433,10 +457,12 @@ fn manifest_stable_id(manifest_json: &Value) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+#[cfg(target_os = "windows")]
 fn normalize_windowsish_path(path: &Path) -> String {
     path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
 }
 
+#[cfg(target_os = "windows")]
 fn keepassxc_engine_label(engine: &Engine) -> &'static str {
     match engine {
         Engine::Chromium => "Chromium",
@@ -445,6 +471,7 @@ fn keepassxc_engine_label(engine: &Engine) -> &'static str {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn keepassxc_manifest_debug_summary(manifest: &Value) -> String {
     if let Some(values) = manifest.get("allowed_extensions").and_then(Value::as_array) {
         return format!("allowed_extensions={values:?}");
@@ -455,6 +482,7 @@ fn keepassxc_manifest_debug_summary(manifest: &Value) -> String {
     "no explicit extension list".to_string()
 }
 
+#[cfg(target_os = "windows")]
 fn keepassxc_registry_keys(engine: &Engine) -> Vec<String> {
     match engine {
         Engine::Chromium | Engine::UngoogledChromium => vec![
@@ -564,6 +592,7 @@ fn register_native_host_key(
     }
 }
 
+#[cfg(target_os = "windows")]
 fn clear_keepassxc_debug_flag(state: &AppState, profile_root: &Path) {
     let path = keepassxc_debug_flag_path(profile_root);
     if path.exists() {
@@ -579,6 +608,7 @@ fn clear_keepassxc_debug_flag(state: &AppState, profile_root: &Path) {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn write_keepassxc_log(state: &AppState, profile: &ProfileMetadata, message: &str) {
     let line = format!("[keepassxc-bridge] profile={} {}", profile.id, message);
     eprintln!("{line}");

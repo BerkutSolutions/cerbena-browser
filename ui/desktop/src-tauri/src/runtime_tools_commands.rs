@@ -35,6 +35,7 @@ pub struct RuntimeToolStatusView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeToolId {
     Docker,
+    LinuxBrowserSandbox,
     Chromium,
     UngoogledChromium,
     Librewolf,
@@ -48,6 +49,7 @@ impl RuntimeToolId {
     fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "docker" => Some(Self::Docker),
+            "linux-browser-sandbox" => Some(Self::LinuxBrowserSandbox),
             "chromium" => Some(Self::Chromium),
             "ungoogled-chromium" => Some(Self::UngoogledChromium),
             "librewolf" => Some(Self::Librewolf),
@@ -62,6 +64,7 @@ impl RuntimeToolId {
     fn id(self) -> &'static str {
         match self {
             Self::Docker => "docker",
+            Self::LinuxBrowserSandbox => "linux-browser-sandbox",
             Self::Chromium => "chromium",
             Self::UngoogledChromium => "ungoogled-chromium",
             Self::Librewolf => "librewolf",
@@ -75,6 +78,7 @@ impl RuntimeToolId {
     fn name_key(self) -> &'static str {
         match self {
             Self::Docker => "settings.tools.docker",
+            Self::LinuxBrowserSandbox => "settings.tools.linuxBrowserSandbox",
             Self::Chromium => "settings.tools.chromium",
             Self::UngoogledChromium => "settings.tools.ungoogledChromium",
             Self::Librewolf => "settings.tools.librewolf",
@@ -112,6 +116,12 @@ pub async fn install_runtime_tool(
         .ok_or_else(|| format!("unsupported runtime tool id: {}", request.tool_id))?;
     match tool {
         RuntimeToolId::Docker => return Err("docker must be installed manually".to_string()),
+        RuntimeToolId::LinuxBrowserSandbox => {
+            return Err(
+                "linux browser sandbox is configured at OS level (sysctl/AppArmor) and is not auto-installed by launcher"
+                    .to_string(),
+            )
+        }
         RuntimeToolId::Chromium | RuntimeToolId::UngoogledChromium | RuntimeToolId::Librewolf => {
             let engine = match tool {
                 RuntimeToolId::Chromium => EngineKind::Chromium,
@@ -152,7 +162,8 @@ pub async fn install_runtime_tool(
 
 fn collect_runtime_tools_status(state: &AppState) -> Result<Vec<RuntimeToolStatusView>, String> {
     let docker = docker_status(state);
-    Ok(vec![
+    #[allow(unused_mut)]
+    let mut tools = vec![
         docker_view(&docker),
         engine_view(state, EngineKind::Chromium)?,
         engine_view(state, EngineKind::UngoogledChromium)?,
@@ -161,10 +172,74 @@ fn collect_runtime_tools_status(state: &AppState) -> Result<Vec<RuntimeToolStatu
         network_tool_view(state, NetworkTool::OpenVpn, &docker)?,
         network_tool_view(state, NetworkTool::AmneziaWg, &docker)?,
         network_tool_view(state, NetworkTool::TorBundle, &docker)?,
-    ])
+    ];
+    #[cfg(target_os = "linux")]
+    tools.insert(1, linux_browser_sandbox_view());
+    Ok(tools)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_browser_sandbox_view() -> RuntimeToolStatusView {
+    let ready = linux_browser_sandbox_ready();
+    RuntimeToolStatusView {
+        id: RuntimeToolId::LinuxBrowserSandbox.id().to_string(),
+        name_key: RuntimeToolId::LinuxBrowserSandbox.name_key().to_string(),
+        status: if ready {
+            "installed".to_string()
+        } else {
+            "missing".to_string()
+        },
+        version: None,
+        action: if ready { "none".to_string() } else { "guide".to_string() },
+        detail_key: Some(
+            if ready {
+                "settings.tools.detail.linuxBrowserSandboxReady"
+            } else {
+                "settings.tools.detail.linuxBrowserSandboxMissing"
+            }
+            .to_string(),
+        ),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_browser_sandbox_ready() -> bool {
+    let userns_enabled = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone")
+        .ok()
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false);
+    if !userns_enabled {
+        return false;
+    }
+    let apparmor_restricts_userns =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .ok()
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false);
+    if !apparmor_restricts_userns {
+        return true;
+    }
+    linux_cerbena_apparmor_allowlist_present()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_cerbena_apparmor_allowlist_present() -> bool {
+    let profile = std::fs::read_to_string("/etc/apparmor.d/cerbena-chromium")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if profile.is_empty() {
+        return false;
+    }
+    let dev_path = ".local/share/dev.cerbena.app/engine-runtime/engines/chromium/";
+    let prod_path = ".local/share/cerbena.app/engine-runtime/engines/chromium/";
+    profile.contains("userns") && (profile.contains(dev_path) || profile.contains(prod_path))
 }
 
 fn docker_view(docker: &DockerStatus) -> RuntimeToolStatusView {
+    #[cfg(target_os = "linux")]
+    let missing_action = "guide";
+    #[cfg(not(target_os = "linux"))]
+    let missing_action = "external";
     RuntimeToolStatusView {
         id: RuntimeToolId::Docker.id().to_string(),
         name_key: RuntimeToolId::Docker.name_key().to_string(),
@@ -177,7 +252,7 @@ fn docker_view(docker: &DockerStatus) -> RuntimeToolStatusView {
         action: if docker.installed {
             "none".to_string()
         } else {
-            "external".to_string()
+            missing_action.to_string()
         },
         detail_key: if docker.installed {
             if docker.runtime_available {
@@ -357,7 +432,10 @@ fn probe_command_version(path: &PathBuf, candidates: &[&[&str]]) -> Option<Strin
 }
 
 fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[cfg(target_os = "windows")]
     let mut command = Command::new(program);
+    #[cfg(not(target_os = "windows"))]
+    let command = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

@@ -1,27 +1,44 @@
+#[cfg(target_os = "windows")]
 use std::path::Path;
 
 use tauri::AppHandle;
 
+#[cfg(target_os = "windows")]
 const PRODUCT_NAME: &str = "Cerbena Browser";
+#[cfg(target_os = "windows")]
 const BROWSER_DESCRIPTION: &str =
     "Isolated browser profiles with controlled link routing and network policies.";
+#[cfg(target_os = "windows")]
 const UNINSTALLER_FILE_NAME: &str = "Cerbena Browser Uninstall.exe";
+#[cfg(target_os = "windows")]
 const PUBLISHER: &str = "Berkut Solutions";
+#[cfg(target_os = "windows")]
 const UNINSTALL_SUBKEY: &str =
     r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Cerbena Browser";
+#[cfg(target_os = "windows")]
 const START_MENU_INTERNET_SUBKEY: &str = r"Software\Clients\StartMenuInternet\Cerbena Browser";
+#[cfg(target_os = "windows")]
 const REGISTERED_APPLICATIONS_SUBKEY: &str = r"Software\RegisteredApplications";
+#[cfg(target_os = "windows")]
 const CERBENA_URL_PROG_ID: &str = "CerbenaBrowser.URL";
+#[cfg(target_os = "windows")]
 const CERBENA_HTML_PROG_ID: &str = "CerbenaBrowser.HTML";
+#[cfg(target_os = "windows")]
 const CERBENA_MHTML_PROG_ID: &str = "CerbenaBrowser.MHTML";
+#[cfg(target_os = "windows")]
 const CERBENA_PDF_PROG_ID: &str = "CerbenaBrowser.PDF";
+#[cfg(target_os = "windows")]
 const CERBENA_XHTML_PROG_ID: &str = "CerbenaBrowser.XHTML";
+#[cfg(target_os = "windows")]
 const CERBENA_SVG_PROG_ID: &str = "CerbenaBrowser.SVG";
+#[cfg(target_os = "windows")]
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(target_os = "windows")]
 const URL_ASSOCIATIONS: &[&str] = &[
     "http", "https", "irc", "mailto", "mms", "news", "nntp", "sms", "smsto", "snews", "tel", "urn",
     "webcal",
 ];
+#[cfg(target_os = "windows")]
 const FILE_ASSOCIATIONS: &[(&str, &str, &str)] = &[
     (".htm", CERBENA_HTML_PROG_ID, "Cerbena HTML Document"),
     (".html", CERBENA_HTML_PROG_ID, "Cerbena HTML Document"),

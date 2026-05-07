@@ -15,6 +15,7 @@ A release should not rely on a successful build alone.
 - `powershell -ExecutionPolicy Bypass -File scripts/security-gates-preflight.ps1`
 - `powershell -ExecutionPolicy Bypass -File scripts/vulnerability-gates-preflight.ps1`
 - validation of `README.md`, `README.en.md`, `docs/ru`, and `docs/eng`
+- when the Debian slice is included, validation of `cd ui/desktop && npm run build:deb` on a Debian/Ubuntu-class host plus a smoke install/uninstall pass for `cerbena-browser_<version>_amd64.deb`
 - review of [Security validation](./security-validation.md) when a release note claims `TASKS4` / `U14-2` hardening coverage
 
 ## Why this gate set matters

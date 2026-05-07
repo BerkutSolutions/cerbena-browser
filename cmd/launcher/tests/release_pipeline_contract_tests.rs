@@ -107,6 +107,8 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
             .expect("read generate-release-artifacts.ps1");
     let installer_script = fs::read_to_string(root.join("scripts").join("build-installer.ps1"))
         .expect("read build-installer.ps1");
+    let release_script = fs::read_to_string(root.join("scripts").join("release.ps1"))
+        .expect("read release.ps1");
     let version_script = fs::read_to_string(root.join("scripts").join("update-version.ps1"))
         .expect("read update-version.ps1");
     let version_manifest =
@@ -119,6 +121,16 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
             .join("new-release-signing-material.ps1"),
     )
     .expect("read new-release-signing-material.ps1");
+    let desktop_package =
+        fs::read_to_string(root.join("ui").join("desktop").join("package.json"))
+            .expect("read ui/desktop/package.json");
+    let linux_tauri_config = fs::read_to_string(
+        root.join("ui")
+            .join("desktop")
+            .join("src-tauri")
+            .join("tauri.linux.conf.json"),
+    )
+    .expect("read ui/desktop/src-tauri/tauri.linux.conf.json");
     let release_public_key = fs::read_to_string(
         root.join("config")
             .join("release")
@@ -139,6 +151,7 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         assert!(
             artifacts_script.contains(needle)
                 || installer_script.contains(needle)
+                || release_script.contains(needle)
                 || signing_helper.contains(needle)
                 || signing_bootstrap.contains(needle)
                 || release_public_key.contains(needle)
@@ -193,6 +206,25 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         !artifacts_script.contains("<D>") && !artifacts_script.contains("<P>"),
         "generate-release-artifacts.ps1 must not embed a private RSA key"
     );
+    for needle in [
+        "\"build:deb\"",
+        "tauri.linux.conf.json",
+        "--bundles deb",
+        "\"deb\"",
+        "\"active\": true",
+        "\"category\": \"Network\"",
+        "build\\linux",
+        "linux-x64",
+        "manual_download",
+    ] {
+        assert!(
+            desktop_package.contains(needle)
+                || linux_tauri_config.contains(needle)
+                || artifacts_script.contains(needle)
+                || release_script.contains(needle),
+            "linux deb packaging contract must mention {needle}"
+        );
+    }
 }
 
 #[test]

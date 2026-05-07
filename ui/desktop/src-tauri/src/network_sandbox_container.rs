@@ -9,7 +9,10 @@ use crate::state::AppState;
 const CONTAINER_NETWORK_PREFIX: &str = "cerbena-profile-";
 
 fn docker_command() -> Command {
+    #[cfg(target_os = "windows")]
     let mut command = Command::new("docker");
+    #[cfg(not(target_os = "windows"))]
+    let command = Command::new("docker");
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

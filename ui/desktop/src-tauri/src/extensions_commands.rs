@@ -1,5 +1,6 @@
 use crate::{
     envelope::{ok, UiEnvelope},
+    platform::dialogs,
     state::{
         persist_extension_library_store, AppState, ExtensionLibraryItem, ExtensionLibraryStore,
         ExtensionPackageVariant,
@@ -16,7 +17,6 @@ use std::{
     fs,
     io::{Cursor, Read, Write},
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 use tauri::State;
@@ -667,94 +667,21 @@ fn normalize_transfer_mode(value: &str) -> Result<TransferMode, String> {
 }
 
 fn pick_folder() -> Result<String, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let script = r#"
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.ShowNewFolderButton = $true
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  $dialog.SelectedPath | ConvertTo-Json -Compress
-}
-"#;
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-Command", script])
-            .output()
-            .map_err(|e| format!("folder picker failed: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                "folder picker failed".to_string()
-            } else {
-                format!("folder picker failed: {stderr}")
-            });
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if stdout.is_empty() {
-            return Err("folder selection was cancelled".to_string());
-        }
-        return serde_json::from_str::<String>(&stdout)
-            .map_err(|e| format!("folder picker parse failed: {e}"));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("folder picker is not supported on this platform".to_string())
-    }
+    dialogs::pick_folder()
 }
 
 fn pick_import_source(mode: TransferMode) -> Result<String, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let (filter, title) = match mode {
-            TransferMode::File => (
-                "Cerbena extension links (cerbena-extensions-links.json)|cerbena-extensions-links.json|JSON files (*.json)|*.json",
-                "Select Cerbena extension links file",
-            ),
-            TransferMode::Archive => (
-                "Cerbena archive manifest (manifest.json)|manifest.json|JSON files (*.json)|*.json",
-                "Select Cerbena archive manifest file",
-            ),
-        };
-        let script = format!(
-            r#"
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Filter = '{filter}'
-$dialog.Title = '{title}'
-$dialog.Multiselect = $false
-$dialog.CheckFileExists = $true
-$dialog.CheckPathExists = $true
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
-  $dialog.FileName | ConvertTo-Json -Compress
-}}
-"#
-        );
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-Command", &script])
-            .output()
-            .map_err(|e| format!("import picker failed: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                "import picker failed".to_string()
-            } else {
-                format!("import picker failed: {stderr}")
-            });
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if stdout.is_empty() {
-            return Err("import selection was cancelled".to_string());
-        }
-        return serde_json::from_str::<String>(&stdout)
-            .map_err(|e| format!("import picker parse failed: {e}"));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = mode;
-        Err("import picker is not supported on this platform".to_string())
-    }
+    let (filter, title) = match mode {
+        TransferMode::File => (
+            "Cerbena extension links (cerbena-extensions-links.json)|cerbena-extensions-links.json|JSON files (*.json)|*.json",
+            "Select Cerbena extension links file",
+        ),
+        TransferMode::Archive => (
+            "Cerbena archive manifest (manifest.json)|manifest.json|JSON files (*.json)|*.json",
+            "Select Cerbena archive manifest file",
+        ),
+    };
+    dialogs::pick_file(title, filter)
 }
 
 fn export_extension_links_file(

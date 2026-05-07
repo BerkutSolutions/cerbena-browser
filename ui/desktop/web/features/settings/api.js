@@ -93,3 +93,10 @@ export async function installRuntimeTool(toolId) {
     request: { toolId }
   });
 }
+
+export async function getLinuxBrowserSandboxStatus() {
+  const result = await getRuntimeToolsStatus();
+  if (!result.ok) return result;
+  const tool = (result.data ?? []).find((item) => item.id === "linux-browser-sandbox");
+  return { ok: true, data: tool ?? null };
+}

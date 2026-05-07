@@ -91,6 +91,8 @@ PROMPT_UPDATED.md
 
 # Local planning and scratch space
 .work/
+.work/local-scripts/export-linux-vm-copy.ps1
+.work/local-scripts/upload-linux-vm-copy.py
 
 # Local publication blockers (operator-only scripts must never be published by release automation)
 # release-local-only: scripts/release.ps1

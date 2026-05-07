@@ -49,7 +49,7 @@ Required detached release-signature coverage:
 - `checksums.txt`;
 - `checksums.sig`.
 
-`release-manifest.json` and archives such as `cerbena-windows-x64.zip` are trusted through the signed checksum contract.
+`release-manifest.json`, archives such as `cerbena-windows-x64.zip`, and optional Linux packages such as `cerbena-browser_<version>_amd64.deb` are trusted through the signed checksum contract.
 
 ## Helper and sidecar policy
 

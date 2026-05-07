@@ -211,7 +211,10 @@ fn read_docker_logs(container_name: &str) -> String {
 }
 
 fn hidden_command(program: &str) -> std::process::Command {
+    #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new(program);
+    #[cfg(not(target_os = "windows"))]
+    let command = std::process::Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

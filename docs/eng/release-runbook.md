@@ -46,6 +46,14 @@ The local preflight now runs the Docker runtime contract plus security and vulne
 powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -Mode package -CompactOutput
 ```
 
+Interactive release menu now also provides:
+
+- `Full cycle (fast, skip CI-covered checks)` for local publish runs where docs/UI/workspace/security preflight still runs, while avoiding duplicate published-updater E2E checks.
+
+Automated release path is available via:
+
+- `.github/workflows/release-desktop-bundles.yml` (`msi + deb + signed metadata`).
+
 Before packaging, set:
 
 - `CERBENA_RELEASE_SIGNING_PRIVATE_KEY_XML` or `CERBENA_RELEASE_SIGNING_PRIVATE_KEY_PATH`
@@ -80,6 +88,7 @@ GitHub Releases should normally publish:
 
 - `cerbena-browser-<version>.msi` as the primary Windows installer and updater handoff artifact;
 - `cerbena-browser-setup-<version>.exe` as the manual/fallback installer path;
+- `cerbena-browser_<version>_amd64.deb` as the optional Debian/Ubuntu package when the Linux slice was built on Ubuntu and copied into `build/linux/<version>/`;
 - `cerbena-windows-x64.zip` as the portable release bundle;
 - `cerbena-updater.exe` as the standalone updater executable;
 - `checksums.txt`;
@@ -87,6 +96,13 @@ GitHub Releases should normally publish:
 - `release-manifest.json`.
 
 The `MSI` is built locally, signed with the same Authenticode material as the rest of the Windows release, and should be attached to the release as the primary installation artifact for end users. The `.exe` installer remains a compatibility fallback for manual recovery and environments where `msiexec` is not the intended path.
+
+Optional Debian publication is additive only:
+
+- build the `.deb` on a Debian/Ubuntu-class host with `cd ui/desktop && npm run build:deb`;
+- copy the resulting `cerbena-browser_<version>_amd64.deb` into `build/linux/<version>/` on the release workspace before the final publish pass;
+- rerun `scripts/release.ps1 -Mode publish` or `scripts/generate-release-artifacts.ps1 -Version <version>` so `release-manifest.json`, `checksums.txt`, and `checksums.sig` are regenerated with the Linux package included;
+- do not reinterpret the Linux package as an updater-managed artifact: for this stage it is manual-download only.
 
 Updater ownership for Windows is now explicit:
 
@@ -99,6 +115,7 @@ Updater ownership for Windows is now explicit:
 
 - validate the manual update flow, detached signatures, and `Authenticode` signatures;
 - validate the MSI-first update flow from an installed Windows build, including verified download, `msiexec` handoff, relaunch, and cancellation/failure recovery behavior;
+- if a Debian package is present, validate `sudo apt install ./cerbena-browser_<version>_amd64.deb`, first launch, profile start smoke checks, `sudo apt remove cerbena-browser`, and any launcher-owned residue that must still be cleaned manually under the first Linux slice contract;
 - confirm that the standalone updater reports the correct `version is current` state for an up-to-date build and that `preview` mode completes without installation;
 - verify that `sync`, `route runtime`, traffic gateway, and installer flow have no known regressions;
 - ensure the documentation reflects the current UI, release scripts, installation path, and self-signed trust limitations.
@@ -131,4 +148,5 @@ Operator recovery for publication or trust incidents:
 - update `CHANGELOG.md`;
 - record the validated quality-gate set;
 - refresh traceability evidence when required;
-- attach the `.msi` and fallback installer `.exe` to the GitHub release entry.
+- attach the `.msi` and fallback installer `.exe` to the GitHub release entry;
+- attach `cerbena-browser_<version>_amd64.deb` when the Linux package was produced and included in the signed checksum bundle.

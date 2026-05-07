@@ -1,5 +1,7 @@
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::BTreeSet,
     fs,
@@ -30,7 +32,10 @@ const USER_AGENT: &str =
 const CHROMIUM_SNAPSHOTS_BASE_URL: &str =
     "https://storage.googleapis.com/chromium-browser-snapshots";
 const LIBREWOLF_RELEASES_URL: &str =
-    "https://api.github.com/repos/librewolf-community/browser-windows/releases?per_page=20";
+    "https://api.github.com/repos/librewolf-community/browser/releases?per_page=20";
+const LIBREWOLF_LINUX_MIRROR_RELEASES_URL: &str =
+    "https://api.github.com/repos/librewolf-community/browser-linux/releases?per_page=20";
+const LIBREWOLF_LINUX_INSTALLATION_URL: &str = "https://librewolf.net/installation/linux/";
 const LIBREWOLF_WINDOWS_INSTALLATION_URL: &str = "https://librewolf.net/installation/windows/";
 const UNGOOGLED_CHROMIUM_WINDOWS_RELEASES_URL: &str =
     "https://api.github.com/repos/ungoogled-software/ungoogled-chromium-windows/releases?per_page=20";
@@ -231,6 +236,8 @@ impl EngineRuntime {
         });
 
         let binary_path = self.locate_binary(engine, &target_dir)?;
+        #[cfg(unix)]
+        ensure_engine_binary_executable(&binary_path)?;
         let installation = EngineInstallation {
             engine,
             version: artifact.version.clone(),
@@ -272,7 +279,8 @@ impl EngineRuntime {
         } else {
             installation.binary_path
         };
-        let request = crate::contract::LaunchRequest {
+        #[allow(unused_mut)]
+        let mut request = crate::contract::LaunchRequest {
             profile_id,
             profile_root: profile_root.clone(),
             binary_path,
@@ -286,6 +294,23 @@ impl EngineRuntime {
             )?,
             env: launch_environment(engine, &profile_root),
         };
+        #[cfg(target_os = "linux")]
+        {
+            if matches!(engine, EngineKind::Chromium | EngineKind::UngoogledChromium)
+                && linux_requires_no_sandbox_for_binary(&request.binary_path)
+            {
+                eprintln!(
+                    "[engine-runtime] linux sandbox unavailable: {}; launching Chromium in compatibility mode",
+                    linux_sandbox_probe_summary()
+                );
+                request.args.push("--disable-setuid-sandbox".to_string());
+                request.args.push("--no-sandbox".to_string());
+            }
+        }
+        #[cfg(unix)]
+        ensure_engine_binary_executable(&request.binary_path)?;
+        #[cfg(unix)]
+        ensure_engine_helpers_executable(engine, &request.binary_path)?;
         eprintln!(
             "[engine-runtime] launch {} profile={} binary={} args={:?}",
             engine.as_key(),
@@ -380,38 +405,101 @@ impl EngineRuntime {
         if cfg!(target_os = "windows") {
             return self.resolve_librewolf_windows_artifact();
         }
+        if cfg!(target_os = "linux") {
+            return self.resolve_librewolf_linux_artifact();
+        }
 
         let client = http_client()?;
+        let suffix = librewolf_asset_suffix()?;
+        let release_urls = [LIBREWOLF_RELEASES_URL, LIBREWOLF_LINUX_MIRROR_RELEASES_URL];
+        let mut errors = Vec::new();
+        for release_url in release_urls {
+            let response = match client.get(release_url).send() {
+                Ok(response) => response,
+                Err(error) => {
+                    errors.push(format!("{release_url}: {error}"));
+                    continue;
+                }
+            };
+            if !response.status().is_success() {
+                errors.push(format!("{release_url}: HTTP {}", response.status()));
+                continue;
+            }
+            let releases: Vec<GithubRelease> = match response.json() {
+                Ok(releases) => releases,
+                Err(error) => {
+                    errors.push(format!("{release_url}: invalid JSON ({error})"));
+                    continue;
+                }
+            };
+            for release in releases {
+                if let Some(asset) = release.assets.into_iter().find(|item| {
+                    let lower = item.name.to_lowercase();
+                    lower.contains("librewolf") && lower.ends_with(&suffix)
+                }) {
+                    return Ok(ResolvedArtifact {
+                        engine: EngineKind::Librewolf,
+                        version: release.tag_name,
+                        file_name: asset.name,
+                        download_url: asset.browser_download_url,
+                    });
+                }
+            }
+        }
+        Err(EngineError::Download(format!(
+            "no compatible LibreWolf asset found for suffix {suffix}; sources: {}",
+            errors.join("; ")
+        )))
+    }
+
+    fn resolve_librewolf_linux_artifact(&self) -> Result<ResolvedArtifact, EngineError> {
+        let client = http_client()?;
         let response = client
-            .get(LIBREWOLF_RELEASES_URL)
+            .get(LIBREWOLF_LINUX_INSTALLATION_URL)
             .send()
             .map_err(|e| EngineError::Download(e.to_string()))?;
         if !response.status().is_success() {
             return Err(EngineError::Download(format!(
-                "librewolf releases request failed with HTTP {}",
+                "librewolf linux install page request failed with HTTP {}",
                 response.status()
             )));
         }
-        let releases: Vec<GithubRelease> = response
-            .json()
+        let body = response
+            .text()
             .map_err(|e| EngineError::Download(e.to_string()))?;
-        let suffix = librewolf_asset_suffix()?;
-        for release in releases {
-            if let Some(asset) = release.assets.into_iter().find(|item| {
-                let lower = item.name.to_lowercase();
-                lower.contains("librewolf") && lower.ends_with(&suffix)
-            }) {
-                return Ok(ResolvedArtifact {
-                    engine: EngineKind::Librewolf,
-                    version: release.tag_name,
-                    file_name: asset.name,
-                    download_url: asset.browser_download_url,
-                });
-            }
-        }
-        Err(EngineError::Download(format!(
-            "no compatible LibreWolf asset found for suffix {suffix}"
-        )))
+        let arch_marker = if cfg!(target_arch = "x86_64") {
+            "x86_64"
+        } else if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else {
+            return Err(EngineError::Download(
+                "unsupported Linux architecture for LibreWolf".to_string(),
+            ));
+        };
+        let href = extract_html_hrefs(&body)
+            .into_iter()
+            .find(|candidate| {
+                let lower = candidate.to_ascii_lowercase();
+                lower.contains("librewolf")
+                    && lower.contains(&arch_marker.to_ascii_lowercase())
+                    && lower.ends_with(".appimage")
+            })
+            .ok_or_else(|| {
+                EngineError::Download(format!(
+                    "no compatible LibreWolf AppImage link found on {} for architecture {}",
+                    LIBREWOLF_LINUX_INSTALLATION_URL, arch_marker
+                ))
+            })?;
+        let download_url = normalize_href_url(&href);
+        let file_name = file_name_from_url(&download_url, "librewolf appimage")?;
+        let version = parse_librewolf_version_from_appimage_file_name(&file_name)
+            .unwrap_or_else(|| "linux-appimage".to_string());
+        Ok(ResolvedArtifact {
+            engine: EngineKind::Librewolf,
+            version,
+            file_name,
+            download_url,
+        })
     }
 
     fn resolve_ungoogled_chromium_artifact(&self) -> Result<ResolvedArtifact, EngineError> {
@@ -826,7 +914,13 @@ impl EngineRuntime {
                 "firefox",
             ]),
         };
-        let binary = find_first_match(root, &candidates).ok_or_else(|| {
+        let binary = if matches!(engine, EngineKind::Librewolf) {
+            find_first_match(root, &candidates)
+                .or_else(|| find_first_suffix_match(root, &[".appimage"], Some("librewolf")))
+        } else {
+            find_first_match(root, &candidates)
+        }
+        .ok_or_else(|| {
             EngineError::Install(format!(
                 "unable to locate {} executable under {}",
                 engine.as_key(),
@@ -942,6 +1036,41 @@ fn extract_zip(archive_path: &Path, target_dir: &Path) -> Result<(), EngineError
         }
         let mut out = fs::File::create(&out_path)?;
         std::io::copy(&mut entry, &mut out)?;
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            fs::set_permissions(&out_path, fs::Permissions::from_mode(mode))
+                .map_err(|e| EngineError::Install(format!("chmod extracted file failed: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_engine_binary_executable(binary_path: &Path) -> Result<(), EngineError> {
+    let metadata = fs::metadata(binary_path).map_err(EngineError::Io)?;
+    let mut mode = metadata.permissions().mode();
+    let exec_mask = 0o111;
+    if mode & exec_mask == exec_mask {
+        return Ok(());
+    }
+    mode |= exec_mask;
+    fs::set_permissions(binary_path, fs::Permissions::from_mode(mode)).map_err(EngineError::Io)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_engine_helpers_executable(engine: EngineKind, binary_path: &Path) -> Result<(), EngineError> {
+    if !matches!(engine, EngineKind::Chromium | EngineKind::UngoogledChromium) {
+        return Ok(());
+    }
+    let Some(dir) = binary_path.parent() else {
+        return Ok(());
+    };
+    for helper in ["chrome_crashpad_handler", "chrome-sandbox"] {
+        let path = dir.join(helper);
+        if path.is_file() {
+            ensure_engine_binary_executable(&path)?;
+        }
     }
     Ok(())
 }
@@ -1162,6 +1291,26 @@ fn host_from_url(url: &str) -> Option<String> {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|parsed| parsed.host_str().map(|value| value.to_string()))
+}
+
+fn parse_librewolf_version_from_appimage_file_name(file_name: &str) -> Option<String> {
+    let stripped = file_name.strip_prefix("LibreWolf-")?;
+    let trimmed = stripped.strip_suffix(".AppImage")?;
+    let mut parts = trimmed.split('-').collect::<Vec<_>>();
+    if parts.is_empty() {
+        return None;
+    }
+    if let Some(last) = parts.last() {
+        if last.eq_ignore_ascii_case("x86_64") || last.eq_ignore_ascii_case("aarch64") {
+            parts.pop();
+        }
+    }
+    let version = parts.join("-");
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
 }
 
 fn zero_bytes_timeout_secs(host: &Option<String>) -> u64 {
@@ -1400,6 +1549,96 @@ fn launch_environment(engine: EngineKind, profile_root: &Path) -> Vec<(String, S
         }
         EngineKind::Librewolf => Vec::new(),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_requires_no_sandbox_for_binary(binary_path: &Path) -> bool {
+    if std::env::var("CERBENA_FORCE_CHROMIUM_SANDBOX")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let userns_clone_enabled = match fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
+        Ok(value) => value.trim() == "1",
+        Err(_) => false,
+    };
+    let apparmor_restricts_userns = match fs::read_to_string(
+        "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+    ) {
+        Ok(value) => value.trim() == "1",
+        Err(_) => false,
+    };
+    if !userns_clone_enabled {
+        return true;
+    }
+    if !apparmor_restricts_userns {
+        return false;
+    }
+    !linux_binary_allowlisted_in_cerbena_apparmor(binary_path)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_sandbox_probe_summary() -> String {
+    let userns = match fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
+        Ok(value) => value.trim().to_string(),
+        Err(error) => format!("read_error:{error}"),
+    };
+    let apparmor = match fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") {
+        Ok(value) => value.trim().to_string(),
+        Err(error) => format!("read_error:{error}"),
+    };
+    format!(
+        "kernel.unprivileged_userns_clone={userns}, kernel.apparmor_restrict_unprivileged_userns={apparmor}"
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_binary_allowlisted_in_cerbena_apparmor(binary_path: &Path) -> bool {
+    let profile = fs::read_to_string("/etc/apparmor.d/cerbena-chromium")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if profile.is_empty() || !profile.contains("userns") {
+        return false;
+    }
+    let binary = binary_path.to_string_lossy().to_ascii_lowercase();
+    if binary.contains("/.local/share/dev.cerbena.app/engine-runtime/engines/chromium/") {
+        return profile.contains(".local/share/dev.cerbena.app/engine-runtime/engines/chromium/");
+    }
+    if binary.contains("/.local/share/cerbena.app/engine-runtime/engines/chromium/") {
+        return profile.contains(".local/share/cerbena.app/engine-runtime/engines/chromium/");
+    }
+    false
+}
+
+fn find_first_suffix_match(root: &Path, suffixes: &[&str], contains: Option<&str>) -> Option<PathBuf> {
+    let suffixes = suffixes
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let needle = contains.map(|value| value.to_ascii_lowercase());
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = fs::read_dir(&dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let file_name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+            if !suffixes.iter().any(|suffix| file_name.ends_with(suffix)) {
+                continue;
+            }
+            if let Some(ref expected) = needle {
+                if !file_name.contains(expected) {
+                    continue;
+                }
+            }
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn chromium_launch_environment(profile_root: &Path) -> Vec<(String, String)> {

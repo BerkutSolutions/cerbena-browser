@@ -15,6 +15,7 @@ sidebar_position: 3
 - `powershell -ExecutionPolicy Bypass -File scripts/security-gates-preflight.ps1`
 - `powershell -ExecutionPolicy Bypass -File scripts/vulnerability-gates-preflight.ps1`
 - проверка `README.md`, `README.en.md`, `docs/ru`, `docs/eng`
+- если в выпуск включен дебиан-пакет, проверка `cd ui/desktop && npm run build:deb` на хосте семейства Дебиан/Убунту и дымовой проход установки/удаления `cerbena-browser_<version>_amd64.deb`
 - просмотр [Проверок безопасности](./security-validation.md), если заметки о выпуске ссылаются на покрытие задач по усилению защиты `TASKS4` / `U14-2`
 
 ## Что дает такой подход

@@ -49,7 +49,7 @@ Cerbena сейчас использует **внутреннюю модель д
 - `checksums.txt`;
 - `checksums.sig`.
 
-`release-manifest.json` и архивы вроде `cerbena-windows-x64.zip` проверяются через подписанный `checksums.txt`.
+`release-manifest.json`, архивы вроде `cerbena-windows-x64.zip` и опциональные пакеты для Линукс вроде `cerbena-browser_<version>_amd64.deb` проверяются через подписанный `checksums.txt`.
 
 ## Политика по вспомогательным бинарным файлам
 

@@ -12,7 +12,7 @@ sidebar_position: 91
 - UI smoke or `i18n` validation fails;
 - the update signature flow is invalid;
 - updater/restart handoff does not complete in expected timing windows.
-- required release artifacts (`.msi`, setup bundle, checksums/signature manifest) are incomplete or mismatched.
+- required release artifacts (`.msi`, setup bundle, checksums/signature manifest, and optional `.deb` when the Linux slice is being published) are incomplete or mismatched.
 
 ## What to inspect
 
@@ -40,5 +40,5 @@ sidebar_position: 91
    - `scripts/published-updater-e2e.ps1` step logs;
    - launcher runtime logs exposed by the desktop diagnostics screen;
    - backend updater sequence in `update_commands.rs`.
-4. Rebuild installer artifacts via `scripts/build-installer.ps1` and validate expected filenames/checksum bundle.
+4. Rebuild installer artifacts via `scripts/build-installer.ps1`, and if a Linux package is expected confirm the `.deb` exists under `build/linux/<version>/` before regenerating release metadata/checksums.
 5. Re-run preflight and updater e2e after fixes to verify the same scenario passes end-to-end.

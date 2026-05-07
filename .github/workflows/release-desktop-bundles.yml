@@ -1,0 +1,261 @@
+name: release-desktop-bundles
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Attach built artifacts to a GitHub Release"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build-linux-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux bundle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install desktop npm deps
+        working-directory: ui/desktop
+        run: npm ci --no-audit
+
+      - name: Build Debian desktop bundle
+        working-directory: ui/desktop
+        run: npm run build:deb
+
+      - name: Collect DEB artifact
+        run: |
+          set -euo pipefail
+          mkdir -p out/linux-deb
+          DEB_PATH="$(find ui/desktop/src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' | head -n 1)"
+          if [ -z "${DEB_PATH}" ]; then
+            echo "DEB artifact not found"
+            exit 1
+          fi
+          cp -f "${DEB_PATH}" out/linux-deb/
+          echo "DEB: ${DEB_PATH}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: out/linux-deb/*.deb
+          if-no-files-found: error
+
+  build-sign-package:
+    runs-on: windows-latest
+    needs: [build-linux-deb]
+    environment: release
+    permissions:
+      contents: read
+    env:
+      CERBENA_RELEASE_SIGNING_PRIVATE_KEY_XML: ${{ secrets.CERBENA_RELEASE_SIGNING_PRIVATE_KEY_XML }}
+      CERBENA_AUTHENTICODE_PFX_PASSWORD: ${{ secrets.CERBENA_AUTHENTICODE_PFX_PASSWORD }}
+      CERBENA_AUTHENTICODE_TIMESTAMP_URL: ${{ secrets.CERBENA_AUTHENTICODE_TIMESTAMP_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-deb
+          path: out/linux-deb
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure WiX toolset is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command wix.exe -ErrorAction SilentlyContinue)) {
+            dotnet tool install --global wix --version 5.*
+          }
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Install desktop npm deps
+        working-directory: ui/desktop
+        shell: pwsh
+        run: npm ci --no-audit
+
+      - name: Build Windows desktop MSI bundle
+        working-directory: ui/desktop
+        shell: pwsh
+        run: npm run build
+
+      - name: Prepare Authenticode certificate from secret
+        shell: pwsh
+        env:
+          CERBENA_AUTHENTICODE_PFX_BASE64: ${{ secrets.CERBENA_AUTHENTICODE_PFX_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CERBENA_AUTHENTICODE_PFX_BASE64)) {
+            throw "missing secret CERBENA_AUTHENTICODE_PFX_BASE64"
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP "cerbena-authenticode.pfx"
+          $bytes = [Convert]::FromBase64String($env:CERBENA_AUTHENTICODE_PFX_BASE64)
+          [System.IO.File]::WriteAllBytes($pfxPath, $bytes)
+          "CERBENA_AUTHENTICODE_PFX_PATH=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Sign MSI and generate signed release metadata
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CERBENA_RELEASE_SIGNING_PRIVATE_KEY_XML)) {
+            throw "missing secret CERBENA_RELEASE_SIGNING_PRIVATE_KEY_XML"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:CERBENA_AUTHENTICODE_PFX_PATH)) {
+            throw "missing CERBENA_AUTHENTICODE_PFX_PATH"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:CERBENA_AUTHENTICODE_PFX_PASSWORD)) {
+            throw "missing secret CERBENA_AUTHENTICODE_PFX_PASSWORD"
+          }
+
+          $version = (Get-Content -Raw "ui/desktop/package.json" | ConvertFrom-Json).version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "failed to resolve version from ui/desktop/package.json"
+          }
+
+          $releaseLinuxDir = Join-Path "build/linux" $version
+          New-Item -ItemType Directory -Path $releaseLinuxDir -Force | Out-Null
+          Copy-Item -Path "out/linux-deb/*.deb" -Destination $releaseLinuxDir -Force
+
+          $msi = Get-ChildItem -Path "ui/desktop/src-tauri/target/release/bundle/msi" -Filter *.msi -Recurse | Select-Object -First 1
+          if ($null -eq $msi) {
+            throw "MSI artifact not found"
+          }
+
+          . (Join-Path $PWD "scripts/release-signing.ps1")
+          Sign-WindowsArtifacts @($msi.FullName)
+
+          $releaseDir = Join-Path "build/release" $version
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+          $msiTarget = Join-Path $releaseDir $msi.Name
+          $deb = Get-ChildItem -Path $releaseLinuxDir -Filter *.deb | Select-Object -First 1
+          if ($null -eq $deb) {
+            throw "DEB artifact not found in $releaseLinuxDir"
+          }
+          $debTarget = Join-Path $releaseDir $deb.Name
+          Copy-Item -LiteralPath $msi.FullName -Destination $msiTarget -Force
+          Copy-Item -LiteralPath $deb.FullName -Destination $debTarget -Force
+
+          $artifacts = @(
+            @{
+              name = $msi.Name
+              path = $msi.Name
+              file = $msiTarget
+              platform = "windows-x64"
+              kind = "installer"
+              installer_kind = "msi"
+              updater_strategy = "direct_msi"
+              primary = $true
+            },
+            @{
+              name = $deb.Name
+              path = $deb.Name
+              file = $debTarget
+              platform = "linux-x64"
+              kind = "installer"
+              installer_kind = "deb"
+              updater_strategy = "manual_download"
+              primary = $false
+            }
+          )
+
+          $manifestArtifacts = @()
+          $checksumLines = New-Object System.Collections.Generic.List[string]
+          foreach ($artifact in $artifacts) {
+            $hash = (Get-FileHash -LiteralPath $artifact.file -Algorithm SHA256).Hash.ToLowerInvariant()
+            $size = (Get-Item -LiteralPath $artifact.file).Length
+            $manifestArtifacts += @{
+              name = $artifact.name
+              path = $artifact.path
+              sha256 = $hash
+              size_bytes = $size
+              platform = $artifact.platform
+              kind = $artifact.kind
+              installer_kind = $artifact.installer_kind
+              updater_strategy = $artifact.updater_strategy
+              primary = $artifact.primary
+            }
+            $checksumLines.Add("$hash  $($artifact.path)")
+          }
+
+          $manifest = @{
+            product = "Cerbena Browser"
+            version = $version
+            git_commit = "${{ github.sha }}"
+            generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+            repository_url = "https://github.com/${{ github.repository }}"
+            artifacts = $manifestArtifacts
+          }
+
+          $manifestJson = $manifest | ConvertTo-Json -Depth 6
+          $checksumsText = [string]::Join("`n", $checksumLines)
+          $checksumsBytes = [System.Text.Encoding]::UTF8.GetBytes($checksumsText)
+          $checksumsSignature = New-ReleaseChecksumSignature $checksumsBytes
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path $releaseDir "release-manifest.json"), $manifestJson, $utf8NoBom)
+          [System.IO.File]::WriteAllText((Join-Path $releaseDir "checksums.txt"), $checksumsText, $utf8NoBom)
+          [System.IO.File]::WriteAllText((Join-Path $releaseDir "checksums.sig"), $checksumsSignature, $utf8NoBom)
+
+          New-Item -ItemType Directory -Path "out/release-assets" -Force | Out-Null
+          Copy-Item -Path (Join-Path $releaseDir "*.msi") -Destination "out/release-assets/" -Force
+          Copy-Item -Path (Join-Path $releaseDir "*.deb") -Destination "out/release-assets/" -Force
+          Copy-Item -Path (Join-Path $releaseDir "release-manifest.json") -Destination "out/release-assets/" -Force
+          Copy-Item -Path (Join-Path $releaseDir "checksums.txt") -Destination "out/release-assets/" -Force
+          Copy-Item -Path (Join-Path $releaseDir "checksums.sig") -Destination "out/release-assets/" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-signed
+          path: out/release-assets/*
+          if-no-files-found: error
+
+  publish-release-assets:
+    runs-on: ubuntu-latest
+    needs: [build-sign-package]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets-signed
+          path: release-assets
+
+      - name: Publish signed release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*.msi
+            release-assets/*.deb
+            release-assets/release-manifest.json
+            release-assets/checksums.txt
+            release-assets/checksums.sig
+          generate_release_notes: true

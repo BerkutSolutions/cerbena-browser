@@ -16,7 +16,7 @@ import {
 import { SEARCH_PROVIDER_PRESETS } from "../../core/catalogs.js";
 import { listExtensionLibrary, setExtensionProfiles } from "../extensions/api.js";
 import { generateAutoPreset, getIdentityProfile, saveIdentityProfile } from "../identity/api.js";
-import { getDevicePostureReport } from "../settings/api.js";
+import { getDevicePostureReport, getLinuxBrowserSandboxStatus } from "../settings/api.js";
 import {
   buildRealPreset,
   buildManualPreset,
@@ -980,7 +980,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
             <div class="security-frame">
               <div class="grid-two">
                 <label>${t("profile.field.dnsMode")}<select name="dnsMode" id="profile-dns-mode"><option value="system" ${(dnsDraft?.mode ?? "system") === "system" ? "selected" : ""}>${t("dns.system")}</option><option value="custom" ${(dnsDraft?.mode ?? "system") === "custom" ? "selected" : ""}>${t("dns.custom")}</option></select></label>
-                <label id="profile-dns-servers-row">${t("profile.field.dnsServers")}<input name="dnsServers" placeholder="1.1.4.1,8.8.8.8" value="${escapeHtml(dnsDraft?.servers ?? "")}" /></label>
+                <label id="profile-dns-servers-row">${t("profile.field.dnsServers")}<input name="dnsServers" placeholder="1.1.5.1,8.8.8.8" value="${escapeHtml(dnsDraft?.servers ?? "")}" /></label>
                 <label id="profile-dns-template-row">${t("dns.template.current")}<select name="dnsTemplateId">${dnsTemplateOptions(profile, t)}</select></label>
               </div>
             </div>
@@ -1177,6 +1177,48 @@ async function showDockerHelpModal(t, mode) {
       if (event.target === overlay) {
         close(false);
       }
+    });
+  });
+}
+
+function linuxSandboxLaunchModalHtml(t) {
+  return `
+    <div class="profiles-modal-overlay" id="linux-sandbox-launch-overlay">
+      <div class="profiles-modal-window profiles-modal-window-sm">
+        <div class="action-modal">
+          <h3>${escapeHtml(t("linuxSandbox.modal.title"))}</h3>
+          <p class="meta">${escapeHtml(t("linuxSandbox.modal.launchWarning"))}</p>
+          <footer class="modal-actions">
+            <button type="button" id="linux-sandbox-launch-close">${t("action.close")}</button>
+            <button type="button" id="linux-sandbox-launch-open">${t("linuxSandbox.modal.openDocs")}</button>
+          </footer>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function showLinuxSandboxLaunchModal(t) {
+  return new Promise((resolve) => {
+    const existing = document.body.querySelector("#linux-sandbox-launch-overlay");
+    if (existing) {
+      closeModalOverlay(existing);
+    }
+    document.body.insertAdjacentHTML("beforeend", linuxSandboxLaunchModalHtml(t));
+    const overlay = document.body.querySelector("#linux-sandbox-launch-overlay");
+    if (!overlay) {
+      resolve(false);
+      return;
+    }
+    const close = (value) => closeModalOverlay(overlay, () => resolve(value));
+    showModalOverlay(overlay);
+    overlay.querySelector("#linux-sandbox-launch-close")?.addEventListener("click", () => close(false));
+    overlay.querySelector("#linux-sandbox-launch-open")?.addEventListener("click", async () => {
+      await openExternalUrl("https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md");
+      close(true);
+    });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close(false);
     });
   });
 }
@@ -1558,6 +1600,13 @@ export function wireProfiles(root, model, rerender, t) {
             }
           } else {
             setNotice(model, "success", t("profile.notice.launched"));
+            if (!model.linuxSandboxHintShown) {
+              const sandboxStatus = await getLinuxBrowserSandboxStatus();
+              if (sandboxStatus.ok && sandboxStatus.data && sandboxStatus.data.status === "missing") {
+                model.linuxSandboxHintShown = true;
+                await showLinuxSandboxLaunchModal(t);
+              }
+            }
           }
         } finally {
           model.profileActionPendingIds.delete(profileId);
@@ -1858,7 +1907,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
     if (isManual) {
       const dnsServersField = overlay.querySelector("[name='dnsServers']");
       if (dnsServersField && !String(dnsServersField.value ?? "").trim()) {
-        dnsServersField.value = "1.1.4.1,8.8.8.8";
+        dnsServersField.value = "1.1.5.1,8.8.8.8";
       }
     }
     profileDnsServersRow?.classList.toggle("hidden", !isManual);

@@ -959,9 +959,22 @@
   "settings.tools.openvpn": "OpenVPN",
   "settings.tools.amneziawg": "AmneziaWG",
   "settings.tools.torBundle": "Tor Expert Bundle",
+  "settings.tools.linuxBrowserSandbox": "Browser sandbox (Linux)",
+  "settings.tools.configure": "Configure",
   "settings.tools.detail.dockerReady": "Installed and reachable for container isolation.",
   "settings.tools.detail.dockerStopped": "Installed, but the Docker runtime is not reachable yet.",
   "settings.tools.detail.dockerMissing": "Required for container isolation and installed manually from the vendor site.",
   "settings.tools.detail.dockerBacked": "This runtime can be provisioned inside Docker for isolated routes.",
-  "settings.tools.detail.localOrDocker": "Can be installed locally or satisfied by isolated Docker-backed routes."
+  "settings.tools.detail.localOrDocker": "Can be installed locally or satisfied by isolated Docker-backed routes.",
+  "settings.tools.detail.linuxBrowserSandboxReady": "User namespaces are available, so Chromium/LibreWolf can run with the Linux sandbox.",
+  "settings.tools.detail.linuxBrowserSandboxMissing": "Linux browser sandbox is unavailable. Profiles currently run in compatibility mode without sandboxing.",
+  "linuxSandbox.modal.title": "Configure Linux sandbox",
+  "linuxSandbox.modal.body": "Cerbena detected Linux sandbox prerequisites are incomplete. Follow the safer allowlist approach first, then use global fallback only if strictly necessary.",
+  "linuxSandbox.modal.apparmorHint": "Security note: avoid globally disabling AppArmor userns restrictions unless you explicitly accept reduced host hardening.",
+  "linuxSandbox.modal.launchWarning": "Profile was launched in compatibility mode without sandboxing. Enable Linux sandbox for security-first operation.",
+  "linuxSandbox.modal.openDocs": "Open Chromium guidance",
+  "linuxDocker.modal.title": "Install Docker on Linux",
+  "linuxDocker.modal.body": "Run these commands in terminal to install Docker Engine and Docker Compose plugin on Ubuntu/Debian.",
+  "linuxDocker.modal.hint": "If `newgrp` is missing, install `util-linux-extra`, or just re-login and run `docker version` again.",
+  "linuxDocker.modal.openDocs": "Open Docker docs"
 }

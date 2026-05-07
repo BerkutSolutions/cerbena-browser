@@ -255,6 +255,7 @@ fn enumerate_process_names() -> Result<Vec<String>, String> {
     Ok(Vec::new())
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn parse_tasklist_csv(raw: &str) -> Vec<String> {
     raw.lines()
         .filter_map(|line| {

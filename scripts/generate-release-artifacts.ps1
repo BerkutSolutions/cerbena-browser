@@ -52,6 +52,63 @@ function Write-Utf8NoBomFile([string]$Path, [string]$Content) {
     [System.IO.File]::WriteAllText($Path, $Content, $encoding)
 }
 
+function New-ReleaseManifestEntry(
+    [string]$Name,
+    [string]$Target,
+    [string]$Source,
+    [string]$Platform,
+    [string]$Kind,
+    [string]$InstallerKind,
+    [string]$UpdaterStrategy,
+    [bool]$Primary
+) {
+    $hash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash.ToLowerInvariant()
+    $size = (Get-Item -LiteralPath $Source).Length
+    return @{
+        name = $Name
+        path = $Target
+        sha256 = $hash
+        size_bytes = $size
+        platform = $Platform
+        kind = $Kind
+        installer_kind = $InstallerKind
+        updater_strategy = $UpdaterStrategy
+        primary = $Primary
+    }
+}
+
+function Resolve-OptionalLinuxReleaseArtifacts([string]$RepoRoot, [string]$Version) {
+    $linuxDropRoot = Join-Path $RepoRoot ("build\linux\" + $Version)
+    if (-not (Test-Path -LiteralPath $linuxDropRoot)) {
+        return @()
+    }
+
+    $artifacts = New-Object System.Collections.Generic.List[hashtable]
+    $debFiles = Get-ChildItem -LiteralPath $linuxDropRoot -File -Filter "*.deb" -ErrorAction SilentlyContinue |
+        Sort-Object Name
+    foreach ($debFile in $debFiles) {
+        if ($debFile.Name -notlike ("cerbena-browser_" + $Version + "_*.deb")) {
+            throw "unexpected Debian artifact name '$($debFile.Name)'; expected cerbena-browser_${Version}_<arch>.deb under $linuxDropRoot"
+        }
+        if ($debFile.Name -notlike "*_amd64.deb") {
+            throw "unsupported Debian artifact architecture '$($debFile.Name)'; first Linux slice only supports amd64/x86_64 packages"
+        }
+
+        [void]$artifacts.Add(@{
+            name = $debFile.Name
+            source = $debFile.FullName
+            target = $debFile.Name
+            platform = "linux-x64"
+            kind = "installer"
+            installer_kind = "deb"
+            updater_strategy = "manual_download"
+            primary = $false
+        })
+    }
+
+    return @($artifacts)
+}
+
 function Resolve-BuiltBinaryPath([string]$RepoRoot, [string]$PreferredPath, [string]$BinaryName) {
     if (Test-Path -LiteralPath $PreferredPath) {
         return $PreferredPath
@@ -191,6 +248,7 @@ $artifacts = @(
         name = "cerbena.exe"
         source = $desktopBinary
         target = "cerbena-windows-x64/cerbena.exe"
+        platform = "windows-x64"
         kind = "bundle_binary"
         installer_kind = "none"
         updater_strategy = "embedded_runtime"
@@ -200,6 +258,7 @@ $artifacts = @(
         name = "cerbena-updater.exe"
         source = $desktopBinary
         target = "cerbena-windows-x64/cerbena-updater.exe"
+        platform = "windows-x64"
         kind = "bundle_binary"
         installer_kind = "none"
         updater_strategy = "standalone_updater"
@@ -209,6 +268,7 @@ $artifacts = @(
         name = $launcherBinaryName
         source = $launcherBinary
         target = "cerbena-windows-x64/$launcherBinaryName"
+        platform = "windows-x64"
         kind = "bundle_binary"
         installer_kind = "none"
         updater_strategy = "launcher_runtime"
@@ -218,30 +278,29 @@ $artifacts = @(
         name = "cerbena-windows-x64.zip"
         source = $archivePath
         target = "cerbena-windows-x64.zip"
+        platform = "windows-x64"
         kind = "bundle"
         installer_kind = "portable_zip"
         updater_strategy = "portable_zip"
         primary = $false
     }
 )
+$artifacts += @(Resolve-OptionalLinuxReleaseArtifacts -RepoRoot $repoRoot -Version $resolvedVersion)
 
 $manifestArtifacts = @()
 $checksumLines = New-Object System.Collections.Generic.List[string]
 foreach ($artifact in $artifacts) {
-    $hash = (Get-FileHash -LiteralPath $artifact.source -Algorithm SHA256).Hash.ToLowerInvariant()
-    $size = (Get-Item -LiteralPath $artifact.source).Length
-    $manifestArtifacts += @{
-        name = $artifact.name
-        path = $artifact.target
-        sha256 = $hash
-        size_bytes = $size
-        platform = "windows-x64"
-        kind = $artifact.kind
-        installer_kind = $artifact.installer_kind
-        updater_strategy = $artifact.updater_strategy
-        primary = $artifact.primary
-    }
-    $checksumLines.Add("$hash  $($artifact.target)")
+    $entry = New-ReleaseManifestEntry `
+        -Name $artifact.name `
+        -Target $artifact.target `
+        -Source $artifact.source `
+        -Platform $artifact.platform `
+        -Kind $artifact.kind `
+        -InstallerKind $artifact.installer_kind `
+        -UpdaterStrategy $artifact.updater_strategy `
+        -Primary ([bool]$artifact.primary)
+    $manifestArtifacts += $entry
+    $checksumLines.Add("$($entry.sha256)  $($artifact.target)")
 }
 
 $manifest = @{

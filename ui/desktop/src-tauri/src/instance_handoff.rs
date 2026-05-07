@@ -53,6 +53,7 @@ pub fn forward_link_to_primary_data_root(app_data_root: &Path, url: &str) -> Res
     Ok(true)
 }
 
+#[allow(dead_code)]
 pub fn signal_primary_activation_data_root(app_data_root: &Path) -> Result<bool, String> {
     let Some(heartbeat) = read_primary_heartbeat_path(app_data_root)? else {
         return Ok(false);
@@ -65,6 +66,7 @@ pub fn signal_primary_activation_data_root(app_data_root: &Path) -> Result<bool,
     Ok(true)
 }
 
+#[allow(dead_code)]
 pub fn acquire_single_instance_guard(app_data_root: &Path) -> Result<bool, String> {
     let path = single_instance_lock_path(app_data_root);
     if let Some(parent) = path.parent() {

@@ -18,7 +18,10 @@ use zip::ZipArchive;
 use crate::state::AppState;
 
 fn hidden_command(program: &str) -> Command {
+    #[cfg(target_os = "windows")]
     let mut command = Command::new(program);
+    #[cfg(not(target_os = "windows"))]
+    let command = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -27,6 +30,7 @@ fn hidden_command(program: &str) -> Command {
     command
 }
 
+#[cfg(target_os = "windows")]
 fn escape_powershell_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
 }

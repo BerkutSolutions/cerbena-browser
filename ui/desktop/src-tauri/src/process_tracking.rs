@@ -98,22 +98,28 @@ pub fn clear_profile_process(app_handle: &AppHandle, profile_id: Uuid, pid: u32,
     let Some(current_pid) = launched.get(&profile_id).copied() else {
         return;
     };
-    if current_pid != pid {
-        return;
-    }
+    let effective_pid = if current_pid != pid {
+        eprintln!(
+            "[process-tracking] profile={} clear requested with stale pid={} current_pid={}; proceeding with current pid",
+            profile_id, pid, current_pid
+        );
+        current_pid
+    } else {
+        pid
+    };
     launched.remove(&profile_id);
     drop(launched);
     eprintln!(
         "[process-tracking] clearing profile={} pid={} emit_event={}",
-        profile_id, pid, emit_event
+        profile_id, effective_pid, emit_event
     );
     append_profile_log(
         app_handle,
         profile_id,
         "launcher",
-        format!("Browser process stopped pid={pid}"),
+        format!("Browser process stopped pid={effective_pid}"),
     );
-    let _ = revoke_launch_session(state.inner(), profile_id, Some(pid));
+    let _ = revoke_launch_session(state.inner(), profile_id, Some(effective_pid));
     stop_profile_network_stack(app_handle, profile_id);
     close_panic_frame(app_handle, profile_id);
     clear_librewolf_profile_certificates(app_handle, profile_id);

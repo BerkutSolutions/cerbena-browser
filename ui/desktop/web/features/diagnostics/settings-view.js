@@ -37,6 +37,7 @@ import {
   syncHealthPing
 } from "../sync/api.js";
 import { APP_VERSION } from "../../core/app-version.js";
+import { closeModalOverlay, showModalOverlay } from "../../core/modal.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -247,6 +248,8 @@ function renderRuntimeToolsCard(t, model) {
                 ? `<button type="button" data-settings-tool-install="${escapeHtml(tool.id)}">${t("settings.tools.download")}</button>`
                 : tool.action === "external"
                   ? `<button type="button" data-settings-tool-external="${escapeHtml(tool.id)}">${t("settings.tools.download")}</button>`
+                  : tool.action === "guide"
+                    ? `<button type="button" data-settings-tool-guide="${escapeHtml(tool.id)}">${t("settings.tools.configure")}</button>`
                   : `<span class="settings-runtime-version">${escapeHtml(runtimeToolStatusLabel(tool, t))}</span>`}
             </div>
           </li>
@@ -254,6 +257,121 @@ function renderRuntimeToolsCard(t, model) {
       </ul>
     </div>
   `;
+}
+
+function linuxSandboxGuideModalHtml(t) {
+  return `
+    <div class="profiles-modal-overlay" id="linux-sandbox-guide-overlay">
+      <div class="profiles-modal-window profiles-modal-window-sm">
+        <div class="action-modal">
+          <h3>${escapeHtml(t("linuxSandbox.modal.title"))}</h3>
+          <p class="meta">${escapeHtml(t("linuxSandbox.modal.body"))}</p>
+          <pre class="preview-box"># 1) Validate current state
+cat /proc/sys/kernel/unprivileged_userns_clone
+cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+
+# 2) Keep userns enabled persistently
+sudo sysctl -w kernel.unprivileged_userns_clone=1
+echo "kernel.unprivileged_userns_clone=1" | sudo tee /etc/sysctl.d/99-cerbena-userns.conf
+sudo sysctl --system</pre>
+          <pre class="preview-box"># 3) Safer AppArmor allowlist for Cerbena Chromium runtime (recommended)
+cat <<'EOF' | sudo tee /etc/apparmor.d/cerbena-chromium
+abi &lt;abi/4.0&gt;,
+include &lt;tunables/global&gt;
+
+profile cerbena-chromium-dev @{HOME}/.local/share/dev.cerbena.app/engine-runtime/engines/chromium/*/chrome-linux/chrome flags=(unconfined) {
+  userns,
+  include if exists &lt;local/cerbena-chromium&gt;
+}
+
+profile cerbena-chromium-prod @{HOME}/.local/share/cerbena.app/engine-runtime/engines/chromium/*/chrome-linux/chrome flags=(unconfined) {
+  userns,
+  include if exists &lt;local/cerbena-chromium&gt;
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/cerbena-chromium
+sudo systemctl reload apparmor</pre>
+          <p class="meta">${escapeHtml(t("linuxSandbox.modal.apparmorHint"))}</p>
+          <pre class="preview-box"># 4) Last-resort fallback (weakens host security globally; avoid if possible)
+# echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+# echo "kernel.apparmor_restrict_unprivileged_userns=0" | sudo tee /etc/sysctl.d/60-apparmor-userns.conf</pre>
+          <footer class="modal-actions">
+            <button type="button" id="linux-sandbox-guide-cancel">${t("action.cancel")}</button>
+            <button type="button" id="linux-sandbox-guide-open">${t("linuxSandbox.modal.openDocs")}</button>
+          </footer>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function linuxDockerGuideModalHtml(t) {
+  return `
+    <div class="profiles-modal-overlay" id="linux-docker-guide-overlay">
+      <div class="profiles-modal-window profiles-modal-window-sm">
+        <div class="action-modal">
+          <h3>${escapeHtml(t("linuxDocker.modal.title"))}</h3>
+          <p class="meta">${escapeHtml(t("linuxDocker.modal.body"))}</p>
+          <pre class="preview-box">sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker $USER
+newgrp docker
+docker version</pre>
+          <p class="meta">${escapeHtml(t("linuxDocker.modal.hint"))}</p>
+          <footer class="modal-actions">
+            <button type="button" id="linux-docker-guide-cancel">${t("action.cancel")}</button>
+            <button type="button" id="linux-docker-guide-open">${t("linuxDocker.modal.openDocs")}</button>
+          </footer>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function showLinuxSandboxGuideModal(t) {
+  const existing = document.body.querySelector("#linux-sandbox-guide-overlay");
+  if (existing) {
+    closeModalOverlay(existing);
+  }
+  document.body.insertAdjacentHTML("beforeend", linuxSandboxGuideModalHtml(t));
+  const overlay = document.body.querySelector("#linux-sandbox-guide-overlay");
+  if (!overlay) return;
+  showModalOverlay(overlay);
+  const close = () => closeModalOverlay(overlay);
+  overlay.querySelector("#linux-sandbox-guide-cancel")?.addEventListener("click", close);
+  overlay.querySelector("#linux-sandbox-guide-open")?.addEventListener("click", async () => {
+    await openExternalUrl("https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md");
+    close();
+  });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) close();
+  });
+}
+
+async function showLinuxDockerGuideModal(t) {
+  const existing = document.body.querySelector("#linux-docker-guide-overlay");
+  if (existing) {
+    closeModalOverlay(existing);
+  }
+  document.body.insertAdjacentHTML("beforeend", linuxDockerGuideModalHtml(t));
+  const overlay = document.body.querySelector("#linux-docker-guide-overlay");
+  if (!overlay) return;
+  showModalOverlay(overlay);
+  const close = () => closeModalOverlay(overlay);
+  overlay.querySelector("#linux-docker-guide-cancel")?.addEventListener("click", close);
+  overlay.querySelector("#linux-docker-guide-open")?.addEventListener("click", async () => {
+    await openExternalUrl("https://docs.docker.com/engine/install/ubuntu/");
+    close();
+  });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) close();
+  });
 }
 
 function renderGeneralTab(t, model) {
@@ -632,6 +750,19 @@ export function wireSettings(root, model, rerender, t) {
         text: result.ok ? t("settings.tools.externalOpened") : String(result.data.error)
       };
       await rerender();
+    });
+  }
+
+  for (const button of root.querySelectorAll("[data-settings-tool-guide]")) {
+    button.addEventListener("click", async () => {
+      const toolId = button.getAttribute("data-settings-tool-guide");
+      if (toolId === "linux-browser-sandbox") {
+        await showLinuxSandboxGuideModal(t);
+        return;
+      }
+      if (toolId === "docker") {
+        await showLinuxDockerGuideModal(t);
+      }
     });
   }
 
