@@ -1093,7 +1093,7 @@ fn extract_amnezia_conf_text_from_payload(root: &Value, awg: &Value) -> Option<S
     let mut config = config_candidate.replace('\r', "");
     let primary_dns = extract_string(root, &["dns1", "primary_dns", "primaryDns"])
         .or_else(|| extract_string(awg, &["dns1", "primary_dns", "primaryDns"]))
-        .unwrap_or_else(|| "1.1.3.1".to_string());
+        .unwrap_or_else(|| "1.1.4.1".to_string());
     let secondary_dns = extract_string(root, &["dns2", "secondary_dns", "secondaryDns"])
         .or_else(|| extract_string(awg, &["dns2", "secondary_dns", "secondaryDns"]))
         .unwrap_or_else(|| "1.0.0.1".to_string());
@@ -3252,7 +3252,7 @@ mod tests {
         let conf = r#"
 [Interface]
 Address = 10.8.1.84/32
-DNS = 1.1.3.1, 1.0.0.1
+DNS = 1.1.4.1, 1.0.0.1
 PrivateKey = PRIVATE
 Jc = 4
 Jmin = 10
@@ -3285,7 +3285,7 @@ PersistentKeepalive = 25
         })
         .to_string();
         let payload = serde_json::json!({
-            "dns1": "1.1.3.1",
+            "dns1": "1.1.4.1",
             "dns2": "1.0.0.1",
             "containers": [
                 {
@@ -3298,7 +3298,7 @@ PersistentKeepalive = 25
         .to_string();
         let key = build_amnezia_key(&payload);
         let conf = build_amnezia_native_config_text(&key).expect("materialize amnezia config");
-        assert!(conf.contains("DNS = 1.1.3.1, 1.0.0.1"));
+        assert!(conf.contains("DNS = 1.1.4.1, 1.0.0.1"));
         assert!(conf.contains("Jc = 4"));
         assert!(conf.contains("Endpoint = 5.129.225.48:32542"));
     }
@@ -3319,7 +3319,7 @@ PersistentKeepalive = 25
     #[test]
     fn build_amnezia_native_config_text_from_key_skips_empty_quoted_native_fields() {
         let payload = serde_json::json!({
-            "dns1": "1.1.3.1",
+            "dns1": "1.1.4.1",
             "containers": [
                 {
                     "awg": {
