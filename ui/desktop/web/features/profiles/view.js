@@ -980,7 +980,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
             <div class="security-frame">
               <div class="grid-two">
                 <label>${t("profile.field.dnsMode")}<select name="dnsMode" id="profile-dns-mode"><option value="system" ${(dnsDraft?.mode ?? "system") === "system" ? "selected" : ""}>${t("dns.system")}</option><option value="custom" ${(dnsDraft?.mode ?? "system") === "custom" ? "selected" : ""}>${t("dns.custom")}</option></select></label>
-                <label id="profile-dns-servers-row">${t("profile.field.dnsServers")}<input name="dnsServers" placeholder="1.1.2.1,8.8.8.8" value="${escapeHtml(dnsDraft?.servers ?? "")}" /></label>
+                <label id="profile-dns-servers-row">${t("profile.field.dnsServers")}<input name="dnsServers" placeholder="1.1.3.1,8.8.8.8" value="${escapeHtml(dnsDraft?.servers ?? "")}" /></label>
                 <label id="profile-dns-template-row">${t("dns.template.current")}<select name="dnsTemplateId">${dnsTemplateOptions(profile, t)}</select></label>
               </div>
             </div>
@@ -1858,7 +1858,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
     if (isManual) {
       const dnsServersField = overlay.querySelector("[name='dnsServers']");
       if (dnsServersField && !String(dnsServersField.value ?? "").trim()) {
-        dnsServersField.value = "1.1.2.1,8.8.8.8";
+        dnsServersField.value = "1.1.3.1,8.8.8.8";
       }
     }
     profileDnsServersRow?.classList.toggle("hidden", !isManual);

@@ -367,9 +367,17 @@ function New-MsiInstaller(
     $markerPath = Join-Path $InstallerRoot "cerbena-install-mode.msi.txt"
     $markerComponentId = "CmpInstallModeMarker"
     $markerFileId = "FileInstallModeMarker"
-    $upgradeCode = [Environment]::GetEnvironmentVariable("CERBENA_MSI_UPGRADE_CODE")
-    if ([string]::IsNullOrWhiteSpace($upgradeCode)) {
-        $upgradeCode = "30A26884-D6A5-4E10-B42A-5F0B7B14A7D8"
+    $canonicalUpgradeCode = "30A26884-D6A5-4E10-B42A-5F0B7B14A7D8"
+    $upgradeCode = $canonicalUpgradeCode
+    $customUpgradeCode = [Environment]::GetEnvironmentVariable("CERBENA_MSI_UPGRADE_CODE")
+    $allowCustomUpgradeCode = [Environment]::GetEnvironmentVariable("CERBENA_ALLOW_CUSTOM_MSI_UPGRADE_CODE")
+    if (-not [string]::IsNullOrWhiteSpace($customUpgradeCode)) {
+        if ($allowCustomUpgradeCode -eq "1") {
+            $upgradeCode = $customUpgradeCode
+            Write-Log "using custom MSI UpgradeCode from environment (explicitly allowed for isolated test build)"
+        } else {
+            Write-Log "ignoring custom CERBENA_MSI_UPGRADE_CODE because CERBENA_ALLOW_CUSTOM_MSI_UPGRADE_CODE is not enabled"
+        }
     }
 
     $utf8 = New-Object System.Text.UTF8Encoding($false)
