@@ -1218,6 +1218,16 @@ fn stage_release_if_needed(
             .map(Path::new)
             .is_some_and(Path::is_file)
     {
+        if store.status == "applied_pending_relaunch" && !store.pending_apply_on_exit {
+            let message = format!(
+                "staged update {} was already applied but current process still reports {}; blocking repeated apply loop",
+                candidate.version, CURRENT_VERSION
+            );
+            push_runtime_log(state, format!("[updater] {}", message));
+            store.status = "error".to_string();
+            store.last_error = Some(message);
+            return Ok(());
+        }
         push_runtime_log(
             state,
             format!(
@@ -2314,8 +2324,42 @@ fn build_msi_apply_helper_script(
             Update-Store 'error' ((Describe-MsiExit $exitCode) + '; verbose log: ' + $msiLogPath) $false;\
             exit $exitCode;\
         }};\
-        Update-Store 'applied_pending_relaunch' $null $false;\
+        if (Test-Path -LiteralPath $msiLogPath) {{\
+            try {{\
+                $logLines = Get-Content -LiteralPath $msiLogPath -ErrorAction Stop;\
+                for ($index = $logLines.Count - 1; $index -ge 0; $index--) {{\
+                    $line = [string]$logLines[$index];\
+                    if ($line -match 'Property\\(S\\): INSTALLDIR = (.+)$') {{\
+                        $candidateRoot = $matches[1].Trim().Trim('\"');\
+                        if (-not [string]::IsNullOrWhiteSpace($candidateRoot) -and (Test-Path -LiteralPath $candidateRoot)) {{\
+                            $installRoot = $candidateRoot;\
+                            Write-Log ('resolved install root from msi log installRoot=' + $installRoot);\
+                            break;\
+                        }}\
+                    }}\
+                }}\
+            }} catch {{\
+                Write-Log ('failed to resolve install root from msi log: ' + $_.Exception.Message);\
+            }}\
+        }};\
         $relaunchExe = Resolve-RelaunchExecutable;\
+        if ($targetVersion -and -not [string]::IsNullOrWhiteSpace($targetVersion) -and $relaunchExe -and (Test-Path -LiteralPath $relaunchExe)) {{\
+            try {{\
+                $resolvedVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($relaunchExe).ProductVersion;\
+                if (-not [string]::IsNullOrWhiteSpace($resolvedVersion)) {{\
+                    $normalizedResolvedVersion = ($resolvedVersion -replace '[^0-9\\.]', ' ').Split(' ')[0].Trim();\
+                    if (-not [string]::IsNullOrWhiteSpace($normalizedResolvedVersion) -and -not $normalizedResolvedVersion.StartsWith($targetVersion)) {{\
+                        $versionError = 'msi apply completed but relaunch executable version mismatch expected=' + $targetVersion + ' actual=' + $resolvedVersion + ' exe=' + $relaunchExe;\
+                        Write-Log $versionError;\
+                        Update-Store 'error' ($versionError + '; verbose log: ' + $msiLogPath) $false;\
+                        exit 42;\
+                    }}\
+                }}\
+            }} catch {{\
+                Write-Log ('failed to inspect relaunch executable version: ' + $_.Exception.Message);\
+            }}\
+        }};\
+        Update-Store 'applied_pending_relaunch' $null $false;\
         if ($relaunchExe -and (Test-Path -LiteralPath $relaunchExe)) {{\
             $relaunchInfo = New-Object System.Diagnostics.ProcessStartInfo;\
             $relaunchInfo.FileName = $relaunchExe;\
