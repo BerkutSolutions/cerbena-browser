@@ -1916,10 +1916,8 @@ fn resolve_profile_extension_install_urls(
     collect_active_profile_extensions(state, profile_id, tags, Engine::Librewolf)
         .into_iter()
         .filter_map(|item| {
-            item.package_path
+            extension_package_path_for_engine(&item, Engine::Librewolf)
                 .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
                 .map(path_to_file_url)
         })
         .collect()

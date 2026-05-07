@@ -27,6 +27,11 @@
     { "path": "ui/desktop/src-tauri/Cargo.toml", "strategy": "cargo_version_field" },
     { "path": "ui/desktop/src-tauri/tauri.conf.json", "strategy": "json_top_level_version" },
     { "path": "ui/desktop/web/core/app-version.js", "strategy": "js_export_const" },
+    { "path": "internal/network_policy/tests/policy_tests.rs", "strategy": "replace_all" },
+    { "path": "internal/profile/tests/profile_manager_tests.rs", "strategy": "replace_all" },
+    { "path": "ui/desktop/src-tauri/src/route_runtime.rs", "strategy": "replace_all" },
+    { "path": "ui/desktop/web/features/dns/view.js", "strategy": "replace_all" },
+    { "path": "ui/desktop/web/features/profiles/view.js", "strategy": "replace_all" },
     { "path": "CHANGELOG.md", "strategy": "changelog_heading" }
   ]
 }

@@ -274,7 +274,7 @@
   "security.certificates.hint": "Выберите файлы сертификатов PEM, CRT или CER для профиля или общего списка.",
   "security.certificates.profile": "Сертификаты профиля",
   "security.certificates.global": "Применять глобально",
-  "security.certificates.add": "Добавить сертификат",
+  "security.certificates.add": "Добавить",
   "security.certificates.pickFiles": "Выбрать файлы сертификатов",
   "security.certificates.prompt": "Путь к сертификату",
   "security.certificates.allProfiles": "Все профили",

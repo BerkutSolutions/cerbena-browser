@@ -17,6 +17,98 @@ function Read-JsonFile([string]$Path) {
     return Get-Content $Path -Raw | ConvertFrom-Json
 }
 
+function Get-NormalizedRelativePath([string]$AbsolutePath, [string]$RootPath) {
+    $resolved = [System.IO.Path]::GetFullPath($AbsolutePath)
+    $resolvedRoot = [System.IO.Path]::GetFullPath($RootPath)
+    $rootWithSeparator = $resolvedRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolved.StartsWith($rootWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "path '$AbsolutePath' is outside repository root '$RootPath'"
+    }
+    return $resolved.Substring($rootWithSeparator.Length).Replace('\', '/')
+}
+
+function Get-VersionLiteralPaths([string]$RootPath, [string]$Version) {
+    $skipDirs = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @(".docusaurus", ".git", ".tools", ".work", "target", "node_modules", "build")) {
+        [void]$skipDirs.Add($name)
+    }
+    $allowedExts = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($ext in @("toml", "lock", "json", "js", "jsx", "rs", "md", "ps1")) {
+        [void]$allowedExts.Add($ext)
+    }
+    $found = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::Ordinal)
+    $stack = New-Object System.Collections.Generic.Stack[string]
+    $stack.Push([System.IO.Path]::GetFullPath($RootPath))
+    while ($stack.Count -gt 0) {
+        $dir = $stack.Pop()
+        foreach ($childDir in [System.IO.Directory]::GetDirectories($dir)) {
+            $name = [System.IO.Path]::GetFileName($childDir)
+            if (-not $skipDirs.Contains($name)) {
+                $stack.Push($childDir)
+            }
+        }
+        foreach ($file in [System.IO.Directory]::GetFiles($dir)) {
+            $ext = [System.IO.Path]::GetExtension($file).TrimStart('.')
+            if (-not $allowedExts.Contains($ext)) {
+                continue
+            }
+            $content = ""
+            try {
+                $content = [System.IO.File]::ReadAllText($file, [System.Text.Encoding]::UTF8)
+            } catch {
+                continue
+            }
+            if (-not $content.Contains($Version)) {
+                continue
+            }
+            $relative = Get-NormalizedRelativePath $file $RootPath
+            if ($relative -eq "ui/desktop/src-tauri/Cargo.lock") {
+                continue
+            }
+            [void]$found.Add($relative)
+        }
+    }
+    return @($found | Sort-Object)
+}
+
+function Sync-VersionManifestCoverage(
+    [string]$ManifestPath,
+    [string]$RootPath,
+    [string]$CurrentVersion
+) {
+    $manifest = Read-JsonFile $ManifestPath
+    if ($null -eq $manifest.targets) {
+        throw "version sync manifest is missing targets array"
+    }
+    $existingPaths = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::Ordinal)
+    foreach ($entry in $manifest.targets) {
+        $entryPath = [string]$entry.path
+        if (-not [string]::IsNullOrWhiteSpace($entryPath)) {
+            [void]$existingPaths.Add($entryPath.Replace('\', '/'))
+        }
+    }
+
+    $literalPaths = Get-VersionLiteralPaths -RootPath $RootPath -Version $CurrentVersion
+    $added = New-Object System.Collections.Generic.List[string]
+    foreach ($literalPath in $literalPaths) {
+        if ($existingPaths.Contains($literalPath)) {
+            continue
+        }
+        $manifest.targets += [pscustomobject]@{
+            path = $literalPath
+            strategy = "replace_all"
+        }
+        [void]$existingPaths.Add($literalPath)
+        $added.Add($literalPath) | Out-Null
+    }
+
+    if ($added.Count -gt 0) {
+        $manifestJson = $manifest | ConvertTo-Json -Depth 12
+        Write-Utf8NoBomFile $ManifestPath ($manifestJson + "`n")
+    }
+    return @($added)
+}
+
 function Normalize-Version([string]$Value) {
     $normalized = [string]$Value
     $normalized = $normalized.Trim()
@@ -175,7 +267,6 @@ function Apply-CargoLockPackageVersions(
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $manifestPath = Join-Path $repoRoot "scripts\version-sync-targets.json"
 $tauriConfigPath = Join-Path $repoRoot "ui\desktop\src-tauri\tauri.conf.json"
-$targetsManifest = Read-JsonFile $manifestPath
 $tauriConfig = Read-JsonFile $tauriConfigPath
 $currentVersion = Normalize-Version ([string]$tauriConfig.version)
 
@@ -190,6 +281,9 @@ if ($nextVersion -eq $currentVersion) {
     Write-Host ("Version is already " + $nextVersion + ". Nothing to update.") -ForegroundColor Yellow
     exit 0
 }
+
+$autoAddedManifestPaths = @(Sync-VersionManifestCoverage -ManifestPath $manifestPath -RootPath $repoRoot -CurrentVersion $currentVersion)
+$targetsManifest = Read-JsonFile $manifestPath
 
 $updatedFiles = New-Object System.Collections.Generic.List[string]
 $pendingWrites = New-Object System.Collections.Generic.List[object]
@@ -237,6 +331,12 @@ if (Test-Path -LiteralPath $publishedUpdaterScriptPath) {
 
 Write-Host ""
 Write-Host ("Updated version: " + $currentVersion + " -> " + $nextVersion) -ForegroundColor Green
+if (@($autoAddedManifestPaths).Count -gt 0) {
+    Write-Host "Auto-added version-sync targets:" -ForegroundColor Cyan
+    foreach ($path in $autoAddedManifestPaths) {
+        Write-Host (" - " + $path) -ForegroundColor DarkGray
+    }
+}
 foreach ($item in $updatedFiles) {
     Write-Host (" - " + $item) -ForegroundColor DarkGray
 }
