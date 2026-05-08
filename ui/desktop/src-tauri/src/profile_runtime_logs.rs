@@ -65,7 +65,10 @@ pub fn append_profile_log(
     }
 }
 
-pub fn read_profile_log_lines(app_handle: &AppHandle, profile_id: Uuid) -> Result<Vec<String>, String> {
+pub fn read_profile_log_lines(
+    app_handle: &AppHandle,
+    profile_id: Uuid,
+) -> Result<Vec<String>, String> {
     let state = app_handle.state::<AppState>();
     let mut lines = Vec::new();
     let profile_key = profile_id.to_string();
@@ -227,8 +230,8 @@ fn persist_profile_log_store(path: &PathBuf, store: &ProfileLogStore) -> Result<
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create profile log dir: {e}"))?;
     }
-    let bytes =
-        serde_json::to_vec_pretty(store).map_err(|e| format!("serialize profile log store: {e}"))?;
+    let bytes = serde_json::to_vec_pretty(store)
+        .map_err(|e| format!("serialize profile log store: {e}"))?;
     fs::write(path, bytes).map_err(|e| format!("write profile log store: {e}"))
 }
 

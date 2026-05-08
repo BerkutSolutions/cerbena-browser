@@ -1,25 +1,25 @@
 use std::path::Path;
 #[cfg(target_os = "windows")]
+use std::process::Command;
+#[cfg(target_os = "windows")]
 use std::{
     collections::BTreeSet,
     fs,
     io::{Cursor, Read},
     path::PathBuf,
 };
-#[cfg(target_os = "windows")]
-use std::process::Command;
 
-use browser_profile::ProfileMetadata;
 #[cfg(target_os = "windows")]
 use browser_profile::Engine;
+use browser_profile::ProfileMetadata;
 #[cfg(any(target_os = "windows", test))]
 use serde_json::Value;
 #[cfg(target_os = "windows")]
 use zip::ZipArchive;
 
-use crate::state::AppState;
 #[cfg(target_os = "windows")]
 use crate::launcher_commands::push_runtime_log;
+use crate::state::AppState;
 #[cfg(target_os = "windows")]
 use crate::{profile_security::tags_allow_keepassxc, state::app_local_data_root};
 
@@ -139,14 +139,14 @@ fn keepassxc_manifest(
     proxy_path: &Path,
 ) -> Value {
     let mut manifest = serde_json::json!({
-            "name": KEEPASSXC_HOST_NAME,
-            "description": format!(
-                "KeePassXC bridge for Cerbena Browser / {}",
-                keepassxc_engine_label(&profile.engine)
-            ),
-            "path": proxy_path,
-            "type": "stdio"
-        });
+        "name": KEEPASSXC_HOST_NAME,
+        "description": format!(
+            "KeePassXC bridge for Cerbena Browser / {}",
+            keepassxc_engine_label(&profile.engine)
+        ),
+        "path": proxy_path,
+        "type": "stdio"
+    });
     match profile.engine {
         Engine::Chromium | Engine::UngoogledChromium => {
             let allowed_origins = collect_keepassxc_allowed_origins(state, profile, profile_root);
@@ -169,10 +169,31 @@ fn collect_keepassxc_allowed_origins(
 ) -> Vec<String> {
     let mut origins = BTreeSet::new();
     origins.insert(KEEPASSXC_STORE_EXTENSION_ORIGIN.to_string());
+    for origin in keepassxc_profile_store_origins(state, profile) {
+        origins.insert(origin);
+    }
     for origin in read_keepassxc_origins_from_secure_preferences(state, profile, profile_root) {
         origins.insert(origin);
     }
     origins.into_iter().collect()
+}
+
+#[cfg(target_os = "windows")]
+fn keepassxc_profile_store_origins(state: &AppState, profile: &ProfileMetadata) -> Vec<String> {
+    let store = match state.profile_extension_store.lock() {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let Some(set) = store.profiles.get(&profile.id.to_string()) else {
+        return Vec::new();
+    };
+    set.items
+        .values()
+        .filter(|item| item.enabled)
+        .filter(|item| looks_like_keepassxc_library_item_id(&item.library_item_id))
+        .filter_map(|item| item.browser_extension_id.as_deref())
+        .map(|extension_id| format!("chrome-extension://{extension_id}/"))
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -183,28 +204,30 @@ fn collect_keepassxc_firefox_extension_ids(
 ) -> Vec<String> {
     let mut ids = BTreeSet::new();
     ids.insert(KEEPASSXC_FIREFOX_EXTENSION_ID.to_string());
-    let library = match state.extension_library.lock() {
+    let store = match state.profile_extension_store.lock() {
         Ok(value) => value,
         Err(_) => return ids.into_iter().collect(),
     };
-    for item in library.items.values() {
-        if !item
-            .assigned_profile_ids
-            .iter()
-            .any(|value| value == &profile.id.to_string())
-        {
-            continue;
-        }
-        if !item.engine_scope.trim().eq_ignore_ascii_case("firefox") {
-            continue;
-        }
-        if !looks_like_keepassxc_extension(item) {
-            continue;
-        }
-        if let Some(extension_id) = read_firefox_extension_id_for_item(item, profile_root) {
-            ids.insert(extension_id);
-        } else if item.id.contains('@') {
-            ids.insert(item.id.clone());
+    if let Some(set) = store.profiles.get(&profile.id.to_string()) {
+        for item in set.items.values() {
+            if !item.engine_scope.trim().eq_ignore_ascii_case("firefox") || !item.enabled {
+                continue;
+            }
+            if !looks_like_keepassxc_library_item_id(&item.library_item_id)
+                && item.browser_extension_id.as_deref() != Some(KEEPASSXC_FIREFOX_EXTENSION_ID)
+            {
+                continue;
+            }
+            if let Some(extension_id) = item.browser_extension_id.clone() {
+                ids.insert(extension_id);
+            } else if item.library_item_id.contains('@') {
+                ids.insert(item.library_item_id.clone());
+            } else if let Some(extension_id) = read_firefox_extension_id_from_profile_package(
+                item.profile_package_path.as_deref(),
+                profile_root,
+            ) {
+                ids.insert(extension_id);
+            }
         }
     }
     ids.into_iter().collect()
@@ -238,7 +261,11 @@ fn read_keepassxc_origins_from_secure_preferences(
             profile,
             &format!(
                 "KeePassXC extension directory was not found under {}",
-                profile_root.join("policy").join("chromium-extensions").display()
+                profile_root
+                    .join("extensions")
+                    .join("managed")
+                    .join("chromium-unpacked")
+                    .display()
             ),
         );
         return Vec::new();
@@ -322,7 +349,10 @@ fn read_keepassxc_origins_from_secure_preferences(
 
 #[cfg(target_os = "windows")]
 fn resolve_keepassxc_extension_paths(profile_root: &Path) -> Vec<PathBuf> {
-    let extensions_root = profile_root.join("policy").join("chromium-extensions");
+    let extensions_root = profile_root
+        .join("extensions")
+        .join("managed")
+        .join("chromium-unpacked");
     let mut paths = Vec::new();
     let store_id_dir = extensions_root.join(KEEPASSXC_STORE_EXTENSION_ID);
     if store_id_dir.is_dir() {
@@ -345,63 +375,6 @@ fn resolve_keepassxc_extension_paths(profile_root: &Path) -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn read_firefox_extension_id_for_item(
-    item: &crate::state::ExtensionLibraryItem,
-    profile_root: &Path,
-) -> Option<String> {
-    let mut candidates = Vec::new();
-    if let Some(package_path) = item
-        .package_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        candidates.push(PathBuf::from(package_path));
-    }
-    if let Some(package_file_name) = item
-        .package_file_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        candidates.push(profile_root.join("extensions").join(package_file_name));
-        candidates.push(profile_root.join("policy").join(package_file_name));
-    }
-    for path in candidates {
-        if let Some(extension_id) = read_firefox_extension_id_from_path(&path) {
-            return Some(extension_id);
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "windows")]
-fn read_firefox_extension_id_from_path(path: &Path) -> Option<String> {
-    if path.is_dir() {
-        return fs::read_to_string(path.join("manifest.json"))
-            .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .and_then(|manifest| manifest_stable_id(&manifest));
-    }
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())?;
-    if extension != "xpi" && extension != "zip" {
-        return None;
-    }
-    let bytes = fs::read(path).ok()?;
-    let cursor = Cursor::new(bytes);
-    let mut archive = ZipArchive::new(cursor).ok()?;
-    let mut manifest_file = archive.by_name("manifest.json").ok()?;
-    let mut text = String::new();
-    manifest_file.read_to_string(&mut text).ok()?;
-    serde_json::from_str::<Value>(&text)
-        .ok()
-        .and_then(|manifest| manifest_stable_id(&manifest))
-}
-
-#[cfg(target_os = "windows")]
 fn directory_looks_like_keepassxc(path: &Path) -> bool {
     let manifest_path = path.join("manifest.json");
     let Ok(text) = fs::read_to_string(manifest_path) else {
@@ -421,26 +394,7 @@ fn directory_looks_like_keepassxc(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(target_os = "windows")]
-fn looks_like_keepassxc_extension(item: &crate::state::ExtensionLibraryItem) -> bool {
-    item.tags
-        .iter()
-        .any(|tag| tag.trim().eq_ignore_ascii_case("keepassxc"))
-        || [
-            Some(item.id.as_str()),
-            Some(item.display_name.as_str()),
-            Some(item.source_value.as_str()),
-            item.store_url.as_deref(),
-            item.package_file_name.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|value| value.to_ascii_lowercase().contains("keepassxc"))
-        || item.id.eq_ignore_ascii_case(KEEPASSXC_STORE_EXTENSION_ID)
-        || item.id.eq_ignore_ascii_case(KEEPASSXC_FIREFOX_EXTENSION_ID)
-}
-
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 fn manifest_stable_id(manifest_json: &Value) -> Option<String> {
     manifest_json
         .get("browser_specific_settings")
@@ -459,7 +413,9 @@ fn manifest_stable_id(manifest_json: &Value) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn normalize_windowsish_path(path: &Path) -> String {
-    path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
 }
 
 #[cfg(target_os = "windows")]
@@ -469,6 +425,43 @@ fn keepassxc_engine_label(engine: &Engine) -> &'static str {
         Engine::UngoogledChromium => "Ungoogled Chromium",
         Engine::Librewolf => "LibreWolf",
     }
+}
+
+#[cfg(target_os = "windows")]
+fn looks_like_keepassxc_library_item_id(value: &str) -> bool {
+    value.eq_ignore_ascii_case(KEEPASSXC_STORE_EXTENSION_ID)
+        || value.eq_ignore_ascii_case(KEEPASSXC_FIREFOX_EXTENSION_ID)
+        || value.to_ascii_lowercase().contains("keepassxc")
+}
+
+#[cfg(target_os = "windows")]
+fn read_firefox_extension_id_from_profile_package(
+    package_path: Option<&str>,
+    profile_root: &Path,
+) -> Option<String> {
+    let _ = profile_root;
+    let package_path = package_path?;
+    let bytes = fs::read(package_path).ok()?;
+    let cursor = Cursor::new(bytes);
+    let mut archive = ZipArchive::new(cursor).ok()?;
+    let mut manifest = archive.by_name("manifest.json").ok()?;
+    let mut text = String::new();
+    manifest.read_to_string(&mut text).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("browser_specific_settings")
+        .and_then(|value| value.get("gecko"))
+        .and_then(|value| value.get("id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("applications")
+                .and_then(|value| value.get("gecko"))
+                .and_then(|value| value.get("id"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -617,7 +610,9 @@ fn write_keepassxc_log(state: &AppState, profile: &ProfileMetadata, message: &st
 
 #[cfg(test)]
 mod tests {
-    use super::{keepassxc_manifest_debug_summary, manifest_stable_id, KEEPASSXC_FIREFOX_EXTENSION_ID};
+    use super::{
+        keepassxc_manifest_debug_summary, manifest_stable_id, KEEPASSXC_FIREFOX_EXTENSION_ID,
+    };
 
     #[test]
     fn extracts_firefox_manifest_id() {

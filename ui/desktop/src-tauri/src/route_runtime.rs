@@ -31,8 +31,8 @@ use crate::{
         launch_openvpn_container_runtime, launch_sing_box_container_runtime,
         stop_container_runtime, CONTAINER_PROXY_PORT,
     },
-    profile_runtime_logs::append_profile_log,
     process_tracking::is_process_running,
+    profile_runtime_logs::append_profile_log,
     state::AppState,
 };
 
@@ -216,7 +216,10 @@ pub fn stop_profile_route_runtime(app_handle: &AppHandle, profile_id: Uuid) {
             app_handle,
             profile_id,
             "route-runtime",
-            format!("Stopping route runtime backend={}", route_runtime_backend_label(session.backend)),
+            format!(
+                "Stopping route runtime backend={}",
+                route_runtime_backend_label(session.backend)
+            ),
         );
         if let Some(pid) = session.pid {
             terminate_pid(pid);
@@ -516,11 +519,8 @@ pub fn ensure_profile_route_runtime(
             let container_auth_path = auth_path
                 .as_ref()
                 .map(|_| PathBuf::from("/work/openvpn-auth.txt"));
-            let config_text = build_openvpn_config_text(
-                node,
-                container_auth_path.as_ref(),
-                &container_log_path,
-            )?;
+            let config_text =
+                build_openvpn_config_text(node, container_auth_path.as_ref(), &container_log_path)?;
             let launch = launch_openvpn_container_runtime(
                 app_handle,
                 profile_id,
@@ -1074,7 +1074,11 @@ fn sanitize_amnezia_native_field_value(value: &str) -> Option<String> {
     let normalized = trimmed
         .strip_prefix('"')
         .and_then(|item| item.strip_suffix('"'))
-        .or_else(|| trimmed.strip_prefix('\'').and_then(|item| item.strip_suffix('\'')))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|item| item.strip_suffix('\''))
+        })
         .unwrap_or(trimmed)
         .trim();
 
@@ -1096,7 +1100,7 @@ fn extract_amnezia_conf_text_from_payload(root: &Value, awg: &Value) -> Option<S
     let mut config = config_candidate.replace('\r', "");
     let primary_dns = extract_string(root, &["dns1", "primary_dns", "primaryDns"])
         .or_else(|| extract_string(awg, &["dns1", "primary_dns", "primaryDns"]))
-        .unwrap_or_else(|| "1.1.6.1".to_string());
+        .unwrap_or_else(|| "1.1.7.1".to_string());
     let secondary_dns = extract_string(root, &["dns2", "secondary_dns", "secondaryDns"])
         .or_else(|| extract_string(awg, &["dns2", "secondary_dns", "secondaryDns"]))
         .unwrap_or_else(|| "1.0.0.1".to_string());
@@ -1686,7 +1690,10 @@ fn build_openvpn_config_text(
         .filter(|value| !value.is_empty())
     {
         let has_auth_user_pass = openvpn_config_has_directive(raw, "auth-user-pass");
-        if auth_path.is_none() && has_auth_user_pass && !raw.to_ascii_lowercase().contains("<auth-user-pass>") {
+        if auth_path.is_none()
+            && has_auth_user_pass
+            && !raw.to_ascii_lowercase().contains("<auth-user-pass>")
+        {
             return Err(
                 "openvpn profile requests auth-user-pass; set username/password fields".to_string(),
             );
@@ -1713,7 +1720,10 @@ fn build_openvpn_config_text(
         );
         append_openvpn_directive_if_missing(
             &mut out,
-            &format!("log \"{}\"", log_path.to_string_lossy().replace('\\', "\\\\")),
+            &format!(
+                "log \"{}\"",
+                log_path.to_string_lossy().replace('\\', "\\\\")
+            ),
             "log",
         );
         append_openvpn_directive_if_missing(&mut out, "verb 3", "verb");
@@ -1799,12 +1809,13 @@ fn rewrite_openvpn_auth_user_pass(config: &str, directive: &str) -> String {
     let mut lines = Vec::new();
     for line in config.lines() {
         let trimmed = line.trim();
-        let is_directive = if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
-            false
-        } else {
-            let lower = trimmed.to_ascii_lowercase();
-            lower == "auth-user-pass" || lower.starts_with("auth-user-pass ")
-        };
+        let is_directive =
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+                false
+            } else {
+                let lower = trimmed.to_ascii_lowercase();
+                lower == "auth-user-pass" || lower.starts_with("auth-user-pass ")
+            };
         if is_directive {
             if !replaced {
                 lines.push(directive.to_string());
@@ -3258,7 +3269,7 @@ mod tests {
         let conf = r#"
 [Interface]
 Address = 10.8.1.84/32
-DNS = 1.1.6.1, 1.0.0.1
+DNS = 1.1.7.1, 1.0.0.1
 PrivateKey = PRIVATE
 Jc = 4
 Jmin = 10
@@ -3291,7 +3302,7 @@ PersistentKeepalive = 25
         })
         .to_string();
         let payload = serde_json::json!({
-            "dns1": "1.1.6.1",
+            "dns1": "1.1.7.1",
             "dns2": "1.0.0.1",
             "containers": [
                 {
@@ -3304,7 +3315,7 @@ PersistentKeepalive = 25
         .to_string();
         let key = build_amnezia_key(&payload);
         let conf = build_amnezia_native_config_text(&key).expect("materialize amnezia config");
-        assert!(conf.contains("DNS = 1.1.6.1, 1.0.0.1"));
+        assert!(conf.contains("DNS = 1.1.7.1, 1.0.0.1"));
         assert!(conf.contains("Jc = 4"));
         assert!(conf.contains("Endpoint = 5.129.225.48:32542"));
     }
@@ -3325,7 +3336,7 @@ PersistentKeepalive = 25
     #[test]
     fn build_amnezia_native_config_text_from_key_skips_empty_quoted_native_fields() {
         let payload = serde_json::json!({
-            "dns1": "1.1.6.1",
+            "dns1": "1.1.7.1",
             "containers": [
                 {
                     "awg": {

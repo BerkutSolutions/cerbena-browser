@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use browser_engine::{
-    ChromiumAdapter, EngineAdapter, EngineUpdateArtifact, EngineUpdatePolicy,
-    EngineUpdateService, LaunchRequest, LibrewolfAdapter, UngoogledChromiumAdapter, UpdateMode,
+    ChromiumAdapter, EngineAdapter, EngineUpdateArtifact, EngineUpdatePolicy, EngineUpdateService,
+    LaunchRequest, LibrewolfAdapter, UngoogledChromiumAdapter, UpdateMode,
 };
 use browser_profile::{CreateProfileInput, Engine, ProfileManager};
 use uuid::Uuid;

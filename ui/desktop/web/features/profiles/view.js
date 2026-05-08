@@ -14,7 +14,12 @@ import {
   validateProfileModal
 } from "./api.js";
 import { SEARCH_PROVIDER_PRESETS } from "../../core/catalogs.js";
-import { listExtensionLibrary, setExtensionProfiles } from "../extensions/api.js";
+import {
+  listExtensionLibrary,
+  listProfileExtensions,
+  saveProfileExtensions,
+  setExtensionProfiles
+} from "../extensions/api.js";
 import { generateAutoPreset, getIdentityProfile, saveIdentityProfile } from "../identity/api.js";
 import { getDevicePostureReport, getLinuxBrowserSandboxStatus } from "../settings/api.js";
 import {
@@ -275,6 +280,13 @@ function assignedProfileExtensionIds(model, profile) {
 }
 
 function mergedProfileExtensions(model, profile) {
+  if (profile?.id && model?.profileExtensionStateMap?.[profile.id]) {
+    const entries = model.profileExtensionStateMap[profile.id];
+    return {
+      enabled: entries.filter((item) => item.enabled).map((item) => item.libraryItemId),
+      disabled: entries.filter((item) => !item.enabled).map((item) => item.libraryItemId)
+    };
+  }
   const tagged = profileExtensions(profile);
   const disabled = [...new Set(tagged.disabled)];
   const enabled = [...new Set([...tagged.enabled, ...assignedProfileExtensionIds(model, profile)])]
@@ -890,7 +902,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
                   createLabel: (value) => t("profile.tags.create").replace("{tag}", value)
                 })}
               </label>
-              <label>${t("profile.field.defaultStartPage")}<input name="defaultStartPage" value="${profile?.default_start_page ?? "https://duckduckgo.com"}" /></label>
+              <label>${t("profile.field.defaultStartPage")}<input name="defaultStartPage" value="${profile?.default_start_page ?? ""}" /></label>
               <label class="checkbox-inline">
                 <input type="checkbox" name="singlePageMode" id="profile-single-page-mode" ${singlePageMode ? "checked" : ""} />
                 <span>${t("profile.field.singlePage")}</span>
@@ -980,7 +992,7 @@ function modalHtml(t, profile, dnsDraft, globalSecurity, model, networkState, sy
             <div class="security-frame">
               <div class="grid-two">
                 <label>${t("profile.field.dnsMode")}<select name="dnsMode" id="profile-dns-mode"><option value="system" ${(dnsDraft?.mode ?? "system") === "system" ? "selected" : ""}>${t("dns.system")}</option><option value="custom" ${(dnsDraft?.mode ?? "system") === "custom" ? "selected" : ""}>${t("dns.custom")}</option></select></label>
-                <label id="profile-dns-servers-row">${t("profile.field.dnsServers")}<input name="dnsServers" placeholder="1.1.6.1,8.8.8.8" value="${escapeHtml(dnsDraft?.servers ?? "")}" /></label>
+                <label id="profile-dns-servers-row">${t("profile.field.dnsServers")}<input name="dnsServers" placeholder="1.1.7.1,8.8.8.8" value="${escapeHtml(dnsDraft?.servers ?? "")}" /></label>
                 <label id="profile-dns-template-row">${t("dns.template.current")}<select name="dnsTemplateId">${dnsTemplateOptions(profile, t)}</select></label>
               </div>
             </div>
@@ -1761,6 +1773,16 @@ async function openProfileModal(root, model, rerender, t, existing) {
   }
   let identityPreset = null;
   if (existing?.id) {
+    const extensionResult = await listProfileExtensions(existing.id);
+    if (extensionResult.ok) {
+      try {
+        const payload = JSON.parse(extensionResult.data || "{}");
+        model.profileExtensionStateMap = model.profileExtensionStateMap ?? {};
+        model.profileExtensionStateMap[existing.id] = payload.extensions ?? [];
+      } catch {}
+    }
+  }
+  if (existing?.id) {
     const identityResult = await getIdentityProfile(existing.id);
     if (identityResult.ok) {
       identityPreset = identityResult.data ?? null;
@@ -1907,7 +1929,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
     if (isManual) {
       const dnsServersField = overlay.querySelector("[name='dnsServers']");
       if (dnsServersField && !String(dnsServersField.value ?? "").trim()) {
-        dnsServersField.value = "1.1.6.1,8.8.8.8";
+        dnsServersField.value = "1.1.7.1,8.8.8.8";
       }
     }
     profileDnsServersRow?.classList.toggle("hidden", !isManual);
@@ -2657,7 +2679,6 @@ async function openProfileModal(root, model, rerender, t, existing) {
     }
     tags.push(...certificateState.filter((item) => item.kind === "id").map((item) => `cert-id:${item.value}`));
     tags.push(...certificateState.filter((item) => item.kind === "path").map((item) => `cert:${item.value}`));
-    tags.push(...extensionState.disabled.map((id) => `ext-disabled:${id}`));
     if (form.disableExtensionsLaunch.checked && extensionState.enabled.length && !form.allowKeepassxc.checked) {
       setNotice(model, "error", t("profile.security.disableExtensionsLaunchBlocked"));
       rerender();
@@ -2888,6 +2909,15 @@ async function openProfileModal(root, model, rerender, t, existing) {
       }
       return setProfilePassword(profileId, form.profilePassword.value);
     };
+    const saveProfileExtensionState = async (profileId) => {
+      return saveProfileExtensions(
+        profileId,
+        [
+          ...extensionState.enabled.map((libraryItemId) => ({ libraryItemId, enabled: true })),
+          ...extensionState.disabled.map((libraryItemId) => ({ libraryItemId, enabled: false }))
+        ]
+      );
+    };
     const saveManagedCertificates = async (profileId) => {
       globalSecurity = syncManagedCertificateAssignments(globalSecurity, profileId, certificateState);
       return saveGlobalSecuritySettings(buildGlobalSecuritySaveRequest(globalSecurity));
@@ -2921,7 +2951,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
         expectedUpdatedAt: existing.updated_at
       });
       if (updateResult.ok) {
-        await syncProfileExtensionAssignments(model, existing.id, extensionState);
+        const extensionResult = await saveProfileExtensionState(existing.id);
         const certificateResult = await saveManagedCertificates(existing.id);
         dnsPayload.profile_id = existing.id;
         saveProfileDnsDraft(existing.id, {
@@ -2938,10 +2968,14 @@ async function openProfileModal(root, model, rerender, t, existing) {
         const syncResult = await saveSyncPolicy(existing.id);
         const identityResult = await saveIdentityPolicy(existing.id);
         const passwordResult = await saveProfilePassword(existing.id);
-        if (certificateResult.ok && dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
+        if (extensionResult.ok && certificateResult.ok && dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
           setNotice(model, "success", engineChanged ? t("profile.runtime.engineChangedReset") : t("profile.runtime.appliedNow"));
         } else {
-          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(certificateResult, dnsResult, routeResult, sandboxResult, syncResult, identityResult));
+          setNotice(model, "error", !extensionResult.ok
+            ? String(extensionResult.data.error)
+            : !passwordResult.ok
+              ? String(passwordResult.data.error)
+              : resolveSaveError(certificateResult, dnsResult, routeResult, sandboxResult, syncResult, identityResult));
         }
       } else {
         setNotice(model, "error", String(updateResult.data.error));
@@ -2949,7 +2983,7 @@ async function openProfileModal(root, model, rerender, t, existing) {
     } else {
       const createResult = await createProfile(payload);
       if (createResult.ok) {
-        await syncProfileExtensionAssignments(model, createResult.data.id, extensionState);
+        const extensionResult = await saveProfileExtensionState(createResult.data.id);
         const certificateResult = await saveManagedCertificates(createResult.data.id);
         dnsPayload.profile_id = createResult.data.id;
         saveProfileDnsDraft(createResult.data.id, {
@@ -2966,10 +3000,14 @@ async function openProfileModal(root, model, rerender, t, existing) {
         const syncResult = await saveSyncPolicy(createResult.data.id);
         const identityResult = await saveIdentityPolicy(createResult.data.id);
         const passwordResult = await saveProfilePassword(createResult.data.id);
-        if (certificateResult.ok && dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
+        if (extensionResult.ok && certificateResult.ok && dnsResult.ok && routeResult.ok && sandboxResult.ok && syncResult.ok && identityResult.ok && passwordResult.ok) {
           setNotice(model, "success", t("profile.create.success"));
         } else {
-          setNotice(model, "error", !passwordResult.ok ? String(passwordResult.data.error) : resolveSaveError(certificateResult, dnsResult, routeResult, sandboxResult, syncResult, identityResult));
+          setNotice(model, "error", !extensionResult.ok
+            ? String(extensionResult.data.error)
+            : !passwordResult.ok
+              ? String(passwordResult.data.error)
+              : resolveSaveError(certificateResult, dnsResult, routeResult, sandboxResult, syncResult, identityResult));
         }
       } else {
         setNotice(model, "error", String(createResult.data.error));

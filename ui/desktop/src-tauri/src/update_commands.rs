@@ -34,11 +34,10 @@ const UPDATER_EVENT_NAME: &str = "updater-progress";
 pub const UPDATER_RELAUNCH_AUTO_EXIT_ENV: &str = "CERBENA_UPDATER_AUTO_EXIT_AFTER_SECONDS";
 pub const UPDATER_MSI_INSTALL_DIR_ENV: &str = "CERBENA_UPDATER_MSI_INSTALL_DIR";
 pub const UPDATER_MSI_TIMEOUT_MS_ENV: &str = "CERBENA_UPDATER_MSI_TIMEOUT_MS";
-const RELEASE_SIGNING_PUBLIC_KEY_XML: &str =
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../config/release/release-signing-public-key.xml"
-    ));
+const RELEASE_SIGNING_PUBLIC_KEY_XML: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../config/release/release-signing-public-key.xml"
+));
 const RELEASE_SIGNING_LEGACY_PUBLIC_KEYS_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../config/release/release-signing-legacy-public-keys.json"
@@ -682,7 +681,10 @@ pub fn launch_pending_update_on_exit(app: &AppHandle) {
     let install_root = match current_exe.parent() {
         Some(value) => value.to_path_buf(),
         None => {
-            push_runtime_log(&state, "[updater] pending apply skipped: install root missing");
+            push_runtime_log(
+                &state,
+                "[updater] pending apply skipped: install root missing",
+            );
             return;
         }
     };
@@ -1101,16 +1103,19 @@ fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, Str
             push_runtime_log(
                 state,
                 format!(
-                "[updater] latest release discovered version={} release_url={}",
-                candidate.version, candidate.release_url
-            ),
-        );
+                    "[updater] latest release discovered version={} release_url={}",
+                    candidate.version, candidate.release_url
+                ),
+            );
             push_runtime_log(
                 state,
                 format!(
                     "[updater] selected asset type={} handoff={} reason={}",
                     candidate.asset_type.as_deref().unwrap_or("unknown"),
-                    candidate.install_handoff_mode.as_deref().unwrap_or("unknown"),
+                    candidate
+                        .install_handoff_mode
+                        .as_deref()
+                        .unwrap_or("unknown"),
                     candidate
                         .asset_selection_reason
                         .as_deref()
@@ -1160,14 +1165,20 @@ fn run_update_cycle(state: &AppState, manual: bool) -> Result<AppUpdateView, Str
                                 );
                             }
                             Err(error) => {
-                                push_runtime_log(state, format!("[updater] handoff failed: {error}"));
+                                push_runtime_log(
+                                    state,
+                                    format!("[updater] handoff failed: {error}"),
+                                );
                                 store.status = "error".to_string();
                                 store.last_error = Some(error);
                             }
                         }
                     } else {
                         if let Err(error) = stage_release_if_needed(state, &mut store, &candidate) {
-                            push_runtime_log(state, format!("[updater] stage release failed: {error}"));
+                            push_runtime_log(
+                                state,
+                                format!("[updater] stage release failed: {error}"),
+                            );
                             store.status = "error".to_string();
                             store.last_error = Some(error);
                         }
@@ -1782,7 +1793,8 @@ fn release_signing_public_keys() -> Vec<String> {
         keys.push(current.to_string());
     }
 
-    if let Ok(legacy_keys) = serde_json::from_str::<Vec<String>>(RELEASE_SIGNING_LEGACY_PUBLIC_KEYS_JSON)
+    if let Ok(legacy_keys) =
+        serde_json::from_str::<Vec<String>>(RELEASE_SIGNING_LEGACY_PUBLIC_KEYS_JSON)
     {
         for key in legacy_keys {
             let trimmed = key.trim();
@@ -2529,17 +2541,16 @@ mod tests {
     use super::{
         asset_rank, build_msi_apply_helper_script, build_release_http_client,
         build_zip_apply_helper_script, can_auto_apply_asset, can_auto_apply_asset_for_os,
-        default_auto_update_enabled,
-        download_release_bytes, ensure_asset_matches_verified_checksum,
-        extract_checksum_for_asset, fetch_latest_release_from_url, is_version_newer,
-        normalize_version, pick_release_asset_for_context,
-        release_signing_public_keys, should_auto_close_updater_after_ready_to_restart,
-        reconcile_update_store_with_current_version, resolve_latest_release_api_url,
-        resolve_relaunch_executable_path, sha256_hex, should_run_auto_update_check,
-        signature_verification_variants,
-        AppUpdateStore, GithubReleaseAsset, SelectedAssetKind, UpdaterLaunchMode,
-        VerifiedReleaseSecurityBundle, CURRENT_VERSION, RELEASE_LATEST_API_URL_ENV,
-        RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV,
+        default_auto_update_enabled, download_release_bytes,
+        ensure_asset_matches_verified_checksum, extract_checksum_for_asset,
+        fetch_latest_release_from_url, is_version_newer, normalize_version,
+        pick_release_asset_for_context, reconcile_update_store_with_current_version,
+        release_signing_public_keys, resolve_latest_release_api_url,
+        resolve_relaunch_executable_path, sha256_hex,
+        should_auto_close_updater_after_ready_to_restart, should_run_auto_update_check,
+        signature_verification_variants, AppUpdateStore, GithubReleaseAsset, SelectedAssetKind,
+        UpdaterLaunchMode, VerifiedReleaseSecurityBundle, CURRENT_VERSION,
+        RELEASE_CHECKSUMS_B64_ENV, RELEASE_CHECKSUMS_SIGNATURE_B64_ENV, RELEASE_LATEST_API_URL_ENV,
     };
     use std::{
         io::{Read, Write},
@@ -2558,9 +2569,9 @@ mod tests {
 
         if let Some(hotfix_suffix) = suffix.filter(|value| {
             !value.is_empty()
-                && value
-                    .split('.')
-                    .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
+                && value.split('.').all(|segment| {
+                    !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit())
+                })
         }) {
             let mut hotfix_parts = hotfix_suffix
                 .split('.')
@@ -2673,14 +2684,24 @@ mod tests {
         assert!(can_auto_apply_asset("cerbena-windows.zip"));
         assert!(can_auto_apply_asset("cerbena-windows.msi"));
         assert!(!can_auto_apply_asset("cerbena-windows.exe"));
-        assert!(!can_auto_apply_asset_for_os("linux", "cerbena-browser-linux.zip"));
-        assert!(!can_auto_apply_asset_for_os("linux", "cerbena-browser_9.9.9_amd64.deb"));
+        assert!(!can_auto_apply_asset_for_os(
+            "linux",
+            "cerbena-browser-linux.zip"
+        ));
+        assert!(!can_auto_apply_asset_for_os(
+            "linux",
+            "cerbena-browser_9.9.9_amd64.deb"
+        ));
     }
 
     #[test]
     fn preferred_asset_order_keeps_zip_before_other_formats() {
-        assert!(asset_rank(SelectedAssetKind::WindowsMsi) < asset_rank(SelectedAssetKind::WindowsZip));
-        assert!(asset_rank(SelectedAssetKind::WindowsZip) < asset_rank(SelectedAssetKind::WindowsExe));
+        assert!(
+            asset_rank(SelectedAssetKind::WindowsMsi) < asset_rank(SelectedAssetKind::WindowsZip)
+        );
+        assert!(
+            asset_rank(SelectedAssetKind::WindowsZip) < asset_rank(SelectedAssetKind::WindowsExe)
+        );
     }
 
     #[test]
@@ -2769,8 +2790,12 @@ def456  cerbena-windows-x64/cerbena.exe\n";
     fn release_signing_public_keys_include_current_and_legacy_keys() {
         let keys = release_signing_public_keys();
         assert!(keys.len() >= 2);
-        assert!(keys.iter().any(|key| key.contains("1nCCvDQ4TOZjV1t78V3T3dIz")));
-        assert!(keys.iter().any(|key| key.contains("sQ/dGNzpHEHiSUvpp8+h4axI")));
+        assert!(keys
+            .iter()
+            .any(|key| key.contains("1nCCvDQ4TOZjV1t78V3T3dIz")));
+        assert!(keys
+            .iter()
+            .any(|key| key.contains("sQ/dGNzpHEHiSUvpp8+h4axI")));
     }
 
     #[test]

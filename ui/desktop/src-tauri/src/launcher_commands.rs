@@ -1197,7 +1197,8 @@ fn normalize_certificates(
     existing: &[ManagedCertificateRecord],
 ) -> Result<Vec<ManagedCertificateRecord>, String> {
     let root = state.managed_certificates_root(&state.app_handle)?;
-    std::fs::create_dir_all(&root).map_err(|error| format!("create managed certificates dir: {error}"))?;
+    std::fs::create_dir_all(&root)
+        .map_err(|error| format!("create managed certificates dir: {error}"))?;
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     let existing_by_id = existing
@@ -1229,14 +1230,12 @@ fn normalize_certificates(
             &id,
             existing_record.map(|record| record.path.as_str()),
         )?;
-        let (subject_name, issuer_name) = load_certificate_metadata(&managed_path).unwrap_or((None, None));
+        let (subject_name, issuer_name) =
+            load_certificate_metadata(&managed_path).unwrap_or((None, None));
         out.push(ManagedCertificateRecord {
             id,
             name: if item.name.trim().is_empty() {
-                certificate_display_name(
-                    subject_name.clone(),
-                    &managed_path.to_string_lossy(),
-                )
+                certificate_display_name(subject_name.clone(), &managed_path.to_string_lossy())
             } else {
                 item.name.trim().to_string()
             },
@@ -1299,7 +1298,11 @@ fn cleanup_unused_managed_certificates(
         .iter()
         .map(|item| item.path.trim().to_string())
         .collect::<std::collections::BTreeSet<_>>();
-    for path in previous.iter().map(|item| item.path.trim()).filter(|value| !value.is_empty()) {
+    for path in previous
+        .iter()
+        .map(|item| item.path.trim())
+        .filter(|value| !value.is_empty())
+    {
         let candidate = Path::new(path);
         if !candidate.starts_with(&root) {
             continue;
@@ -1314,36 +1317,32 @@ fn cleanup_unused_managed_certificates(
 fn certificate_display_name(subject_name: Option<String>, fallback_path: &str) -> String {
     subject_name
         .and_then(|subject| {
-            certificate_common_name(&subject)
-                .or_else(|| {
-                    let compact = subject.trim().to_string();
-                    if compact.is_empty() {
-                        None
-                    } else {
-                        Some(compact)
-                    }
-                })
+            certificate_common_name(&subject).or_else(|| {
+                let compact = subject.trim().to_string();
+                if compact.is_empty() {
+                    None
+                } else {
+                    Some(compact)
+                }
+            })
         })
         .unwrap_or_else(|| certificate_name_from_path(fallback_path))
 }
 
 fn certificate_common_name(subject_name: &str) -> Option<String> {
-    subject_name
-        .split(',')
-        .map(str::trim)
-        .find_map(|part| {
-            let (key, value) = part.split_once('=')?;
-            if key.trim().eq_ignore_ascii_case("CN") {
-                let clean = value.trim();
-                if clean.is_empty() {
-                    None
-                } else {
-                    Some(clean.to_string())
-                }
-            } else {
+    subject_name.split(',').map(str::trim).find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        if key.trim().eq_ignore_ascii_case("CN") {
+            let clean = value.trim();
+            if clean.is_empty() {
                 None
+            } else {
+                Some(clean.to_string())
             }
-        })
+        } else {
+            None
+        }
+    })
 }
 
 fn normalize_blocklists(

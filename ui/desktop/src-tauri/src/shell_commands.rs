@@ -372,7 +372,9 @@ pub fn save_shell_preferences(
             store.launch_on_system_startup = value;
         }
         if let Some(value) = request.startup_profile_id {
-            store.startup_profile_id = value.map(|profile_id| profile_id.trim().to_string()).filter(|profile_id| !profile_id.is_empty());
+            store.startup_profile_id = value
+                .map(|profile_id| profile_id.trim().to_string())
+                .filter(|profile_id| !profile_id.is_empty());
         }
     }
     persist_shell_preferences(&state)?;

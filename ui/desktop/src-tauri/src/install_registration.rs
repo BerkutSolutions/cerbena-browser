@@ -118,10 +118,9 @@ pub fn remove_browser_capabilities() -> Result<(), String> {
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{CERBENA_PDF_PROG_ID}"));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{CERBENA_XHTML_PROG_ID}"));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{CERBENA_SVG_PROG_ID}"));
-    if let Ok(registered) = hkcu.open_subkey_with_flags(
-        REGISTERED_APPLICATIONS_SUBKEY,
-        winreg::enums::KEY_SET_VALUE,
-    ) {
+    if let Ok(registered) =
+        hkcu.open_subkey_with_flags(REGISTERED_APPLICATIONS_SUBKEY, winreg::enums::KEY_SET_VALUE)
+    {
         let _ = registered.delete_value(PRODUCT_NAME);
     }
     for (extension, prog_id, _) in FILE_ASSOCIATIONS {

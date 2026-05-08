@@ -107,8 +107,8 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
             .expect("read generate-release-artifacts.ps1");
     let installer_script = fs::read_to_string(root.join("scripts").join("build-installer.ps1"))
         .expect("read build-installer.ps1");
-    let release_script = fs::read_to_string(root.join("scripts").join("release.ps1"))
-        .expect("read release.ps1");
+    let release_script =
+        fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release.ps1");
     let version_script = fs::read_to_string(root.join("scripts").join("update-version.ps1"))
         .expect("read update-version.ps1");
     let version_manifest =
@@ -121,9 +121,8 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
             .join("new-release-signing-material.ps1"),
     )
     .expect("read new-release-signing-material.ps1");
-    let desktop_package =
-        fs::read_to_string(root.join("ui").join("desktop").join("package.json"))
-            .expect("read ui/desktop/package.json");
+    let desktop_package = fs::read_to_string(root.join("ui").join("desktop").join("package.json"))
+        .expect("read ui/desktop/package.json");
     let linux_tauri_config = fs::read_to_string(
         root.join("ui")
             .join("desktop")

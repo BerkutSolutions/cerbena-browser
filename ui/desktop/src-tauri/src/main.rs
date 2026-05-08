@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod device_posture;
 mod certificate_runtime;
+mod device_posture;
 mod envelope;
 mod extensions_commands;
 mod identity_commands;
@@ -22,10 +22,11 @@ mod panic_frame;
 mod platform;
 mod process_tracking;
 mod profile_commands;
+mod profile_extensions;
 mod profile_runtime_logs;
 mod profile_security;
-mod runtime_tools_commands;
 mod route_runtime;
+mod runtime_tools_commands;
 mod sensitive_store;
 mod service_catalog_seed;
 mod service_domains;
@@ -296,6 +297,7 @@ fn main() {
             traffic_commands::list_traffic_events,
             traffic_commands::set_traffic_rule,
             extensions_commands::list_extensions,
+            extensions_commands::save_profile_extensions,
             extensions_commands::list_extension_library,
             extensions_commands::import_extension_library_item,
             extensions_commands::update_extension_library_item,

@@ -1,6 +1,6 @@
 use browser_engine::{
-    contract::{EngineAdapter, LaunchRequest},
     chromium::ChromiumAdapter,
+    contract::{EngineAdapter, LaunchRequest},
     ungoogled_chromium::UngoogledChromiumAdapter,
     LibrewolfAdapter,
 };

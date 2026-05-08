@@ -26,9 +26,9 @@ if (-not $rsa.VerifyData($checksums, $signature, $sha, $padding)) {
   throw 'release checksum signature verification failed'
 }
 "#
-        .replace("__PUBLIC_KEY_XML__", public_key_xml)
-        .replace("__CHECKSUMS_ENV__", checksums_env)
-        .replace("__SIGNATURE_ENV__", signature_env);
+    .replace("__PUBLIC_KEY_XML__", public_key_xml)
+    .replace("__CHECKSUMS_ENV__", checksums_env)
+    .replace("__SIGNATURE_ENV__", signature_env);
 
     let mut command = Command::new("powershell");
     command.args([

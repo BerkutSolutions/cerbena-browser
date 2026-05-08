@@ -119,16 +119,23 @@ fn cleanup_managed_container_artifacts() {
             "{{.Names}}",
         ],
     ) {
-        for name in output.lines().map(str::trim).filter(|value| !value.is_empty()) {
+        for name in output
+            .lines()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             let _ = run_hidden_process("docker.exe", &["rm", "-f", name]);
         }
     }
 
-    if let Ok(output) = run_hidden_process(
-        "docker.exe",
-        &["network", "ls", "--format", "{{.Name}}"],
-    ) {
-        for name in output.lines().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Ok(output) =
+        run_hidden_process("docker.exe", &["network", "ls", "--format", "{{.Name}}"])
+    {
+        for name in output
+            .lines()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             if name.starts_with("cerbena-profile-") {
                 let _ = run_hidden_process("docker.exe", &["network", "rm", name]);
             }

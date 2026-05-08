@@ -1,6 +1,7 @@
+#[cfg(test)]
+use std::io::{Cursor, Read};
 use std::{
     fs,
-    io::{Cursor, Read},
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -20,10 +21,15 @@ use sha2::{Digest, Sha256};
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::profile_security::{
+    tags_allow_keepassxc, tags_allow_system_access, tags_disable_extension_launch,
+};
+#[cfg(test)]
+use crate::state::{ExtensionLibraryItem, ExtensionPackageVariant};
 use crate::{
     certificate_runtime::{
-        clear_librewolf_profile_certificates,
-        prepare_librewolf_profile_certificates_for_state,
+        clear_librewolf_profile_certificates, prepare_librewolf_profile_certificates_for_state,
     },
     device_posture::enforce_launch_posture,
     envelope::ok,
@@ -38,21 +44,21 @@ use crate::{
     panic_frame::{close_panic_frame, maybe_start_panic_frame},
     platform::dialogs,
     process_tracking::{
-        clear_profile_process, find_profile_main_window_pid_for_dir,
-        find_profile_process_pid_for_dir, is_process_running as is_pid_running,
-        terminate_process_tree, terminate_profile_processes, track_profile_process,
+        clear_profile_process, describe_profile_process_candidates,
+        find_profile_main_window_pid_for_dir, find_profile_process_pid_for_dir,
+        is_process_running as is_pid_running, terminate_process_tree, terminate_profile_processes,
+        track_profile_process,
     },
+    profile_extensions,
     profile_runtime_logs::{append_profile_log, read_profile_log_lines},
     profile_security::{
-        assess_profile, cookies_copy_allowed, first_launch_blocker, tags_allow_keepassxc,
-        tags_allow_system_access, tags_disable_extension_launch, ERR_COOKIES_COPY_BLOCKED,
+        assess_profile, cookies_copy_allowed, first_launch_blocker, ERR_COOKIES_COPY_BLOCKED,
         ERR_LOCKED_REQUIRES_UNLOCK, ERR_MAXIMUM_POLICY_EXTENSIONS_FORBIDDEN,
     },
     service_domains::service_domain_seeds,
     state::{
         ensure_default_profiles, is_builtin_default_profile_name,
-        persist_hidden_default_profiles_store, AppState, ExtensionLibraryItem,
-        ExtensionPackageVariant,
+        persist_hidden_default_profiles_store, AppState,
     },
 };
 
@@ -78,6 +84,7 @@ fn emit_profile_launch_progress(
         }),
     );
 }
+#[cfg(test)]
 use zip::ZipArchive;
 
 #[derive(Debug, Deserialize)]
@@ -109,8 +116,10 @@ pub struct UpdateProfileRequest {
     pub tags: Option<Vec<String>>,
     pub engine: Option<String>,
     pub state: Option<String>,
-    pub default_start_page: Option<String>,
-    pub default_search_provider: Option<String>,
+    #[serde(default)]
+    pub default_start_page: NullableStringField,
+    #[serde(default)]
+    pub default_search_provider: NullableStringField,
     pub ephemeral_mode: Option<bool>,
     pub password_lock_enabled: Option<bool>,
     pub panic_frame_enabled: Option<bool>,
@@ -126,6 +135,43 @@ pub struct ActionProfileRequest {
     pub profile_id: String,
     pub launch_url: Option<String>,
     pub device_posture_ack_id: Option<String>,
+}
+
+fn parse_nullable_string_field(
+    raw: NullableStringField,
+    _field_name: &str,
+) -> Result<Option<Option<String>>, String> {
+    match raw {
+        NullableStringField::Missing => Ok(None),
+        NullableStringField::Null => Ok(Some(None)),
+        NullableStringField::String(text) => Ok(Some(Some(text))),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum NullableStringField {
+    #[default]
+    Missing,
+    Null,
+    String(String),
+}
+
+impl<'de> Deserialize<'de> for NullableStringField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.is_null() {
+            return Ok(Self::Null);
+        }
+        match value {
+            serde_json::Value::String(text) => Ok(Self::String(text)),
+            other => Err(serde::de::Error::custom(format!(
+                "expected string or null, got {other}"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,14 +327,22 @@ pub fn update_profile(
         .manager
         .lock()
         .map_err(|_| "lock poisoned".to_string())?;
+    let default_start_page = parse_nullable_string_field(
+        request.default_start_page,
+        "defaultStartPage",
+    )?;
+    let default_search_provider = parse_nullable_string_field(
+        request.default_search_provider,
+        "defaultSearchProvider",
+    )?;
     let patch = PatchProfileInput {
         name: request.name,
         description: request.description.map(Some),
         tags: request.tags,
         engine: request.engine.as_deref().map(parse_engine).transpose()?,
         state: request.state.map(|v| parse_state(&v)).transpose()?,
-        default_start_page: request.default_start_page.map(Some),
-        default_search_provider: request.default_search_provider.map(Some),
+        default_start_page,
+        default_search_provider,
         ephemeral_mode: request.ephemeral_mode,
         password_lock_enabled: request.password_lock_enabled,
         panic_frame_enabled: request.panic_frame_enabled,
@@ -426,12 +480,8 @@ pub async fn launch_profile(
             &profile.tags,
         )?;
         let assessment = assess_profile(&profile);
-        let active_extensions = collect_active_profile_extensions(
-            &state,
-            profile.id,
-            &profile.tags,
-            profile.engine.clone(),
-        );
+        let active_extensions =
+            profile_extensions::collect_active_profile_extensions(state.inner(), &profile)?;
         if assessment.policy_level == "maximum" && !active_extensions.is_empty() {
             return Err(ERR_MAXIMUM_POLICY_EXTENSIONS_FORBIDDEN.to_string());
         }
@@ -672,6 +722,11 @@ pub async fn launch_profile(
             ensure_keepassxc_bridge_for_profile(state.inner(), &profile, &profile_root)?;
         }
         if matches!(engine, EngineKind::Librewolf) {
+            profile_extensions::prepare_profile_extensions_for_launch(
+                state.inner(),
+                &profile,
+                &profile_root,
+            )?;
             emit_profile_launch_progress(
                 &app_handle,
                 profile.id,
@@ -768,17 +823,28 @@ pub async fn launch_profile(
             apply_librewolf_website_filter(&state, &profile.id, &installation.binary_path)
                 .map_err(|e| e.to_string())?;
         }
-        let start_page = profile
-            .default_start_page
-            .clone()
-            .unwrap_or_else(|| "https://duckduckgo.com".to_string());
-        let start_page = request
+        let explicit_launch_url = request
             .launch_url
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .unwrap_or(start_page);
+            .map(ToString::to_string);
+        let profile_start_page = normalize_optional_start_page_url(profile.default_start_page.as_deref());
+        let has_restore_session = profile_runtime_has_session_state(engine, &user_data_dir);
+        let start_page = explicit_launch_url.clone().or_else(|| {
+            (!has_restore_session && !matches!(engine, EngineKind::Librewolf))
+                .then_some(profile_start_page.clone())
+                .flatten()
+        });
+        eprintln!(
+            "[profile-launch] resolved start_page profile={} engine={:?} explicit_launch_url={:?} profile_default_start_page={:?} runtime_start_page={:?} has_restore_session={}",
+            profile.id,
+            profile.engine,
+            explicit_launch_url,
+            profile_start_page,
+            start_page,
+            has_restore_session
+        );
         let private_mode = profile.ephemeral_mode
             && profile
                 .tags
@@ -901,6 +967,22 @@ fn wait_for_profile_process_startup(
             .or_else(|| find_profile_process_pid_for_dir(user_data_dir))
         {
             last_seen_pid = actual_pid;
+            let candidates = describe_profile_process_candidates(user_data_dir);
+            if candidates.len() > 1
+                && candidates.iter().any(|value| {
+                    value.contains("librewolf")
+                        || value.contains("firefox")
+                        || value.contains("private_browsing")
+                })
+            {
+                eprintln!(
+                    "[profile-launch] startup candidate set profile_dir={} spawned_pid={} selected_pid={} candidates={:?}",
+                    user_data_dir.display(),
+                    spawned_pid,
+                    actual_pid,
+                    candidates
+                );
+            }
             if is_pid_running(actual_pid) {
                 return Ok(actual_pid);
             }
@@ -923,7 +1005,8 @@ fn wait_for_profile_process_startup(
     }
 
     Err(format!(
-        "Browser process exited during startup pid={last_seen_pid}"
+        "Browser process exited during startup pid={last_seen_pid} candidates={:?}",
+        describe_profile_process_candidates(user_data_dir)
     ))
 }
 
@@ -936,27 +1019,18 @@ fn prepare_librewolf_profile_runtime(
     identity_preset: Option<&IdentityPreset>,
 ) -> Result<(), std::io::Error> {
     fs::create_dir_all(profile_dir)?;
-    let startup_page = normalize_start_page_url(default_start_page)
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-
-    let stale_files = [
-        "xulstore.json",
-        "prefs.js",
-        "sessionstore.jsonlz4",
-        "sessionCheckpoints.json",
-        "times.json",
-        "search.json.mozlz4",
-        "search.sqlite",
-        "search.sqlite-wal",
-        "search.sqlite-shm",
-    ];
-    for file_name in stale_files {
-        let path = profile_dir.join(file_name);
-        if path.exists() {
-            let _ = fs::remove_file(path);
-        }
-    }
+    let startup_page = normalize_optional_start_page_url(default_start_page)
+        .map(|value| escape_firefox_pref_string(&value));
+    let has_restore_session = librewolf_profile_has_session_state(profile_dir);
+    eprintln!(
+        "[profile-launch] librewolf runtime prefs dir={} startup_page={:?} has_restore_session={} default_search_provider={:?} gateway_proxy_port={:?} runtime_hardening={}",
+        profile_dir.display(),
+        startup_page,
+        has_restore_session,
+        default_search_provider,
+        gateway_proxy_port,
+        runtime_hardening
+    );
 
     let startup_cache = profile_dir.join("startupCache");
     if startup_cache.exists() {
@@ -964,10 +1038,6 @@ fn prepare_librewolf_profile_runtime(
     }
 
     let mut user_js_lines = vec![
-        "user_pref(\"browser.startup.page\", 1);".to_string(),
-        format!("user_pref(\"browser.startup.homepage\", \"{startup_page}\");"),
-        "user_pref(\"browser.newtabpage.enabled\", false);".to_string(),
-        format!("user_pref(\"browser.newtab.url\", \"{startup_page}\");"),
         "user_pref(\"browser.tabs.hideSingleTab\", false);".to_string(),
         "user_pref(\"browser.tabs.inTitlebar\", 1);".to_string(),
         "user_pref(\"browser.tabs.drawInTitlebar\", true);".to_string(),
@@ -976,9 +1046,6 @@ fn prepare_librewolf_profile_runtime(
         "user_pref(\"startup.homepage_welcome_url\", \"\");".to_string(),
         "user_pref(\"startup.homepage_welcome_url.additional\", \"\");".to_string(),
         "user_pref(\"startup.homepage_override_url\", \"\");".to_string(),
-        "user_pref(\"browser.sessionstore.resume_from_crash\", false);".to_string(),
-        "user_pref(\"browser.sessionstore.max_tabs_undo\", 0);".to_string(),
-        "user_pref(\"browser.sessionstore.max_windows_undo\", 0);".to_string(),
         "user_pref(\"browser.search.suggest.enabled\", false);".to_string(),
         "user_pref(\"browser.search.geoSpecificDefaults\", false);".to_string(),
         "user_pref(\"browser.search.geoSpecificDefaults.url\", \"\");".to_string(),
@@ -1002,6 +1069,20 @@ fn prepare_librewolf_profile_runtime(
         "user_pref(\"showcursor\", false);".to_string(),
         "user_pref(\"browser.search.newSearchConfigEnabled\", false);".to_string(),
     ];
+    let homepage_requested = startup_page.is_some();
+    let homepage_injected = homepage_requested && !has_restore_session;
+    if let Some(ref startup_page) = startup_page {
+        if !has_restore_session {
+            user_js_lines.push("user_pref(\"browser.startup.page\", 1);".to_string());
+            user_js_lines.push(format!(
+                "user_pref(\"browser.startup.homepage\", \"{startup_page}\");"
+            ));
+            user_js_lines.push("user_pref(\"browser.newtabpage.enabled\", false);".to_string());
+            user_js_lines.push(format!(
+                "user_pref(\"browser.newtab.url\", \"{startup_page}\");"
+            ));
+        }
+    }
     if let Some(engine_name) = map_search_provider_to_firefox_engine(default_search_provider) {
         user_js_lines
             .push("user_pref(\"browser.search.separatePrivateDefault\", false);".to_string());
@@ -1079,10 +1160,55 @@ fn prepare_librewolf_profile_runtime(
     fs::write(chrome_dir.join("userChrome.css"), user_chrome.trim_start())?;
 
     eprintln!(
-        "[profile-launch] librewolf profile prepared dir={} cleaned=true",
-        profile_dir.display()
+        "[profile-launch] librewolf profile prepared dir={} homepage_requested={} homepage_injected={} has_restore_session={}",
+        profile_dir.display(),
+        homepage_requested,
+        homepage_injected,
+        has_restore_session
     );
     Ok(())
+}
+
+fn profile_runtime_has_session_state(engine: EngineKind, profile_dir: &Path) -> bool {
+    match engine {
+        EngineKind::Chromium | EngineKind::UngoogledChromium => {
+            chromium_profile_has_session_state(profile_dir)
+        }
+        EngineKind::Librewolf => librewolf_profile_has_session_state(profile_dir),
+    }
+}
+
+fn chromium_profile_has_session_state(profile_dir: &Path) -> bool {
+    let default_dir = profile_dir.join("Default");
+    [
+        default_dir.join("Current Session"),
+        default_dir.join("Current Tabs"),
+        default_dir.join("Last Session"),
+        default_dir.join("Last Tabs"),
+    ]
+    .into_iter()
+    .any(|path| path.is_file())
+        || default_dir.join("Sessions").is_dir()
+            && fs::read_dir(default_dir.join("Sessions"))
+                .ok()
+                .into_iter()
+                .flat_map(|entries| entries.flatten())
+                .any(|entry| entry.path().is_file())
+}
+
+fn librewolf_profile_has_session_state(profile_dir: &Path) -> bool {
+    if profile_dir.join("sessionstore.jsonlz4").is_file() {
+        return true;
+    }
+    let backups_dir = profile_dir.join("sessionstore-backups");
+    if !backups_dir.is_dir() {
+        return false;
+    }
+    fs::read_dir(backups_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .any(|entry| entry.path().is_file())
 }
 
 fn load_identity_preset_for_profile(state: &AppState, profile_id: Uuid) -> Option<IdentityPreset> {
@@ -1140,20 +1266,24 @@ fn escape_firefox_pref_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn normalize_start_page_url(default_start_page: Option<&str>) -> String {
+fn normalize_optional_start_page_url(default_start_page: Option<&str>) -> Option<String> {
     let raw = default_start_page
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("https://duckduckgo.com");
+        .filter(|value| !value.is_empty())?;
     if raw.contains("://")
         || raw.starts_with("about:")
         || raw.starts_with("chrome:")
         || raw.starts_with("file:")
         || raw.starts_with("data:")
     {
-        return raw.to_string();
+        return Some(raw.to_string());
     }
-    format!("https://{raw}")
+    Some(format!("https://{raw}"))
+}
+
+fn normalize_start_page_url(default_start_page: Option<&str>) -> String {
+    normalize_optional_start_page_url(default_start_page)
+        .unwrap_or_else(|| "https://duckduckgo.com".to_string())
 }
 
 fn map_search_provider_to_firefox_engine(provider: Option<&str>) -> Option<&'static str> {
@@ -1318,29 +1448,79 @@ fn prepare_profile_chromium_extensions(
     profile: &ProfileMetadata,
     profile_root: &Path,
 ) -> Result<(), String> {
-    let extensions_root = profile_root.join("policy").join("chromium-extensions");
-    if extensions_root.exists() {
-        fs::remove_dir_all(&extensions_root)
-            .map_err(|e| format!("clear chromium extensions dir: {e}"))?;
-    }
-    fs::create_dir_all(&extensions_root)
-        .map_err(|e| format!("create chromium extensions dir: {e}"))?;
+    profile_extensions::prepare_profile_extensions_for_launch(state.inner(), profile, profile_root)
+}
 
-    for item in collect_active_profile_extensions(state, profile.id, &profile.tags, profile.engine.clone())
-    {
-        let Some(package_path) =
-            extension_package_path_for_engine(&item, profile.engine.clone())
-        else {
-            continue;
-        };
-        let destination = extensions_root.join(sanitize_extension_dir_name(&item.id));
-        fs::create_dir_all(&destination)
-            .map_err(|e| format!("create chromium extension dir: {e}"))?;
-        unpack_extension_archive(Path::new(&package_path), &destination)?;
+#[cfg(test)]
+fn sync_chromium_extension_dir(package_path: &Path, destination: &Path) -> Result<(), String> {
+    let package_hash = extension_package_sha256(package_path)?;
+    if chromium_extension_dir_is_current(destination, &package_hash)? {
+        return Ok(());
     }
+    if destination.exists() {
+        fs::remove_dir_all(destination).map_err(|e| {
+            format!(
+                "clear chromium extension dir {}: {e}",
+                destination.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(destination).map_err(|e| {
+        format!(
+            "create chromium extension dir {}: {e}",
+            destination.display()
+        )
+    })?;
+    unpack_extension_archive(package_path, destination)?;
+    fs::write(
+        chromium_extension_hash_marker_path(destination),
+        package_hash.as_bytes(),
+    )
+    .map_err(|e| {
+        format!(
+            "write chromium extension hash marker {}: {e}",
+            destination.display()
+        )
+    })?;
     Ok(())
 }
 
+#[cfg(test)]
+fn chromium_extension_dir_is_current(
+    destination: &Path,
+    expected_hash: &str,
+) -> Result<bool, String> {
+    if !destination.is_dir() || !destination.join("manifest.json").is_file() {
+        return Ok(false);
+    }
+    let marker_path = chromium_extension_hash_marker_path(destination);
+    let marker = match fs::read_to_string(&marker_path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "read chromium extension hash marker {}: {error}",
+                marker_path.display()
+            ))
+        }
+    };
+    Ok(marker.trim() == expected_hash)
+}
+
+#[cfg(test)]
+fn chromium_extension_hash_marker_path(destination: &Path) -> PathBuf {
+    destination.join(".cerbena-package-sha256")
+}
+
+#[cfg(test)]
+fn extension_package_sha256(package_path: &Path) -> Result<String, String> {
+    let bytes = fs::read(package_path)
+        .map_err(|e| format!("read extension package {}: {e}", package_path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 fn collect_active_profile_extensions(
     state: &State<'_, AppState>,
     profile_id: Uuid,
@@ -1387,6 +1567,7 @@ fn collect_active_profile_extensions(
         .collect()
 }
 
+#[cfg(test)]
 fn extension_allowed_for_launch(
     item: &ExtensionLibraryItem,
     allow_system_access: bool,
@@ -1405,12 +1586,14 @@ fn extension_allowed_for_launch(
     true
 }
 
+#[cfg(test)]
 fn extension_has_tag(item: &ExtensionLibraryItem, expected: &str) -> bool {
     item.tags
         .iter()
         .any(|tag| tag.trim().eq_ignore_ascii_case(expected))
 }
 
+#[cfg(test)]
 fn extension_contains_marker(item: &ExtensionLibraryItem, marker: &str) -> bool {
     [
         Some(item.display_name.as_str()),
@@ -1423,6 +1606,7 @@ fn extension_contains_marker(item: &ExtensionLibraryItem, marker: &str) -> bool 
     .any(|value| value.to_ascii_lowercase().contains(marker))
 }
 
+#[cfg(test)]
 fn is_keepassxc_extension(item: &ExtensionLibraryItem) -> bool {
     extension_has_tag(item, "keepassxc")
         || extension_contains_marker(item, "keepassxc")
@@ -1434,6 +1618,7 @@ fn is_keepassxc_extension(item: &ExtensionLibraryItem) -> bool {
             .eq_ignore_ascii_case("keepassxc-browser@keepassxc.org")
 }
 
+#[cfg(test)]
 fn is_system_access_extension(item: &ExtensionLibraryItem) -> bool {
     is_keepassxc_extension(item)
         || extension_has_tag(item, "system-access")
@@ -1443,6 +1628,8 @@ fn is_system_access_extension(item: &ExtensionLibraryItem) -> bool {
         || extension_contains_marker(item, "native messaging")
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn extension_scope_matches_engine(engine_scope: &str, engine: Engine) -> bool {
     match engine_scope.trim().to_ascii_lowercase().as_str() {
         "firefox" => matches!(engine, Engine::Librewolf),
@@ -1451,7 +1638,12 @@ fn extension_scope_matches_engine(engine_scope: &str, engine: Engine) -> bool {
     }
 }
 
-fn extension_package_path_for_engine(item: &ExtensionLibraryItem, engine: Engine) -> Option<String> {
+#[cfg(test)]
+#[allow(dead_code)]
+fn extension_package_path_for_engine(
+    item: &ExtensionLibraryItem,
+    engine: Engine,
+) -> Option<String> {
     extension_variants(item)
         .into_iter()
         .find(|variant| extension_scope_matches_engine(&variant.engine_scope, engine.clone()))
@@ -1472,6 +1664,8 @@ fn extension_package_path_for_engine(item: &ExtensionLibraryItem, engine: Engine
         })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn extension_variants(item: &ExtensionLibraryItem) -> Vec<ExtensionPackageVariant> {
     if !item.package_variants.is_empty() {
         return item.package_variants.clone();
@@ -1488,6 +1682,8 @@ fn extension_variants(item: &ExtensionLibraryItem) -> Vec<ExtensionPackageVarian
     }]
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn sanitize_extension_dir_name(value: &str) -> String {
     let sanitized = value
         .chars()
@@ -1507,6 +1703,7 @@ fn sanitize_extension_dir_name(value: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn unpack_extension_archive(package_path: &Path, destination: &Path) -> Result<(), String> {
     let bytes = fs::read(package_path).map_err(|e| format!("read extension package: {e}"))?;
     let archive_bytes = if package_path
@@ -1548,6 +1745,7 @@ fn unpack_extension_archive(package_path: &Path, destination: &Path) -> Result<(
     Ok(())
 }
 
+#[cfg(test)]
 fn extract_crx_zip_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let signature = b"PK\x03\x04";
     let Some(offset) = bytes
@@ -1614,7 +1812,6 @@ fn apply_librewolf_website_filter(
         .flat_map(|domain| vec![format!("*://{domain}/*"), format!("*://*.{domain}/*")])
         .collect();
     let mut cert_paths: Vec<String> = Vec::new();
-    let mut extension_install_urls: Vec<String> = Vec::new();
     if let Ok(manager) = state.manager.lock() {
         if let Ok(profile) = manager.get_profile(*profile_id) {
             cert_paths.extend(prepare_librewolf_profile_certificates_for_state(
@@ -1622,25 +1819,15 @@ fn apply_librewolf_website_filter(
                 *profile_id,
                 &profile.tags,
             )?);
-            extension_install_urls.extend(resolve_profile_extension_install_urls(
-                state,
-                *profile_id,
-                &profile.tags,
-            ));
         }
     }
     cert_paths.sort();
     cert_paths.dedup();
-    extension_install_urls.sort();
-    extension_install_urls.dedup();
     let policy = serde_json::json!({
         "policies": {
             "WebsiteFilter": {
                 "Block": block_entries,
                 "Exceptions": []
-            },
-            "Extensions": {
-                "Install": extension_install_urls
             },
             "Certificates": {
                 "Install": cert_paths
@@ -1809,7 +1996,10 @@ fn ensure_engine_supports_isolated_certificates(
     Ok(())
 }
 
-fn reset_profile_runtime_workspace(state: &State<'_, AppState>, profile_id: Uuid) -> Result<(), String> {
+fn reset_profile_runtime_workspace(
+    state: &State<'_, AppState>,
+    profile_id: Uuid,
+) -> Result<(), String> {
     stop_profile_network_stack(&state.app_handle, profile_id);
     let _ = revoke_launch_session(state.inner(), profile_id, None);
     if let Ok(mut launched) = state.launched_processes.lock() {
@@ -1821,7 +2011,8 @@ fn reset_profile_runtime_workspace(state: &State<'_, AppState>, profile_id: Uuid
         return Ok(());
     }
     let keep = ["metadata.json", "lock_state.json"];
-    let entries = fs::read_dir(&profile_root).map_err(|e| format!("read profile workspace: {e}"))?;
+    let entries =
+        fs::read_dir(&profile_root).map_err(|e| format!("read profile workspace: {e}"))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("read profile workspace entry: {e}"))?;
         let name = entry.file_name().to_string_lossy().to_string();
@@ -1844,12 +2035,21 @@ fn reset_profile_runtime_workspace(state: &State<'_, AppState>, profile_id: Uuid
     Ok(())
 }
 
-fn purge_profile_related_state(state: &State<'_, AppState>, profile_id: Uuid) -> Result<(), String> {
+fn purge_profile_related_state(
+    state: &State<'_, AppState>,
+    profile_id: Uuid,
+) -> Result<(), String> {
     let profile_key = profile_id.to_string();
     let profile_root = state.profile_root.join(&profile_key);
     let user_data_dir = profile_root.join("engine-profile");
     if let Some(pid) = trusted_session_pid(state.inner(), profile_id)?
-        .or_else(|| state.launched_processes.lock().ok().and_then(|items| items.get(&profile_id).copied()))
+        .or_else(|| {
+            state
+                .launched_processes
+                .lock()
+                .ok()
+                .and_then(|items| items.get(&profile_id).copied())
+        })
         .or_else(|| find_profile_process_pid_for_dir(&user_data_dir))
     {
         terminate_process_tree(pid);
@@ -1886,7 +2086,11 @@ fn purge_profile_related_state(state: &State<'_, AppState>, profile_id: Uuid) ->
         }
         store.type_bindings.retain(|_, value| value != &profile_key);
         let path = state.link_routing_store_path(&state.app_handle)?;
-        crate::state::persist_link_routing_store_with_secret(&path, &state.sensitive_store_secret, &store)?;
+        crate::state::persist_link_routing_store_with_secret(
+            &path,
+            &state.sensitive_store_secret,
+            &store,
+        )?;
     }
     if let Ok(mut store) = state.network_sandbox_store.lock() {
         store.profiles.remove(&profile_key);
@@ -1895,10 +2099,15 @@ fn purge_profile_related_state(state: &State<'_, AppState>, profile_id: Uuid) ->
     }
     if let Ok(mut library) = state.extension_library.lock() {
         for item in library.items.values_mut() {
-            item.assigned_profile_ids.retain(|value| value != &profile_key);
+            item.assigned_profile_ids
+                .retain(|value| value != &profile_key);
         }
         let path = state.extension_library_path(&state.app_handle)?;
         crate::state::persist_extension_library_store(&path, &library)?;
+    }
+    if let Ok(mut store) = state.profile_extension_store.lock() {
+        store.profiles.remove(&profile_key);
+        crate::profile_extensions::persist_profile_extension_store(&state.profile_root, &store)?;
     }
     let mut security = load_global_security_record(state.inner())?;
     for cert in &mut security.certificates {
@@ -1906,30 +2115,6 @@ fn purge_profile_related_state(state: &State<'_, AppState>, profile_id: Uuid) ->
     }
     persist_global_security_record(state.inner(), &security)?;
     Ok(())
-}
-
-fn resolve_profile_extension_install_urls(
-    state: &State<'_, AppState>,
-    profile_id: Uuid,
-    tags: &[String],
-) -> Vec<String> {
-    collect_active_profile_extensions(state, profile_id, tags, Engine::Librewolf)
-        .into_iter()
-        .filter_map(|item| {
-            extension_package_path_for_engine(&item, Engine::Librewolf)
-                .as_deref()
-                .map(path_to_file_url)
-        })
-        .collect()
-}
-
-fn path_to_file_url(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    if normalized.starts_with("//") {
-        format!("file:{normalized}")
-    } else {
-        format!("file:///{normalized}")
-    }
 }
 
 fn global_startup_page(state: &State<'_, AppState>) -> Option<String> {
@@ -2729,18 +2914,23 @@ pub(crate) async fn ensure_engine_ready(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_firefox_search_plugin_xml, extension_allowed_for_launch,
-        firefox_search_engine_policy_entries, locked_app_policy_for_profile,
-        normalize_start_page_url, prepare_librewolf_profile_runtime,
+        build_firefox_search_plugin_xml, chromium_extension_dir_is_current,
+        chromium_extension_hash_marker_path, extension_allowed_for_launch,
+        extension_package_sha256, firefox_search_engine_policy_entries,
+        locked_app_policy_for_profile, normalize_start_page_url, prepare_librewolf_profile_runtime,
+        parse_nullable_string_field, sync_chromium_extension_dir, NullableStringField,
+        UpdateProfileRequest,
     };
-    use browser_fingerprint::IdentityPreset;
     use crate::state::ExtensionLibraryItem;
+    use browser_fingerprint::IdentityPreset;
     use browser_profile::{Engine, ProfileMetadata, ProfileState};
     use std::{
         fs,
+        io::Write,
         time::{SystemTime, UNIX_EPOCH},
     };
     use uuid::Uuid;
+    use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
     #[test]
     fn librewolf_profile_runtime_applies_homepage_and_search_provider() {
@@ -3016,6 +3206,53 @@ mod tests {
     }
 
     #[test]
+    fn update_profile_request_distinguishes_missing_and_null_start_page() {
+        let missing: UpdateProfileRequest = serde_json::from_value(serde_json::json!({
+            "profileId": Uuid::new_v4().to_string()
+        }))
+        .expect("deserialize missing start page");
+        assert!(matches!(missing.default_start_page, NullableStringField::Missing));
+        assert!(matches!(
+            missing.default_search_provider,
+            NullableStringField::Missing
+        ));
+
+        let cleared: UpdateProfileRequest = serde_json::from_value(serde_json::json!({
+            "profileId": Uuid::new_v4().to_string(),
+            "defaultStartPage": null,
+            "defaultSearchProvider": null
+        }))
+        .expect("deserialize null start page");
+        assert_eq!(
+            parse_nullable_string_field(cleared.default_start_page, "defaultStartPage")
+                .expect("parse null start page"),
+            Some(None)
+        );
+        assert_eq!(
+            parse_nullable_string_field(cleared.default_search_provider, "defaultSearchProvider")
+                .expect("parse null search"),
+            Some(None)
+        );
+
+        let value: UpdateProfileRequest = serde_json::from_value(serde_json::json!({
+            "profileId": Uuid::new_v4().to_string(),
+            "defaultStartPage": "example.com",
+            "defaultSearchProvider": "duckduckgo"
+        }))
+        .expect("deserialize value start page");
+        assert_eq!(
+            parse_nullable_string_field(value.default_start_page, "defaultStartPage")
+                .expect("parse value start page"),
+            Some(Some("example.com".to_string()))
+        );
+        assert_eq!(
+            parse_nullable_string_field(value.default_search_provider, "defaultSearchProvider")
+                .expect("parse value search"),
+            Some(Some("duckduckgo".to_string()))
+        );
+    }
+
+    #[test]
     fn locked_app_policy_uses_custom_single_page_start_host() {
         let profile = ProfileMetadata {
             id: Uuid::new_v4(),
@@ -3124,5 +3361,41 @@ mod tests {
             false,
             false
         ));
+    }
+
+    #[test]
+    fn chromium_extension_sync_reuses_current_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let package_path = temp.path().join("sample.zip");
+        let destination = temp.path().join("dark-reader");
+        write_test_extension_archive(&package_path, "1.0.0");
+
+        sync_chromium_extension_dir(&package_path, &destination).expect("initial sync");
+        let expected_hash = extension_package_sha256(&package_path).expect("package hash");
+        assert!(
+            chromium_extension_dir_is_current(&destination, &expected_hash).expect("dir current")
+        );
+
+        fs::write(destination.join("sentinel.txt"), b"keep").expect("write sentinel");
+        sync_chromium_extension_dir(&package_path, &destination).expect("repeat sync");
+
+        assert!(destination.join("sentinel.txt").is_file());
+        let marker = fs::read_to_string(chromium_extension_hash_marker_path(&destination))
+            .expect("read marker");
+        assert_eq!(marker.trim(), expected_hash);
+    }
+
+    fn write_test_extension_archive(path: &std::path::Path, version: &str) {
+        let file = fs::File::create(path).expect("create archive");
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        zip.start_file("manifest.json", options)
+            .expect("start manifest");
+        write!(
+            zip,
+            r#"{{"manifest_version":3,"name":"Sample","version":"{version}"}}"#
+        )
+        .expect("write manifest");
+        zip.finish().expect("finish archive");
     }
 }

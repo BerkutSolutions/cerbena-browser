@@ -10,11 +10,11 @@ use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
-use crate::profile_runtime_logs::append_profile_log;
+use crate::certificate_runtime::clear_librewolf_profile_certificates;
 use crate::launch_sessions::revoke_launch_session;
 use crate::network_sandbox_lifecycle::stop_profile_network_stack;
 use crate::panic_frame::close_panic_frame;
-use crate::certificate_runtime::clear_librewolf_profile_certificates;
+use crate::profile_runtime_logs::append_profile_log;
 use crate::state::AppState;
 
 pub fn track_profile_process(
@@ -29,6 +29,19 @@ pub fn track_profile_process(
         let mut missing_profile_ticks = 0u8;
         loop {
             if let Some(actual_pid) = find_profile_process_pid(&profile_data_dir) {
+                let candidates = describe_profile_process_candidates(&profile_data_dir);
+                if candidates.len() > 1
+                    && candidates.iter().any(|value| {
+                        value.contains("librewolf")
+                            || value.contains("firefox")
+                            || value.contains("private_browsing")
+                    })
+                {
+                    eprintln!(
+                        "[process-tracking] profile={} candidate_set={:?}",
+                        profile_id, candidates
+                    );
+                }
                 missing_profile_ticks = 0;
                 if actual_pid != tracked_pid {
                     eprintln!(
@@ -42,7 +55,8 @@ pub fn track_profile_process(
                     }
                 }
             } else {
-                if let Some(descendant_pid) = find_session_descendant_browser_pid(&known_session_pids)
+                if let Some(descendant_pid) =
+                    find_session_descendant_browser_pid(&known_session_pids)
                 {
                     missing_profile_ticks = 0;
                     if descendant_pid != tracked_pid {
@@ -231,6 +245,22 @@ pub fn find_profile_main_window_pid_for_dir(profile_data_dir: &Path) -> Option<u
     find_profile_process_pid(profile_data_dir)
 }
 
+pub fn describe_profile_process_candidates(profile_data_dir: &Path) -> Vec<String> {
+    let target = profile_data_dir.to_string_lossy().to_lowercase();
+    let system = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    matching_profile_processes(&system, &target)
+        .into_iter()
+        .map(|candidate| {
+            format!(
+                "pid={} name={} cmd={}",
+                candidate.pid, candidate.name, candidate.command_line
+            )
+        })
+        .collect()
+}
+
 pub fn find_profile_process_pids_for_dir(profile_data_dir: &Path) -> Vec<u32> {
     let target = profile_data_dir.to_string_lossy().to_lowercase();
     let system = System::new_with_specifics(
@@ -245,6 +275,8 @@ pub fn find_profile_process_pids_for_dir(profile_data_dir: &Path) -> Vec<u32> {
 #[derive(Debug, Clone)]
 struct ProfileProcessCandidate {
     pid: u32,
+    name: String,
+    command_line: String,
     command_line_length: usize,
 }
 
@@ -280,6 +312,8 @@ fn matching_profile_processes(system: &System, target: &str) -> Vec<ProfileProce
             if firefox_profile_match || chromium_profile_match {
                 Some(ProfileProcessCandidate {
                     pid: process.pid().as_u32(),
+                    name,
+                    command_line: cmdline.clone(),
                     command_line_length: cmdline.len(),
                 })
             } else {
@@ -303,7 +337,10 @@ fn find_session_descendant_browser_pid(roots: &[u32]) -> Option<u32> {
     let system = System::new_with_specifics(
         RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
     );
-    let root_set = roots.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let root_set = roots
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
     let mut descendants = system
         .processes()
         .values()

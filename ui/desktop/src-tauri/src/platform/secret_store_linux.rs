@@ -14,11 +14,26 @@ pub fn derive_app_secret_material(
     hasher.update(b"|");
     hasher.update(current_exe.to_string_lossy().as_bytes());
     hasher.update(b"|");
-    hasher.update(std::env::var("USERNAME").unwrap_or_default().trim().as_bytes());
+    hasher.update(
+        std::env::var("USERNAME")
+            .unwrap_or_default()
+            .trim()
+            .as_bytes(),
+    );
     hasher.update(b"|");
-    hasher.update(std::env::var("USERDOMAIN").unwrap_or_default().trim().as_bytes());
+    hasher.update(
+        std::env::var("USERDOMAIN")
+            .unwrap_or_default()
+            .trim()
+            .as_bytes(),
+    );
     hasher.update(b"|");
-    hasher.update(std::env::var("COMPUTERNAME").unwrap_or_default().trim().as_bytes());
+    hasher.update(
+        std::env::var("COMPUTERNAME")
+            .unwrap_or_default()
+            .trim()
+            .as_bytes(),
+    );
     hasher.update(b"|");
     hasher.update(
         std::env::var("USERPROFILE")

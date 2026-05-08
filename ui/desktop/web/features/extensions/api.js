@@ -4,6 +4,14 @@ export async function listExtensionLibrary() {
   return callCommand("list_extension_library");
 }
 
+export async function listProfileExtensions(profileId) {
+  return callCommand("list_extensions", { profileId });
+}
+
+export async function saveProfileExtensions(profileId, items) {
+  return callCommand("save_profile_extensions", { request: { profileId, items } });
+}
+
 export async function importExtensionLibraryItem(request) {
   return callCommand("import_extension_library_item", { request });
 }

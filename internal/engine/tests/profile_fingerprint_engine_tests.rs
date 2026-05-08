@@ -2,7 +2,7 @@ use std::fs;
 
 use browser_engine::{
     contract::{EngineAdapter, LaunchRequest},
-    LibrewolfAdapter, ChromiumAdapter,
+    ChromiumAdapter, LibrewolfAdapter,
 };
 use browser_fingerprint::{
     generate_auto_preset, validate_consistency, validate_identity_preset, AutoPlatform,

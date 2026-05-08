@@ -156,7 +156,12 @@ pub async fn install_runtime_tool(
     let status = collect_runtime_tools_status(&state)?
         .into_iter()
         .find(|item| item.id == tool.id())
-        .ok_or_else(|| format!("runtime tool status was not found after install: {}", tool.id()))?;
+        .ok_or_else(|| {
+            format!(
+                "runtime tool status was not found after install: {}",
+                tool.id()
+            )
+        })?;
     Ok(ok(correlation_id, status))
 }
 
@@ -190,7 +195,11 @@ fn linux_browser_sandbox_view() -> RuntimeToolStatusView {
             "missing".to_string()
         },
         version: None,
-        action: if ready { "none".to_string() } else { "guide".to_string() },
+        action: if ready {
+            "none".to_string()
+        } else {
+            "guide".to_string()
+        },
         detail_key: Some(
             if ready {
                 "settings.tools.detail.linuxBrowserSandboxReady"
@@ -267,7 +276,8 @@ fn docker_view(docker: &DockerStatus) -> RuntimeToolStatusView {
 }
 
 fn engine_view(state: &AppState, engine: EngineKind) -> Result<RuntimeToolStatusView, String> {
-    let runtime = EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
+    let runtime =
+        EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
     let installation = runtime.installed(engine).map_err(|e| e.to_string())?;
     Ok(RuntimeToolStatusView {
         id: engine.as_key().to_string(),
@@ -283,7 +293,11 @@ fn engine_view(state: &AppState, engine: EngineKind) -> Result<RuntimeToolStatus
             "missing".to_string()
         },
         version: installation.map(|item| item.version),
-        action: if runtime.installed(engine).map_err(|e| e.to_string())?.is_some() {
+        action: if runtime
+            .installed(engine)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
             "none".to_string()
         } else {
             "internal".to_string()
@@ -462,7 +476,9 @@ fn parse_docker_client_version(text: &str) -> Option<String> {
 }
 
 fn first_semver_like_token(text: &str) -> Option<String> {
-    for token in text.split(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';' || ch == '(' || ch == ')') {
+    for token in text
+        .split(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';' || ch == '(' || ch == ')')
+    {
         let trimmed =
             token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '.' && ch != '-');
         if looks_like_version(trimmed) {

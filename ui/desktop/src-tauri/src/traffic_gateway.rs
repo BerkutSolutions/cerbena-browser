@@ -538,7 +538,7 @@ fn bridge_streams(client: &mut TcpStream, upstream: TcpStream) -> std::io::Resul
     let mut client_writer = client.try_clone()?;
     let upstream_to_client = thread::spawn(move || {
         if let Err(error) = std::io::copy(&mut upstream_reader, &mut client_writer) {
-            eprintln!("[traffic-gateway] upstream->client bridge failed: {error}");
+            log_bridge_copy_error("upstream->client", &error);
         }
         let _ = client_writer.shutdown(Shutdown::Write);
     });
@@ -546,11 +546,29 @@ fn bridge_streams(client: &mut TcpStream, upstream: TcpStream) -> std::io::Resul
     let mut upstream_writer = upstream;
     let mut client_reader = client.try_clone()?;
     if let Err(error) = std::io::copy(&mut client_reader, &mut upstream_writer) {
-        eprintln!("[traffic-gateway] client->upstream bridge failed: {error}");
+        log_bridge_copy_error("client->upstream", &error);
     }
     let _ = upstream_writer.shutdown(Shutdown::Write);
     let _ = upstream_to_client.join();
     Ok(())
+}
+
+fn log_bridge_copy_error(direction: &str, error: &std::io::Error) {
+    if is_expected_bridge_disconnect(error) {
+        return;
+    }
+    eprintln!("[traffic-gateway] {direction} bridge failed: {error}");
+}
+
+fn is_expected_bridge_disconnect(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::NotConnected
+    ) || matches!(error.raw_os_error(), Some(10053 | 10054))
 }
 
 fn read_proxy_response_head(upstream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
@@ -1499,9 +1517,9 @@ fn now_epoch_ms() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_traffic_log, service_matches_host};
+    use super::{is_expected_bridge_disconnect, load_traffic_log, service_matches_host};
     use std::{
-        fs,
+        fs, io,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1552,5 +1570,25 @@ mod tests {
         if let Some(backup) = corrupt_backup {
             let _ = fs::remove_file(backup);
         }
+    }
+
+    #[test]
+    fn expected_bridge_disconnects_are_suppressed() {
+        assert!(is_expected_bridge_disconnect(&io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "reset"
+        )));
+        assert!(is_expected_bridge_disconnect(&io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "broken pipe"
+        )));
+    }
+
+    #[test]
+    fn unexpected_bridge_errors_are_not_suppressed() {
+        assert!(!is_expected_bridge_disconnect(&io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "denied"
+        )));
     }
 }

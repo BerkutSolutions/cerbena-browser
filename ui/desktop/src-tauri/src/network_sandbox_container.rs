@@ -128,7 +128,7 @@ pub fn remove_profile_container_environment(_app_handle: &AppHandle, profile_id:
     if let Ok(output) = remove {
         if !output.status.success() {
             let message = command_error_message(&output);
-            if !message.to_lowercase().contains("no such network") {
+            if !container_network_missing_message(&message) {
                 eprintln!(
                     "[network-sandbox] remove container network {} failed: {}",
                     network_name, message
@@ -205,6 +205,12 @@ fn command_error_message(output: &std::process::Output) -> String {
         return stdout;
     }
     format!("exit status {}", output.status)
+}
+
+fn container_network_missing_message(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized.contains("no such network")
+        || (normalized.contains("network") && normalized.contains("not found"))
 }
 
 #[derive(Debug, Clone)]
@@ -311,5 +317,18 @@ Client:
 permission denied while trying to connect to the docker API at npipe:////./pipe/docker_engine
 "#;
         assert!(parse_docker_version_output(sample).is_none());
+    }
+
+    #[test]
+    fn recognizes_missing_network_messages() {
+        assert!(container_network_missing_message(
+            "Error response from daemon: network cerbena-profile-test not found"
+        ));
+        assert!(container_network_missing_message(
+            "Error response from daemon: No such network: cerbena-profile-test"
+        ));
+        assert!(!container_network_missing_message(
+            "Error response from daemon: permission denied"
+        ));
     }
 }

@@ -1,6 +1,7 @@
 use crate::{
     envelope::{ok, UiEnvelope},
     platform::dialogs,
+    profile_extensions::{self, ProfileExtensionSelection},
     state::{
         persist_extension_library_store, AppState, ExtensionLibraryItem, ExtensionLibraryStore,
         ExtensionPackageVariant,
@@ -172,11 +173,11 @@ pub struct EvaluateExtensionPolicyRequest {
     pub extension_override_allowed: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProfileExtensionList {
-    profile_id: String,
-    extensions: Vec<ExtensionLibraryItem>,
+pub struct SaveProfileExtensionsRequest {
+    pub profile_id: String,
+    pub items: Vec<ProfileExtensionSelection>,
 }
 
 #[tauri::command]
@@ -185,26 +186,18 @@ pub fn list_extensions(
     profile_id: String,
     correlation_id: String,
 ) -> Result<UiEnvelope<String>, String> {
-    let library = state
-        .extension_library
-        .lock()
-        .map_err(|_| "extension library lock poisoned".to_string())?;
-    let extensions = library
-        .items
-        .values()
-        .filter(|item| item.assigned_profile_ids.iter().any(|id| id == &profile_id))
-        .cloned()
-        .map(|mut item| {
-            sync_extension_item_legacy_fields(&mut item);
-            item
-        })
-        .collect::<Vec<_>>();
-    let json = serde_json::to_string_pretty(&ProfileExtensionList {
-        profile_id,
-        extensions,
-    })
-    .map_err(|e| e.to_string())?;
+    let json = profile_extensions::list_profile_extensions_json(state.inner(), &profile_id)?;
     Ok(ok(correlation_id, json))
+}
+
+#[tauri::command]
+pub fn save_profile_extensions(
+    state: State<AppState>,
+    request: SaveProfileExtensionsRequest,
+    correlation_id: String,
+) -> Result<UiEnvelope<bool>, String> {
+    profile_extensions::save_profile_extensions(state.inner(), &request.profile_id, request.items)?;
+    Ok(ok(correlation_id, true))
 }
 
 #[tauri::command]
@@ -212,10 +205,15 @@ pub fn list_extension_library(
     state: State<AppState>,
     correlation_id: String,
 ) -> Result<UiEnvelope<String>, String> {
-    let library = state
+    let mut library = state
         .extension_library
         .lock()
         .map_err(|_| "extension library lock poisoned".to_string())?;
+    let store = state
+        .profile_extension_store
+        .lock()
+        .map_err(|_| "profile extension store lock poisoned".to_string())?;
+    profile_extensions::sync_library_assignments_from_profile_store(&mut library, &store);
     let mut normalized = library.clone();
     for item in normalized.items.values_mut() {
         sync_extension_item_legacy_fields(item);
@@ -230,7 +228,17 @@ pub fn import_extension_library_item(
     request: ImportExtensionLibraryRequest,
     correlation_id: String,
 ) -> Result<UiEnvelope<String>, String> {
+    let assigned_profile_ids = request.assigned_profile_ids.clone();
     let imported_ids = import_extension_library_item_impl(&state, request)?;
+    for extension_id in &imported_ids {
+        if !assigned_profile_ids.is_empty() {
+            profile_extensions::set_library_item_profile_assignments(
+                state.inner(),
+                extension_id,
+                &assigned_profile_ids,
+            )?;
+        }
+    }
     Ok(ok(
         correlation_id,
         if imported_ids.len() == 1 {
@@ -352,17 +360,21 @@ pub fn set_extension_profiles(
     request: SetExtensionProfilesRequest,
     correlation_id: String,
 ) -> Result<UiEnvelope<bool>, String> {
-    let mut library = state
+    let library = state
         .extension_library
         .lock()
         .map_err(|_| "extension library lock poisoned".to_string())?;
     let item = library
         .items
-        .get_mut(&request.extension_id)
+        .get(&request.extension_id)
         .ok_or_else(|| "extension not found".to_string())?;
     validate_assigned_profiles(&state, &item.engine_scope, &request.assigned_profile_ids)?;
-    item.assigned_profile_ids = request.assigned_profile_ids;
-    persist_library(&state, &library)?;
+    drop(library);
+    profile_extensions::set_library_item_profile_assignments(
+        state.inner(),
+        &request.extension_id,
+        &request.assigned_profile_ids,
+    )?;
     Ok(ok(correlation_id, true))
 }
 
@@ -426,6 +438,7 @@ pub fn remove_extension_library_item(
     };
     persist_library(&state, &library)?;
     if let Some(item) = removed {
+        profile_extensions::remove_library_item_from_profiles(state.inner(), &item.id)?;
         for variant in normalized_extension_variants(&item) {
             delete_extension_package(variant.package_path.as_deref());
         }
@@ -533,7 +546,10 @@ fn import_extension_library_item_impl(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let logo_url_override = logo_url_override.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    let logo_url_override = logo_url_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     for package_metadata in package_metadata_batch {
         let seed = display_name_override
@@ -547,15 +563,11 @@ fn import_extension_library_item_impl(
             .clone()
             .filter(|_| is_single_import)
             .or(package_metadata.display_name.clone())
-            .unwrap_or_else(|| {
-                infer_extension_name(normalized_store_url, &request.source_value)
-            });
+            .unwrap_or_else(|| infer_extension_name(normalized_store_url, &request.source_value));
         let inferred_engine = engine_scope_override
             .clone()
             .or(package_metadata.engine_scope.clone())
-            .unwrap_or_else(|| {
-                infer_engine_scope(normalized_store_url, &request.source_value)
-            });
+            .unwrap_or_else(|| infer_engine_scope(normalized_store_url, &request.source_value));
         validate_assigned_profiles(state, &inferred_engine, &request.assigned_profile_ids)?;
         let merge_target_id =
             find_merge_target_extension_id(&library, &inferred_name, &inferred_engine);
@@ -589,7 +601,13 @@ fn import_extension_library_item_impl(
                 .items
                 .get_mut(&existing_id)
                 .ok_or_else(|| "extension not found during merge".to_string())?;
-            if !display_name_override.as_deref().unwrap_or("").trim().is_empty() || item.display_name.trim().is_empty() {
+            if !display_name_override
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+                || item.display_name.trim().is_empty()
+            {
                 item.display_name = inferred_name.clone();
             }
             item.tags = normalize_tags([item.tags.clone(), normalized_tags.clone()].concat());
@@ -600,11 +618,15 @@ fn import_extension_library_item_impl(
                 merged.dedup();
                 merged
             };
-            item.auto_update_enabled = request.auto_update_enabled.unwrap_or(item.auto_update_enabled);
-            item.preserve_on_panic_wipe =
-                request.preserve_on_panic_wipe.unwrap_or(item.preserve_on_panic_wipe);
-            item.protect_data_from_panic_wipe =
-                request.protect_data_from_panic_wipe.unwrap_or(item.protect_data_from_panic_wipe);
+            item.auto_update_enabled = request
+                .auto_update_enabled
+                .unwrap_or(item.auto_update_enabled);
+            item.preserve_on_panic_wipe = request
+                .preserve_on_panic_wipe
+                .unwrap_or(item.preserve_on_panic_wipe);
+            item.protect_data_from_panic_wipe = request
+                .protect_data_from_panic_wipe
+                .unwrap_or(item.protect_data_from_panic_wipe);
             let mut variants = normalized_extension_variants(item);
             variants.retain(|existing| {
                 normalize_engine_scope(&existing.engine_scope)
@@ -768,43 +790,48 @@ fn export_extension_archive_folder(
         let variant_transfers = normalized_extension_variants(item)
             .into_iter()
             .map(|variant| {
-                let package_relative_path = variant.package_path.as_deref().and_then(|package_path| {
-                    let source_path = PathBuf::from(package_path);
-                    if !source_path.is_file() {
-                        errors.push(format!("{}: package file is missing", item.display_name));
-                        return None;
-                    }
-                    let file_name = variant
-                        .package_file_name
-                        .clone()
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or_else(|| {
-                            source_path
-                                .file_name()
-                                .and_then(|value| value.to_str())
-                                .unwrap_or("extension.zip")
-                                .to_string()
-                        });
-                    let safe_name = sanitize_file_name(&file_name);
-                    let unique_name = unique_archive_file_name(
-                        &packages_dir,
-                        &format!("{}-{}", item.id, normalize_engine_scope(&variant.engine_scope)),
-                        &safe_name,
-                    );
-                    let dest_path = packages_dir.join(&unique_name);
-                    match fs::copy(&source_path, &dest_path) {
-                        Ok(_) => Some(format!(
-                            "{EXTENSION_ARCHIVE_PACKAGES_DIR_NAME}/{unique_name}"
-                        )),
-                        Err(error) => {
-                            errors.push(format!(
-                                "{}: copy package failed: {error}",
-                                item.display_name
-                            ));
-                            None
+                let package_relative_path =
+                    variant.package_path.as_deref().and_then(|package_path| {
+                        let source_path = PathBuf::from(package_path);
+                        if !source_path.is_file() {
+                            errors.push(format!("{}: package file is missing", item.display_name));
+                            return None;
                         }
-                    }
-                });
+                        let file_name = variant
+                            .package_file_name
+                            .clone()
+                            .filter(|value| !value.trim().is_empty())
+                            .unwrap_or_else(|| {
+                                source_path
+                                    .file_name()
+                                    .and_then(|value| value.to_str())
+                                    .unwrap_or("extension.zip")
+                                    .to_string()
+                            });
+                        let safe_name = sanitize_file_name(&file_name);
+                        let unique_name = unique_archive_file_name(
+                            &packages_dir,
+                            &format!(
+                                "{}-{}",
+                                item.id,
+                                normalize_engine_scope(&variant.engine_scope)
+                            ),
+                            &safe_name,
+                        );
+                        let dest_path = packages_dir.join(&unique_name);
+                        match fs::copy(&source_path, &dest_path) {
+                            Ok(_) => Some(format!(
+                                "{EXTENSION_ARCHIVE_PACKAGES_DIR_NAME}/{unique_name}"
+                            )),
+                            Err(error) => {
+                                errors.push(format!(
+                                    "{}: copy package failed: {error}",
+                                    item.display_name
+                                ));
+                                None
+                            }
+                        }
+                    });
                 ExtensionLibraryTransferVariant {
                     engine_scope: normalize_engine_scope(&variant.engine_scope),
                     version: variant.version,
@@ -1198,7 +1225,10 @@ fn refresh_extension_library_item(state: &AppState, extension_id: &str) -> Resul
                     .unwrap_or_else(|| variant.version.clone()),
                 source_kind: variant.source_kind.clone(),
                 source_value: variant.source_value.clone(),
-                logo_url: metadata.logo_url.clone().or_else(|| variant.logo_url.clone()),
+                logo_url: metadata
+                    .logo_url
+                    .clone()
+                    .or_else(|| variant.logo_url.clone()),
                 store_url: Some(store_url.to_string()),
                 package_path: package_path.or_else(|| variant.package_path.clone()),
                 package_file_name: package_file_name.or_else(|| variant.package_file_name.clone()),
@@ -1407,7 +1437,12 @@ fn primary_extension_variant(item: &ExtensionLibraryItem) -> Option<ExtensionPac
                 .find(|variant| normalize_engine_scope(&variant.engine_scope) == "chromium")
                 .cloned()
         })
-        .or_else(|| variants.iter().find(|variant| normalize_engine_scope(&variant.engine_scope) == "firefox").cloned())
+        .or_else(|| {
+            variants
+                .iter()
+                .find(|variant| normalize_engine_scope(&variant.engine_scope) == "firefox")
+                .cloned()
+        })
         .or_else(|| variants.into_iter().next())
 }
 
@@ -1585,7 +1620,10 @@ fn derive_extension_metadata_batch(
         .map(|metadata| vec![metadata]);
     }
 
-    if matches!(lower_kind.as_str(), "local_folder" | "local_folder_picker" | "dropped_folder") {
+    if matches!(
+        lower_kind.as_str(),
+        "local_folder" | "local_folder_picker" | "dropped_folder"
+    ) {
         let folder = if lower_kind == "local_folder_picker" {
             PathBuf::from(pick_folder()?)
         } else {
@@ -1815,8 +1853,8 @@ fn discover_extension_directory_roots(path: &Path) -> Result<Vec<PathBuf>, Strin
         let entries = fs::read_dir(&current)
             .map_err(|error| format!("read extension directory {}: {error}", current.display()))?;
         for entry in entries {
-            let entry = entry
-                .map_err(|error| format!("read extension directory entry: {error}"))?;
+            let entry =
+                entry.map_err(|error| format!("read extension directory entry: {error}"))?;
             let child = entry.path();
             if !child.is_dir() {
                 continue;
@@ -1877,8 +1915,8 @@ fn write_directory_to_zip(
         writer
             .start_file(relative, options)
             .map_err(|error| format!("write extension file header: {error}"))?;
-        let bytes =
-            fs::read(&path).map_err(|error| format!("read extension file {}: {error}", path.display()))?;
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("read extension file {}: {error}", path.display()))?;
         writer
             .write_all(&bytes)
             .map_err(|error| format!("write extension file {}: {error}", path.display()))?;
@@ -2505,12 +2543,16 @@ mod tests {
         fs::create_dir_all(temp.path().join("icons")).expect("create icons");
         fs::write(temp.path().join("icons").join("icon.png"), b"png").expect("write icon");
 
-        let batch = read_extension_directory_metadata_batch(temp.path(), None).expect("read folder");
+        let batch =
+            read_extension_directory_metadata_batch(temp.path(), None).expect("read folder");
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0].display_name.as_deref(), Some("Folder Fox"));
         assert_eq!(batch[0].engine_scope.as_deref(), Some("firefox"));
         assert_eq!(batch[0].package_extension.as_deref(), Some("xpi"));
-        assert!(batch[0].package_bytes.as_ref().is_some_and(|value| !value.is_empty()));
+        assert!(batch[0]
+            .package_bytes
+            .as_ref()
+            .is_some_and(|value| !value.is_empty()));
     }
 
     #[test]
@@ -2531,7 +2573,8 @@ mod tests {
         )
         .expect("write beta manifest");
 
-        let batch = read_extension_directory_metadata_batch(temp.path(), None).expect("read nested folders");
+        let batch = read_extension_directory_metadata_batch(temp.path(), None)
+            .expect("read nested folders");
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0].display_name.as_deref(), Some("Alpha Dir"));
         assert_eq!(batch[0].package_extension.as_deref(), Some("zip"));

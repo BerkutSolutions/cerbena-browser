@@ -1,15 +1,13 @@
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::{
-    launcher_commands::load_global_security_record,
-    platform::certificates,
-    state::AppState,
+    launcher_commands::load_global_security_record, platform::certificates, state::AppState,
 };
 
 const LIBREWOLF_PROFILE_CERTIFICATES_DIR: &str = "librewolf-certificates";
@@ -26,8 +24,12 @@ pub fn clear_librewolf_profile_certificates_for_state(
 ) -> Result<(), String> {
     let root = profile_certificate_runtime_dir(state, profile_id);
     if root.exists() {
-        fs::remove_dir_all(&root)
-            .map_err(|error| format!("remove LibreWolf profile certificates {}: {error}", root.display()))?;
+        fs::remove_dir_all(&root).map_err(|error| {
+            format!(
+                "remove LibreWolf profile certificates {}: {error}",
+                root.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -45,11 +47,19 @@ pub fn prepare_librewolf_profile_certificates_for_state(
 
     let runtime_dir = profile_certificate_runtime_dir(state, profile_id);
     if runtime_dir.exists() {
-        fs::remove_dir_all(&runtime_dir)
-            .map_err(|error| format!("reset LibreWolf certificate runtime {}: {error}", runtime_dir.display()))?;
+        fs::remove_dir_all(&runtime_dir).map_err(|error| {
+            format!(
+                "reset LibreWolf certificate runtime {}: {error}",
+                runtime_dir.display()
+            )
+        })?;
     }
-    fs::create_dir_all(&runtime_dir)
-        .map_err(|error| format!("create LibreWolf certificate runtime {}: {error}", runtime_dir.display()))?;
+    fs::create_dir_all(&runtime_dir).map_err(|error| {
+        format!(
+            "create LibreWolf certificate runtime {}: {error}",
+            runtime_dir.display()
+        )
+    })?;
 
     let mut materialized = Vec::new();
     for source_path in certificate_paths {
@@ -117,13 +127,21 @@ fn validate_certificate_source(path: &Path) -> Result<(), String> {
         return Err(format!("certificate file not found: {}", path.display()));
     }
     if !path.is_file() {
-        return Err(format!("certificate path is not a file: {}", path.display()));
+        return Err(format!(
+            "certificate path is not a file: {}",
+            path.display()
+        ));
     }
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
-        .ok_or_else(|| format!("certificate file has no supported extension: {}", path.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "certificate file has no supported extension: {}",
+                path.display()
+            )
+        })?;
     if !SUPPORTED_CERTIFICATE_EXTENSIONS
         .iter()
         .any(|expected| extension == *expected)
@@ -133,13 +151,18 @@ fn validate_certificate_source(path: &Path) -> Result<(), String> {
             path.display()
         ));
     }
-    let bytes = fs::read(path).map_err(|error| format!("read certificate {}: {error}", path.display()))?;
+    let bytes =
+        fs::read(path).map_err(|error| format!("read certificate {}: {error}", path.display()))?;
     if bytes.is_empty() {
         return Err(format!("certificate file is empty: {}", path.display()));
     }
     if extension == "pem" {
-        let text = String::from_utf8(bytes)
-            .map_err(|_| format!("PEM certificate is not valid UTF-8 text: {}", path.display()))?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            format!(
+                "PEM certificate is not valid UTF-8 text: {}",
+                path.display()
+            )
+        })?;
         if !text.contains("-----BEGIN CERTIFICATE-----") {
             return Err(format!(
                 "PEM certificate does not contain BEGIN CERTIFICATE marker: {}",
@@ -151,7 +174,8 @@ fn validate_certificate_source(path: &Path) -> Result<(), String> {
 }
 
 fn materialized_certificate_name(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|error| format!("read certificate {}: {error}", path.display()))?;
+    let bytes =
+        fs::read(path).map_err(|error| format!("read certificate {}: {error}", path.display()))?;
     let digest = Sha256::digest(&bytes);
     let short_hash = format!("{:x}", digest);
     let extension = path
@@ -169,7 +193,8 @@ fn materialized_certificate_name(path: &Path) -> Result<String, String> {
 }
 
 fn sanitize_certificate_name(value: &str) -> String {
-    value.chars()
+    value
+        .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
                 ch
@@ -202,15 +227,20 @@ pub fn display_certificate_issuer(
 
 #[cfg(test)]
 mod tests {
-    use super::{materialized_certificate_name, sanitize_certificate_name, validate_certificate_source};
+    use super::{
+        materialized_certificate_name, sanitize_certificate_name, validate_certificate_source,
+    };
     use std::fs;
 
     #[test]
     fn validates_pem_certificate_marker() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("cert.pem");
-        fs::write(&path, "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n")
-            .expect("write pem");
+        fs::write(
+            &path,
+            "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n",
+        )
+        .expect("write pem");
         validate_certificate_source(&path).expect("validate pem");
     }
 
@@ -218,8 +248,11 @@ mod tests {
     fn rejects_unknown_certificate_extension() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("cert.txt");
-        fs::write(&path, "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n")
-            .expect("write cert");
+        fs::write(
+            &path,
+            "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n",
+        )
+        .expect("write cert");
         assert!(validate_certificate_source(&path).is_err());
     }
 

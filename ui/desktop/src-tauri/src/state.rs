@@ -25,6 +25,10 @@ use crate::network_sandbox::{
     load_network_sandbox_store, migrate_network_sandbox_store, NetworkSandboxStore,
 };
 use crate::network_sandbox_lifecycle::NetworkSandboxLifecycleState;
+use crate::profile_extensions::{
+    load_profile_extension_store, migrate_legacy_profile_extensions,
+    sync_library_assignments_from_profile_store, ProfileExtensionStore,
+};
 use crate::profile_runtime_logs::{load_profile_log_store, ProfileLogStore};
 use crate::route_runtime::RouteRuntimeState;
 use crate::sensitive_store::derive_app_secret_material;
@@ -202,6 +206,7 @@ pub struct AppState {
     pub link_routing_store: Mutex<LinkRoutingStore>,
     pub launch_session_store: Mutex<LaunchSessionStore>,
     pub extension_library: Mutex<ExtensionLibraryStore>,
+    pub profile_extension_store: Mutex<ProfileExtensionStore>,
     pub snapshot_manager: Mutex<SnapshotManager>,
     pub home_service: Mutex<HomePageService>,
     pub panic_service: Mutex<PanicWipeService>,
@@ -254,7 +259,7 @@ impl AppState {
         ensure_default_profiles(&manager, &hidden_default_profiles.names)?;
         let identity_store = load_identity_store(&app_data.join("identity_store.json"))?;
         let network_store = load_network_store(&app_data.join("network_store.json"))?;
-        let extension_library =
+        let mut extension_library =
             load_extension_library_store(&app_data.join("extension_library.json"))?;
         let sync_store =
             load_sync_store(&app_data.join("sync_store.json"), &sensitive_store_secret)?;
@@ -279,10 +284,32 @@ impl AppState {
         let traffic_rules = load_rules_store(&app_data.join("traffic_gateway_rules.json"))?;
         let traffic_log = load_traffic_log(&app_data.join("traffic_gateway_log.json"))?;
         let profile_logs = load_profile_log_store(&app_data.join("profile_runtime_logs.json"))?;
+        let profiles = manager.list_profiles().map_err(|e| e.to_string())?;
+        let mut profile_extension_store = load_profile_extension_store(&profile_root, &profiles)?;
+        let profile_extensions_changed = migrate_legacy_profile_extensions(
+            &profile_root,
+            &profiles,
+            &mut profile_extension_store,
+            &mut extension_library,
+        )?;
+        sync_library_assignments_from_profile_store(
+            &mut extension_library,
+            &profile_extension_store,
+        );
         if sandbox_changed {
             persist_network_sandbox_store(
                 &app_data.join("network_sandbox_store.json"),
                 &network_sandbox_store,
+            )?;
+        }
+        if profile_extensions_changed {
+            crate::profile_extensions::persist_profile_extension_store(
+                &profile_root,
+                &profile_extension_store,
+            )?;
+            persist_extension_library_store(
+                &app_data.join("extension_library.json"),
+                &extension_library,
             )?;
         }
 
@@ -300,6 +327,7 @@ impl AppState {
             link_routing_store: Mutex::new(link_routing_store),
             launch_session_store: Mutex::new(launch_session_store),
             extension_library: Mutex::new(extension_library),
+            profile_extension_store: Mutex::new(profile_extension_store),
             snapshot_manager: Mutex::new(SnapshotManager::default()),
             home_service: Mutex::new(HomePageService),
             panic_service: Mutex::new(PanicWipeService),
@@ -464,13 +492,14 @@ fn load_app_update_store(path: &PathBuf) -> Result<AppUpdateStore, String> {
     serde_json::from_slice(&raw).map_err(|e| format!("parse app update store: {e}"))
 }
 
-fn load_hidden_default_profiles_store(path: &PathBuf) -> Result<HiddenDefaultProfilesStore, String> {
+fn load_hidden_default_profiles_store(
+    path: &PathBuf,
+) -> Result<HiddenDefaultProfilesStore, String> {
     if !path.exists() {
         return Ok(HiddenDefaultProfilesStore::default());
     }
     let raw = fs::read(path).map_err(|e| format!("read hidden default profiles store: {e}"))?;
-    serde_json::from_slice(&raw)
-        .map_err(|e| format!("parse hidden default profiles store: {e}"))
+    serde_json::from_slice(&raw).map_err(|e| format!("parse hidden default profiles store: {e}"))
 }
 
 fn load_sync_store(path: &PathBuf, secret_material: &str) -> Result<SyncStore, String> {
@@ -498,7 +527,9 @@ pub(crate) const BUILTIN_DEFAULT_PROFILE_NAMES: &[&str] = &[
 ];
 
 pub(crate) fn is_builtin_default_profile_name(name: &str) -> bool {
-    BUILTIN_DEFAULT_PROFILE_NAMES.iter().any(|value| *value == name)
+    BUILTIN_DEFAULT_PROFILE_NAMES
+        .iter()
+        .any(|value| *value == name)
 }
 
 pub(crate) fn persist_hidden_default_profiles_store(

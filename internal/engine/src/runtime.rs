@@ -1,7 +1,7 @@
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::{
     collections::BTreeSet,
     fs,
@@ -19,11 +19,11 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::{
-    librewolf::LibrewolfAdapter,
+    chromium::ChromiumAdapter,
     contract::{EngineAdapter, EngineError, EngineKind},
+    librewolf::LibrewolfAdapter,
     progress::EngineDownloadProgress,
     registry::EngineRegistry,
-    chromium::ChromiumAdapter,
     ungoogled_chromium::UngoogledChromiumAdapter,
 };
 
@@ -266,7 +266,7 @@ impl EngineRuntime {
         engine: EngineKind,
         profile_root: PathBuf,
         profile_id: uuid::Uuid,
-        start_page: String,
+        start_page: Option<String>,
         private_mode: bool,
         gateway_proxy_port: Option<u16>,
         runtime_hardening: bool,
@@ -287,7 +287,7 @@ impl EngineRuntime {
             args: launch_args(
                 engine,
                 &profile_root,
-                &start_page,
+                start_page.as_deref(),
                 private_mode,
                 gateway_proxy_port,
                 runtime_hardening,
@@ -550,11 +550,12 @@ impl EngineRuntime {
             .text()
             .map_err(|e| EngineError::Download(e.to_string()))?;
         let asset_marker = librewolf_windows_portable_marker()?;
-        let download_url = extract_librewolf_download_url(&body, &asset_marker).ok_or_else(|| {
-            EngineError::Download(format!(
-                "no compatible LibreWolf Windows download link found for marker {asset_marker}"
-            ))
-        })?;
+        let download_url =
+            extract_librewolf_download_url(&body, &asset_marker).ok_or_else(|| {
+                EngineError::Download(format!(
+                    "no compatible LibreWolf Windows download link found for marker {asset_marker}"
+                ))
+            })?;
         let file_name = file_name_from_url(&download_url, "librewolf")?;
         let version = parse_librewolf_version_from_file_name(&file_name).ok_or_else(|| {
             EngineError::Download(format!(
@@ -907,12 +908,9 @@ impl EngineRuntime {
                 "chromium.exe",
                 "chromium",
             ]),
-            EngineKind::Librewolf => candidate_names(&[
-                "librewolf.exe",
-                "librewolf",
-                "firefox.exe",
-                "firefox",
-            ]),
+            EngineKind::Librewolf => {
+                candidate_names(&["librewolf.exe", "librewolf", "firefox.exe", "firefox"])
+            }
         };
         let binary = if matches!(engine, EngineKind::Librewolf) {
             find_first_match(root, &candidates)
@@ -1059,7 +1057,10 @@ fn ensure_engine_binary_executable(binary_path: &Path) -> Result<(), EngineError
 }
 
 #[cfg(unix)]
-fn ensure_engine_helpers_executable(engine: EngineKind, binary_path: &Path) -> Result<(), EngineError> {
+fn ensure_engine_helpers_executable(
+    engine: EngineKind,
+    binary_path: &Path,
+) -> Result<(), EngineError> {
     if !matches!(engine, EngineKind::Chromium | EngineKind::UngoogledChromium) {
         return Ok(());
     }
@@ -1185,7 +1186,10 @@ fn librewolf_windows_portable_marker() -> Result<String, EngineError> {
 fn extract_librewolf_download_url(html: &str, asset_marker: &str) -> Option<String> {
     extract_html_hrefs(html)
         .into_iter()
-        .find(|href| href.to_ascii_lowercase().contains(&asset_marker.to_ascii_lowercase()))
+        .find(|href| {
+            href.to_ascii_lowercase()
+                .contains(&asset_marker.to_ascii_lowercase())
+        })
         .map(|href| normalize_href_url(&href))
 }
 
@@ -1318,7 +1322,10 @@ fn zero_bytes_timeout_secs(host: &Option<String>) -> u64 {
         return DEFAULT_ZERO_BYTES_TIMEOUT_SECS;
     };
     let host = host.to_ascii_lowercase();
-    if host == "github.com" || host.ends_with(".github.com") || host.ends_with("githubusercontent.com") {
+    if host == "github.com"
+        || host.ends_with(".github.com")
+        || host.ends_with("githubusercontent.com")
+    {
         return GITHUB_ZERO_BYTES_TIMEOUT_SECS;
     }
     DEFAULT_ZERO_BYTES_TIMEOUT_SECS
@@ -1398,7 +1405,7 @@ fn prefer_chromium_vendor_binary(current: &Path) -> PathBuf {
 fn launch_args(
     engine: EngineKind,
     profile_root: &Path,
-    start_page: &str,
+    start_page: Option<&str>,
     private_mode: bool,
     gateway_proxy_port: Option<u16>,
     runtime_hardening: bool,
@@ -1448,10 +1455,10 @@ fn launch_args(
                 args.push(format!("--load-extension={joined}"));
             }
             if let Some(config) = locked_app {
-                let app_url = resolve_locked_app_target_url(&config, start_page);
+                let app_url = resolve_locked_app_target_url(&config, start_page.unwrap_or(""));
                 args.push(format!("--app={app_url}"));
-            } else {
-                args.push(start_page.to_string());
+            } else if let Some(page) = start_page.map(str::trim).filter(|value| !value.is_empty()) {
+                args.push(page.to_string());
             }
             Ok(args)
         }
@@ -1460,7 +1467,7 @@ fn launch_args(
                 "-profile".to_string(),
                 runtime_dir.to_string_lossy().to_string(),
             ];
-            let page = start_page.trim();
+            let page = start_page.unwrap_or("").trim();
             if !page.is_empty() && !page.eq_ignore_ascii_case("about:blank") {
                 args.push("-new-tab".to_string());
                 args.push(page.to_string());
@@ -1559,16 +1566,16 @@ fn linux_requires_no_sandbox_for_binary(binary_path: &Path) -> bool {
     {
         return false;
     }
-    let userns_clone_enabled = match fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
-        Ok(value) => value.trim() == "1",
-        Err(_) => false,
-    };
-    let apparmor_restricts_userns = match fs::read_to_string(
-        "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
-    ) {
-        Ok(value) => value.trim() == "1",
-        Err(_) => false,
-    };
+    let userns_clone_enabled =
+        match fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
+            Ok(value) => value.trim() == "1",
+            Err(_) => false,
+        };
+    let apparmor_restricts_userns =
+        match fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") {
+            Ok(value) => value.trim() == "1",
+            Err(_) => false,
+        };
     if !userns_clone_enabled {
         return true;
     }
@@ -1584,10 +1591,11 @@ fn linux_sandbox_probe_summary() -> String {
         Ok(value) => value.trim().to_string(),
         Err(error) => format!("read_error:{error}"),
     };
-    let apparmor = match fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") {
-        Ok(value) => value.trim().to_string(),
-        Err(error) => format!("read_error:{error}"),
-    };
+    let apparmor =
+        match fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") {
+            Ok(value) => value.trim().to_string(),
+            Err(error) => format!("read_error:{error}"),
+        };
     format!(
         "kernel.unprivileged_userns_clone={userns}, kernel.apparmor_restrict_unprivileged_userns={apparmor}"
     )
@@ -1611,7 +1619,11 @@ fn linux_binary_allowlisted_in_cerbena_apparmor(binary_path: &Path) -> bool {
     false
 }
 
-fn find_first_suffix_match(root: &Path, suffixes: &[&str], contains: Option<&str>) -> Option<PathBuf> {
+fn find_first_suffix_match(
+    root: &Path,
+    suffixes: &[&str],
+    contains: Option<&str>,
+) -> Option<PathBuf> {
     let suffixes = suffixes
         .iter()
         .map(|value| value.to_ascii_lowercase())
@@ -1832,7 +1844,9 @@ fn chromium_extension_version(raw: &str) -> String {
     }
 }
 
-fn prepare_chromium_blocking_extension(profile_root: &Path) -> Result<Option<PathBuf>, EngineError> {
+fn prepare_chromium_blocking_extension(
+    profile_root: &Path,
+) -> Result<Option<PathBuf>, EngineError> {
     let blocked_domains = blocked_domains_for_profile(profile_root)?;
     let locked_app = load_locked_app_config(profile_root)?;
     let identity = load_identity_launch_policy(profile_root);
@@ -1846,7 +1860,9 @@ fn prepare_chromium_blocking_extension(profile_root: &Path) -> Result<Option<Pat
         return Ok(None);
     }
 
-    let extension_dir = profile_root.join("policy").join("chromium-policy-extension");
+    let extension_dir = profile_root
+        .join("policy")
+        .join("chromium-policy-extension");
     fs::create_dir_all(&extension_dir)?;
     let manifest = serde_json::json!({
         "manifest_version": 3,
@@ -2022,12 +2038,21 @@ fn prepare_chromium_extension_dirs(profile_root: &Path) -> Result<Vec<PathBuf>, 
     if let Some(blocking_extension) = prepare_chromium_blocking_extension(profile_root)? {
         dirs.push(blocking_extension);
     }
-    let profile_extensions_root = profile_root.join("policy").join("chromium-extensions");
-    if profile_extensions_root.exists() {
-        let mut discovered = fs::read_dir(profile_extensions_root)?
+    let managed_root = profile_root
+        .join("extensions")
+        .join("managed")
+        .join("chromium-unpacked");
+    if managed_root.is_dir() {
+        let mut discovered = fs::read_dir(managed_root)?
             .flatten()
             .map(|entry| entry.path())
-            .filter(|path| path.is_dir())
+            .filter(|path| {
+                if !path.is_dir() {
+                    return false;
+                }
+                let external_marker = path.join(".cerbena-prefer-external-manifest");
+                !external_marker.is_file()
+            })
             .collect::<Vec<_>>();
         discovered.sort();
         dirs.extend(discovered);
@@ -2056,10 +2081,10 @@ fn blocked_domains_for_profile(profile_root: &Path) -> Result<Vec<String>, Engin
 mod tests {
     use super::{
         blocked_domains_for_profile, build_accept_language_header, chromium_extension_version,
-        extract_librewolf_download_url, launch_args, parse_librewolf_version_from_file_name,
-        prefer_chromium_vendor_binary, prepare_chromium_blocking_extension,
-        chromium_launch_environment, select_ungoogled_chromium_asset, EngineKind, EngineRuntime,
-        GithubAsset, GithubRelease, CHROMIUM_POLICY_EXTENSION_VERSION,
+        chromium_launch_environment, extract_librewolf_download_url, launch_args,
+        parse_librewolf_version_from_file_name, prefer_chromium_vendor_binary,
+        prepare_chromium_blocking_extension, select_ungoogled_chromium_asset, EngineKind,
+        EngineRuntime, GithubAsset, GithubRelease, CHROMIUM_POLICY_EXTENSION_VERSION,
     };
     use std::fs;
 
@@ -2195,7 +2220,7 @@ mod tests {
         let args = launch_args(
             EngineKind::Chromium,
             temp.path(),
-            "https://duckduckgo.com",
+            Some("https://duckduckgo.com"),
             false,
             None,
             false,
@@ -2215,18 +2240,18 @@ mod tests {
         let args = launch_args(
             EngineKind::UngoogledChromium,
             temp.path(),
-            "https://duckduckgo.com",
+            Some("https://duckduckgo.com"),
             true,
             None,
             true,
         )
         .expect("launch args");
 
-        let expected_user_data_dir =
-            format!("--user-data-dir={}", temp.path().join("engine-profile").to_string_lossy());
-        assert!(args
-            .iter()
-            .any(|value| value == &expected_user_data_dir));
+        let expected_user_data_dir = format!(
+            "--user-data-dir={}",
+            temp.path().join("engine-profile").to_string_lossy()
+        );
+        assert!(args.iter().any(|value| value == &expected_user_data_dir));
         assert!(args.iter().any(|value| value == "--incognito"));
         assert!(args.iter().any(|value| value == "--disable-sync"));
         assert!(args.iter().any(|value| value == "https://duckduckgo.com"));
@@ -2265,7 +2290,7 @@ mod tests {
         let args = launch_args(
             EngineKind::Chromium,
             temp.path(),
-            "https://duckduckgo.com",
+            Some("https://duckduckgo.com"),
             false,
             None,
             false,
@@ -2348,7 +2373,7 @@ mod tests {
         let args = launch_args(
             EngineKind::Chromium,
             temp.path(),
-            "https://duckduckgo.com",
+            Some("https://duckduckgo.com"),
             false,
             None,
             true,
@@ -2543,9 +2568,7 @@ fn select_ungoogled_chromium_asset(
     let suffixes = ungoogled_chromium_asset_suffixes()?;
     Ok(release.assets.iter().find_map(|item| {
         let lower = item.name.to_ascii_lowercase();
-        if lower.contains("ungoogled")
-            && suffixes.iter().any(|suffix| lower.ends_with(suffix))
-        {
+        if lower.contains("ungoogled") && suffixes.iter().any(|suffix| lower.ends_with(suffix)) {
             Some(item.clone())
         } else {
             None
