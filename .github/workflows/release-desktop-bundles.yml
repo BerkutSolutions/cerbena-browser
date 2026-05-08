@@ -219,6 +219,7 @@ jobs:
           $manifestJson = $manifest | ConvertTo-Json -Depth 6
           $checksumsText = [string]::Join("`n", $checksumLines)
           $checksumsBytes = [System.Text.Encoding]::UTF8.GetBytes($checksumsText)
+          . (Join-Path $repoRoot "scripts/release-signing.ps1")
           $checksumsSignature = New-ReleaseChecksumSignature $checksumsBytes
 
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
