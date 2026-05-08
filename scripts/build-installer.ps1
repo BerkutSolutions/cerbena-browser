@@ -102,7 +102,8 @@ function Invoke-Native([string]$FilePath, [string[]]$Arguments = @(), [switch]$Q
         if ($exitCode -ne 0) {
             $argsText = ($Arguments -join " ")
             Write-Log "command failed exitCode=$exitCode file=$FilePath"
-            throw "command failed ($exitCode): $FilePath $argsText"
+            $tail = ($output | Select-Object -Last 80) -join [Environment]::NewLine
+            throw "command failed ($exitCode): $FilePath $argsText`n$tail"
         }
         Write-Log "command completed exitCode=0 file=$FilePath"
         return $output
