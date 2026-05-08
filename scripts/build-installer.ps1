@@ -2141,7 +2141,7 @@ procedure InitializeWizard;
 begin
   LegacyAmneziaServicePrefix := 'AmneziaWGTunnel`$awg-';
   DesktopShortcutCheckBox := TNewCheckBox.Create(WizardForm);
-  DesktopShortcutCheckBox.Parent := WizardForm.FinishedPage.Surface;
+  DesktopShortcutCheckBox.Parent := WizardForm.FinishedPage;
   DesktopShortcutCheckBox.Caption := 'Create a desktop shortcut';
   DesktopShortcutCheckBox.Checked := True;
   DesktopShortcutCheckBox.Left := WizardForm.RunList.Left;
