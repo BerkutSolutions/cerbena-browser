@@ -351,8 +351,8 @@ function New-MsiInstaller(
     [string]$Version,
     [string]$RepoRoot
 ) {
-    function Invoke-WixBuildWithArgs([string]$WixPath, [string[]]$Args) {
-        [void](Invoke-Native $WixPath $Args)
+    function Invoke-WixBuildWithArgs([string]$WixPath, [string[]]$WixArgs) {
+        [void](Invoke-Native $WixPath $WixArgs)
     }
 
     function New-WixBuildArgs(
@@ -363,7 +363,7 @@ function New-MsiInstaller(
         [string]$UiExtensionPathArg,
         [string]$UiExtensionIdArg
     ) {
-        $args = @(
+        $buildArgs = @(
             "build",
             $WxsPathArg,
             "-out",
@@ -375,12 +375,12 @@ function New-MsiInstaller(
         )
         if ($UseUiExtension) {
             if (-not [string]::IsNullOrWhiteSpace($UiExtensionPathArg)) {
-                $args += @("-ext", $UiExtensionPathArg)
+                $buildArgs += @("-ext", $UiExtensionPathArg)
             } else {
-                $args += @("-ext", $UiExtensionIdArg)
+                $buildArgs += @("-ext", $UiExtensionIdArg)
             }
         }
-        return $args
+        return $buildArgs
     }
 
     $wix = Find-WixTool $RepoRoot
