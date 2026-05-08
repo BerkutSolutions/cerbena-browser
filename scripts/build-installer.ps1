@@ -2165,7 +2165,6 @@ begin
         ExpandConstant('{app}\{#MyAppExeName}'),
         '',
         ExpandConstant('{app}'),
-        '',
         ExpandConstant('{app}\{#MyAppExeName}'),
         0,
         SW_SHOWNORMAL);
