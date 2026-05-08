@@ -351,11 +351,7 @@ function New-MsiInstaller(
     [string]$Version,
     [string]$RepoRoot
 ) {
-    function Invoke-WixBuildWithArgs([string]$WixPath, [string[]]$WixArgs) {
-        [void](Invoke-Native $WixPath $WixArgs)
-    }
-
-    function New-WixBuildArgs(
+    function Get-WixBuildArguments(
         [string]$WxsPathArg,
         [string]$MsiPathArg,
         [string]$IntermediateArg,
@@ -363,24 +359,24 @@ function New-MsiInstaller(
         [string]$UiExtensionPathArg,
         [string]$UiExtensionIdArg
     ) {
-        $buildArgs = @(
-            "build",
-            $WxsPathArg,
-            "-out",
-            $MsiPathArg,
-            "-intermediatefolder",
-            $IntermediateArg,
-            "-arch",
-            "x64"
-        )
+        $result = New-Object System.Collections.Generic.List[string]
+        [void]$result.Add("build")
+        [void]$result.Add($WxsPathArg)
+        [void]$result.Add("-out")
+        [void]$result.Add($MsiPathArg)
+        [void]$result.Add("-intermediatefolder")
+        [void]$result.Add($IntermediateArg)
+        [void]$result.Add("-arch")
+        [void]$result.Add("x64")
         if ($UseUiExtension) {
+            [void]$result.Add("-ext")
             if (-not [string]::IsNullOrWhiteSpace($UiExtensionPathArg)) {
-                $buildArgs += @("-ext", $UiExtensionPathArg)
+                [void]$result.Add($UiExtensionPathArg)
             } else {
-                $buildArgs += @("-ext", $UiExtensionIdArg)
+                [void]$result.Add($UiExtensionIdArg)
             }
         }
-        return $buildArgs
+        return @($result.ToArray())
     }
 
     $wix = Find-WixTool $RepoRoot
@@ -628,22 +624,22 @@ $shortcutComponent
 
     [System.IO.File]::WriteAllText($wxsPath, $wxs, $utf8)
     $wixIntermediate = (Join-Path $InstallerRoot "wix-intermediate")
-    $wixBuildArgs = New-WixBuildArgs -WxsPathArg $wxsPath -MsiPathArg $msiPath -IntermediateArg $wixIntermediate -UseUiExtension $hasWixUiExtension -UiExtensionPathArg $wixUiExtensionPath -UiExtensionIdArg $wixUiExtensionId
+    $wixBuildArgs = Get-WixBuildArguments -WxsPathArg $wxsPath -MsiPathArg $msiPath -IntermediateArg $wixIntermediate -UseUiExtension $hasWixUiExtension -UiExtensionPathArg $wixUiExtensionPath -UiExtensionIdArg $wixUiExtensionId
     $attemptedWixPaths = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
     [void]$attemptedWixPaths.Add($wix)
     $wixBuildSucceeded = $false
     $lastWixBuildError = $null
     try {
-        Invoke-WixBuildWithArgs -WixPath $wix -Args $wixBuildArgs
+        [void](Invoke-Native $wix $wixBuildArgs)
         $wixBuildSucceeded = $true
     } catch {
         $lastWixBuildError = $_
         Write-Log "primary wix build failed file=$wix error=$($_.Exception.Message)"
         if ($hasWixUiExtension -and $_.Exception.Message -match "WIX0144") {
             Write-Log "wix UI extension was reported missing at build time; retrying build without UI extension"
-            $wixBuildArgs = New-WixBuildArgs -WxsPathArg $wxsPath -MsiPathArg $msiPath -IntermediateArg $wixIntermediate -UseUiExtension $false -UiExtensionPathArg "" -UiExtensionIdArg $wixUiExtensionId
+            $wixBuildArgs = Get-WixBuildArguments -WxsPathArg $wxsPath -MsiPathArg $msiPath -IntermediateArg $wixIntermediate -UseUiExtension $false -UiExtensionPathArg "" -UiExtensionIdArg $wixUiExtensionId
             try {
-                Invoke-WixBuildWithArgs -WixPath $wix -Args $wixBuildArgs
+                [void](Invoke-Native $wix $wixBuildArgs)
                 $wixBuildSucceeded = $true
                 $hasWixUiExtension = $false
             } catch {
@@ -670,7 +666,7 @@ $shortcutComponent
             }
             Write-Log "retrying wix build with fallback tool=$fallbackWix"
             try {
-                Invoke-WixBuildWithArgs -WixPath $fallbackWix -Args $wixBuildArgs
+                [void](Invoke-Native $fallbackWix $wixBuildArgs)
                 $wixBuildSucceeded = $true
                 $wix = $fallbackWix
                 break
@@ -679,9 +675,9 @@ $shortcutComponent
                 Write-Log "fallback wix build failed file=$fallbackWix error=$($_.Exception.Message)"
                 if ($hasWixUiExtension -and $_.Exception.Message -match "WIX0144") {
                     Write-Log "fallback wix reports missing UI extension; retrying fallback tool without UI extension"
-                    $fallbackNoUiArgs = New-WixBuildArgs -WxsPathArg $wxsPath -MsiPathArg $msiPath -IntermediateArg $wixIntermediate -UseUiExtension $false -UiExtensionPathArg "" -UiExtensionIdArg $wixUiExtensionId
+                    $fallbackNoUiArgs = Get-WixBuildArguments -WxsPathArg $wxsPath -MsiPathArg $msiPath -IntermediateArg $wixIntermediate -UseUiExtension $false -UiExtensionPathArg "" -UiExtensionIdArg $wixUiExtensionId
                     try {
-                        Invoke-WixBuildWithArgs -WixPath $fallbackWix -Args $fallbackNoUiArgs
+                        [void](Invoke-Native $fallbackWix $fallbackNoUiArgs)
                         $wixBuildSucceeded = $true
                         $wix = $fallbackWix
                         $hasWixUiExtension = $false
