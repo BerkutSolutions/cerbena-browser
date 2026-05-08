@@ -73,7 +73,7 @@ fn policy_engine_uses_domain_rules_when_no_hard_constraints() {
         route_mode: RouteMode::Direct,
         dns_config: DnsConfig {
             mode: DnsMode::Custom,
-            servers: vec!["1.1.12.1".to_string()],
+            servers: vec!["1.1.13.1".to_string()],
             doh_url: None,
             dot_server_name: None,
         },
@@ -147,7 +147,7 @@ fn dns_adapter_validates_custom_servers() {
         profile_id: "p1".to_string(),
         config: DnsConfig {
             mode: DnsMode::Custom,
-            servers: vec!["1.1.12.1".to_string(), "8.8.8.8".to_string()],
+            servers: vec!["1.1.13.1".to_string(), "8.8.8.8".to_string()],
             doh_url: Some("https://dns.example/dns-query".to_string()),
             dot_server_name: None,
         },
@@ -348,7 +348,7 @@ fn dns_tab_validation_checks_blocklist_and_catalog() {
         profile_id: "p1".to_string(),
         dns_config: DnsConfig {
             mode: DnsMode::Custom,
-            servers: vec!["1.1.12.1".to_string()],
+            servers: vec!["1.1.13.1".to_string()],
             doh_url: None,
             dot_server_name: None,
         },
