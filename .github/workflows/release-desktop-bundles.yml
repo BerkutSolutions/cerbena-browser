@@ -56,8 +56,15 @@ jobs:
             echo "DEB artifact not found"
             exit 1
           fi
-          cp -f "${DEB_PATH}" out/linux-deb/
-          echo "DEB: ${DEB_PATH}"
+          VERSION="$(node -p "require('./ui/desktop/package.json').version")"
+          ARCH="$(basename "${DEB_PATH}" | sed -E 's/.*_([A-Za-z0-9]+)\.deb$/\1/')"
+          if [ -z "${ARCH}" ] || [ "${ARCH}" = "$(basename "${DEB_PATH}")" ]; then
+            ARCH="amd64"
+          fi
+          TARGET_NAME="cerbena-browser_${VERSION}_${ARCH}.deb"
+          cp -f "${DEB_PATH}" "out/linux-deb/${TARGET_NAME}"
+          echo "DEB source: ${DEB_PATH}"
+          echo "DEB normalized: out/linux-deb/${TARGET_NAME}"
 
       - uses: actions/upload-artifact@v4
         with:
