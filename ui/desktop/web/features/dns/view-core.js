@@ -134,7 +134,7 @@ export function renderDns(t, model) {
             </select>
           </label>
           <label class="${isManual ? "" : "hidden"}" id="dns-servers-row">${t("dns.servers")}
-            <input id="dns-servers" value="${draft.servers}" placeholder="1.2.0.1,8.8.8.8" />
+            <input id="dns-servers" value="${draft.servers}" placeholder="1.2.1.1,8.8.8.8" />
           </label>
           <label>${t("dns.allowlist")}
             <input id="dns-allow" value="${draft.allowlist}" placeholder="example.com,github.com" />

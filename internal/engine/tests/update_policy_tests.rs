@@ -5,7 +5,7 @@ fn update_disabled_by_default_blocks_apply() {
     let svc = EngineUpdateService;
     let policy = EngineUpdatePolicy::default();
     let artifact = EngineUpdateArtifact {
-        version: "1.2.0".to_string(),
+        version: "1.2.1".to_string(),
         signature: "sig".to_string(),
     };
     assert!(svc.verify_and_apply(&policy, &artifact, "sig").is_err());
@@ -19,7 +19,7 @@ fn manual_update_requires_valid_signature() {
         allow_user_enable: true,
     };
     let artifact = EngineUpdateArtifact {
-        version: "1.2.0".to_string(),
+        version: "1.2.1".to_string(),
         signature: "sig-ok".to_string(),
     };
     assert!(svc.verify_and_apply(&policy, &artifact, "sig-ok").is_ok());
