@@ -29,10 +29,15 @@
     { "path": "ui/desktop/src-tauri/tauri.linux.conf.json", "strategy": "json_top_level_version" },
     { "path": "ui/desktop/web/core/app-version.js", "strategy": "js_export_const" },
     { "path": "internal/engine/tests/update_policy_tests.rs", "strategy": "replace_all" },
+    { "path": "internal/engine/src/runtime_tests_cases.rs", "strategy": "replace_all" },
     { "path": "internal/network_policy/tests/policy_tests_core.rs", "strategy": "replace_all" },
     { "path": "internal/profile/tests/profile_manager_tests_core/lifecycle.rs", "strategy": "replace_all" },
+    { "path": "cmd/launcher/tests/launcher_tests.rs", "strategy": "replace_all" },
+    { "path": "cmd/launcher/tests/launcher_stability_tests.rs", "strategy": "replace_all" },
     { "path": "ui/desktop/src-tauri/src/route_runtime_support.rs", "strategy": "replace_all" },
     { "path": "ui/desktop/src-tauri/src/route_runtime_tests.rs", "strategy": "replace_all" },
+    { "path": "ui/desktop/src-tauri/src/extensions_commands_tests.rs", "strategy": "replace_all" },
+    { "path": "ui/desktop/src-tauri/src/update_commands_tests_core_cases.rs", "strategy": "replace_all" },
     { "path": "ui/desktop/web/features/dns/view-core.js", "strategy": "replace_all" },
     { "path": "CHANGELOG.md", "strategy": "changelog_heading" }
   ]

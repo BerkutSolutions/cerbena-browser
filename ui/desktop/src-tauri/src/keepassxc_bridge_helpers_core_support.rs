@@ -314,8 +314,6 @@ pub(crate) fn keepassxc_manifest_debug_summary(manifest: &Value) -> String {
     "no explicit extension list".to_string()
 }
 
-#[cfg(target_os = "windows")]
-
 #[path = "keepassxc_bridge_helpers_core_system.rs"]
 mod system;
 pub(crate) use system::*;

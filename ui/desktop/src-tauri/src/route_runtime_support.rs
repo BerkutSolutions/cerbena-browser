@@ -127,7 +127,7 @@ pub(super) fn extract_amnezia_conf_text_from_payload(root: &Value, awg: &Value) 
     let mut config = config_candidate.replace('\r', "");
     let primary_dns = extract_string(root, &["dns1", "primary_dns", "primaryDns"])
         .or_else(|| extract_string(awg, &["dns1", "primary_dns", "primaryDns"]))
-        .unwrap_or_else(|| "1.2.2.1".to_string());
+        .unwrap_or_else(|| "1.2.3.1".to_string());
     let secondary_dns = extract_string(root, &["dns2", "secondary_dns", "secondaryDns"])
         .or_else(|| extract_string(awg, &["dns2", "secondary_dns", "secondaryDns"]))
         .unwrap_or_else(|| "1.0.0.1".to_string());

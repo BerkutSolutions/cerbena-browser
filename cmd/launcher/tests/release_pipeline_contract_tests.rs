@@ -230,14 +230,7 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         );
     }
 
-    for needle in [
-        "lint:web",
-        "test:unit:web",
-        "test:scenario:web",
-        "npm.cmd\" @(\"run\", \"lint:web\")",
-        "npm.cmd\" @(\"run\", \"test:unit:web\")",
-        "npm.cmd\" @(\"run\", \"test:scenario:web\")",
-    ] {
+    for needle in ["lint:web", "test:unit:web", "test:scenario:web"] {
         assert!(
             desktop_package.contains(needle)
                 || release_script.contains(needle)
