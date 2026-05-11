@@ -188,4 +188,49 @@ pub(super) fn select_ungoogled_chromium_asset(
     artifacts::select_ungoogled_chromium_asset_impl(release)
 }
 
+#[cfg(unix)]
+pub(super) fn ensure_engine_binary_executable(path: &Path) -> Result<(), EngineError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path).map_err(|error| {
+        EngineError::Install(format!(
+            "read runtime binary metadata failed for {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut permissions = metadata.permissions();
+    let current_mode = permissions.mode();
+    let desired_mode = current_mode | 0o111;
+    if current_mode != desired_mode {
+        permissions.set_mode(desired_mode);
+        fs::set_permissions(path, permissions).map_err(|error| {
+            EngineError::Install(format!(
+                "mark runtime binary executable failed for {}: {error}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(super) fn ensure_engine_helpers_executable(
+    engine: EngineKind,
+    binary_path: &Path,
+) -> Result<(), EngineError> {
+    if !matches!(engine, EngineKind::Chromium | EngineKind::UngoogledChromium) {
+        return Ok(());
+    }
+    let Some(parent) = binary_path.parent() else {
+        return Ok(());
+    };
+    for helper in ["chrome_crashpad_handler", "chrome-sandbox"] {
+        let helper_path = parent.join(helper);
+        if helper_path.exists() {
+            ensure_engine_binary_executable(&helper_path)?;
+        }
+    }
+    Ok(())
+}
+
 
