@@ -64,6 +64,7 @@ function titleFor(progress, t) {
 function progressDisplayName(progress) {
   if (progress.engine === "chromium") return "Chromium";
   if (progress.engine === "ungoogled-chromium") return "Ungoogled Chromium";
+  if (progress.engine === "firefox-esr") return "Firefox ESR";
   if (progress.engine === "librewolf") return "LibreWolf";
   if (progress.tool === "sing-box") return "sing-box";
   if (progress.tool === "openvpn") return "OpenVPN";

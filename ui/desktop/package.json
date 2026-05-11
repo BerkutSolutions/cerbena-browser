@@ -1,11 +1,16 @@
 {
     "name":  "browser-desktop-ui",
     "private":  true,
-    "version":  "1.1.7",
+    "version":  "1.2.0",
     "type":  "module",
     "scripts":  {
                     "style:sync":  "node ./scripts/sync-styles.mjs",
                     "i18n:check":  "node ./scripts/check-i18n.mjs",
+                    "lint:web":  "eslint \"web/app/**/*.js\" \"web/app/__tests__/*.mjs\"",
+                    "test:unit:web":  "node --test \"web/app/__tests__/feature-state.test.mjs\" \"web/app/__tests__/main-runtime-refresh.test.mjs\" \"web/app/__tests__/profiles-feature-logic.test.mjs\" \"web/app/__tests__/network-feature-logic.test.mjs\" \"web/app/__tests__/settings-feature-logic.test.mjs\"",
+                    "test:scenario:web:features":  "node --test \"web/app/__tests__/feature-tabs-functionality.test.mjs\" \"web/app/__tests__/profile-modal-tabs.test.mjs\" \"web/app/__tests__/network-template-fields.test.mjs\" \"web/app/__tests__/network-import-parsers.test.mjs\"",
+                    "test:scenario:web:flows":  "node --test \"web/app/__tests__/ui-scenarios.test.mjs\" \"web/app/__tests__/scenario-updater-guards.test.mjs\" \"web/app/__tests__/scenario-panic-transitions.test.mjs\" \"web/app/__tests__/scenario-profile-launch-retry.test.mjs\"",
+                    "test:scenario:web":  "npm run test:scenario:web:features \u0026\u0026 npm run test:scenario:web:flows",
                     "dev:web":  "node ./scripts/dev-web-server.mjs",
                     "dev:web:stop":  "node ./scripts/stop-dev-web.mjs",
                     "tauri":  "npm exec -- tauri",
@@ -13,9 +18,11 @@
                     "build":  "npm run style:sync \u0026\u0026 npm run i18n:check \u0026\u0026 npm run tauri -- build",
                     "build:deb":  "npm run style:sync \u0026\u0026 npm run i18n:check \u0026\u0026 npm run tauri -- build --config src-tauri/tauri.linux.conf.json --bundles deb",
                     "test:ui":  "node ./scripts/ui-smoke-test.mjs",
-                    "test":  "npm run i18n:check \u0026\u0026 npm run test:ui"
+                    "test":  "node ../../scripts/check-text-integrity.mjs \u0026\u0026 npm run i18n:check \u0026\u0026 npm run lint:web \u0026\u0026 npm run test:all:web \u0026\u0026 npm run test:ui",
+                    "test:all:web":  "node --test \"web/app/__tests__/*.test.mjs\""
                 },
     "devDependencies":  {
-                            "@tauri-apps/cli":  "^2.0.0"
+                            "@tauri-apps/cli":  "^2.0.0",
+                            "eslint":  "^9.24.0"
                         }
 }

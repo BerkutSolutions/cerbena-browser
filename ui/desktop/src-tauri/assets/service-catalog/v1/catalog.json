@@ -1,0 +1,197 @@
+{
+  "version": "1",
+  "categories": [
+    {
+      "id": "artificial_intelligence",
+      "labels": { "en": "Artificial intelligence", "ru": "Искусственный интеллект" },
+      "services": [
+        { "id": "chatgpt", "labels": { "en": "ChatGPT", "ru": "ChatGPT" }, "domains": [] },
+        { "id": "claude", "labels": { "en": "Claude", "ru": "Claude" }, "domains": [] },
+        { "id": "copilot", "labels": { "en": "Copilot", "ru": "Copilot" }, "domains": [] },
+        { "id": "deepseek", "labels": { "en": "DeepSeek", "ru": "DeepSeek" }, "domains": [] },
+        { "id": "gemini", "labels": { "en": "Gemini", "ru": "Gemini" }, "domains": [] },
+        { "id": "grok", "labels": { "en": "Grok", "ru": "Grok" }, "domains": [] },
+        { "id": "manus", "labels": { "en": "Manus", "ru": "Manus" }, "domains": [] },
+        { "id": "meta_ai", "labels": { "en": "Meta AI", "ru": "Meta AI" }, "domains": [] },
+        { "id": "perplexity", "labels": { "en": "Perplexity", "ru": "Perplexity" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "content_delivery_networks",
+      "labels": { "en": "Content delivery networks", "ru": "Сети доставки контента" },
+      "services": [{ "id": "cloudflare", "labels": { "en": "Cloudflare", "ru": "Cloudflare" }, "domains": [] }]
+    },
+    {
+      "id": "dating_services",
+      "labels": { "en": "Dating services", "ru": "Сервисы знакомств" },
+      "services": [
+        { "id": "plenty_of_fish", "labels": { "en": "Plenty of Fish", "ru": "Plenty of Fish" }, "domains": [] },
+        { "id": "tinder", "labels": { "en": "Tinder", "ru": "Tinder" }, "domains": [] },
+        { "id": "wizz", "labels": { "en": "Wizz", "ru": "Wizz" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "gambling_and_betting",
+      "labels": { "en": "Gambling and betting", "ru": "Азартные игры и ставки" },
+      "services": [
+        { "id": "betano", "labels": { "en": "Betano", "ru": "Betano" }, "domains": [] },
+        { "id": "betfair", "labels": { "en": "Betfair", "ru": "Betfair" }, "domains": [] },
+        { "id": "betway", "labels": { "en": "Betway", "ru": "Betway" }, "domains": [] },
+        { "id": "blaze", "labels": { "en": "Blaze", "ru": "Blaze" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "games_and_gaming_platforms",
+      "labels": { "en": "Games and gaming platforms", "ru": "Игры и игровые платформы" },
+      "services": [
+        { "id": "riot_games", "labels": { "en": "Riot Games", "ru": "Riot Games" }, "domains": [] },
+        { "id": "roblox", "labels": { "en": "Roblox", "ru": "Roblox" }, "domains": [] },
+        { "id": "rockstar_games", "labels": { "en": "Rockstar Games", "ru": "Rockstar Games" }, "domains": [] },
+        { "id": "steam", "labels": { "en": "Steam", "ru": "Steam" }, "domains": [] },
+        { "id": "ubisoft", "labels": { "en": "Ubisoft", "ru": "Ubisoft" }, "domains": [] },
+        { "id": "valorant", "labels": { "en": "Valorant", "ru": "Valorant" }, "domains": [] },
+        { "id": "wargaming", "labels": { "en": "Wargaming", "ru": "Wargaming" }, "domains": [] },
+        { "id": "warner_bros_games", "labels": { "en": "Warner Bros Games", "ru": "Warner Bros Games" }, "domains": [] },
+        { "id": "xbox_live", "labels": { "en": "Xbox Live", "ru": "Xbox Live" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "web_hosting_and_file_sharing",
+      "labels": { "en": "Web hosting and file sharing", "ru": "Веб-хостинг и обмен файлами" },
+      "services": [
+        { "id": "box", "labels": { "en": "Box", "ru": "Box" }, "domains": [] },
+        { "id": "dropbox", "labels": { "en": "Dropbox", "ru": "Dropbox" }, "domains": [] },
+        { "id": "flickr", "labels": { "en": "Flickr", "ru": "Flickr" }, "domains": [] },
+        { "id": "imgur", "labels": { "en": "Imgur", "ru": "Imgur" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "messaging_services",
+      "labels": { "en": "Messaging services", "ru": "Сервисы обмена сообщениями" },
+      "services": [
+        { "id": "kakaotalk", "labels": { "en": "KakaoTalk", "ru": "KakaoTalk" }, "domains": [] },
+        { "id": "kik", "labels": { "en": "Kik", "ru": "Kik" }, "domains": [] },
+        { "id": "max", "labels": { "en": "MAX", "ru": "MAX" }, "domains": [] },
+        { "id": "microsoft_teams", "labels": { "en": "Microsoft Teams", "ru": "Microsoft Teams" }, "domains": [] },
+        { "id": "olvid", "labels": { "en": "Olvid", "ru": "Olvid" }, "domains": [] },
+        { "id": "signal", "labels": { "en": "Signal", "ru": "Signal" }, "domains": [] },
+        { "id": "skype", "labels": { "en": "Skype", "ru": "Skype" }, "domains": [] },
+        { "id": "slack", "labels": { "en": "Slack", "ru": "Slack" }, "domains": [] },
+        { "id": "telegram_web", "labels": { "en": "Telegram Web", "ru": "Telegram Web" }, "domains": [] },
+        { "id": "viber", "labels": { "en": "Viber", "ru": "Viber" }, "domains": [] },
+        { "id": "wechat", "labels": { "en": "WeChat", "ru": "WeChat" }, "domains": [] },
+        { "id": "whatsapp", "labels": { "en": "WhatsApp", "ru": "WhatsApp" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "privacy_tools",
+      "labels": { "en": "Privacy tools", "ru": "Инструменты приватности" },
+      "services": [
+        { "id": "icloud_private_relay", "labels": { "en": "iCloud Private Relay", "ru": "iCloud Private Relay" }, "domains": [] },
+        { "id": "privacy", "labels": { "en": "Privacy", "ru": "Privacy" }, "domains": [] },
+        { "id": "proton", "labels": { "en": "Proton", "ru": "Proton" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "shopping",
+      "labels": { "en": "Shopping", "ru": "Покупки" },
+      "services": [
+        { "id": "aliexpress", "labels": { "en": "AliExpress", "ru": "AliExpress" }, "domains": [] },
+        { "id": "amazon", "labels": { "en": "Amazon", "ru": "Amazon" }, "domains": [] },
+        { "id": "coolapk", "labels": { "en": "CoolApk", "ru": "CoolApk" }, "domains": [] },
+        { "id": "ebay", "labels": { "en": "eBay", "ru": "eBay" }, "domains": [] },
+        { "id": "lazada", "labels": { "en": "Lazada", "ru": "Lazada" }, "domains": [] },
+        { "id": "mercado_libre", "labels": { "en": "Mercado Libre", "ru": "Mercado Libre" }, "domains": [] },
+        { "id": "shein", "labels": { "en": "SHEIN", "ru": "SHEIN" }, "domains": [] },
+        { "id": "shopee", "labels": { "en": "Shopee", "ru": "Shopee" }, "domains": [] },
+        { "id": "temu", "labels": { "en": "Temu", "ru": "Temu" }, "domains": [] },
+        { "id": "xiaohongshu", "labels": { "en": "Xiaohongshu", "ru": "Xiaohongshu" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "social_networks_and_communities",
+      "labels": { "en": "Social networks and communities", "ru": "Социальные сети и сообщества" },
+      "services": [
+        { "id": "4chan", "labels": { "en": "4chan", "ru": "4chan" }, "domains": [] },
+        { "id": "500px", "labels": { "en": "500px", "ru": "500px" }, "domains": [] },
+        { "id": "9gag", "labels": { "en": "9GAG", "ru": "9GAG" }, "domains": [] },
+        { "id": "amino", "labels": { "en": "Amino", "ru": "Amino" }, "domains": [] },
+        { "id": "bluesky", "labels": { "en": "Bluesky", "ru": "Bluesky" }, "domains": [] },
+        { "id": "clubhouse", "labels": { "en": "Clubhouse", "ru": "Clubhouse" }, "domains": [] },
+        { "id": "discord", "labels": { "en": "Discord", "ru": "Discord" }, "domains": [] },
+        { "id": "douban", "labels": { "en": "Douban", "ru": "Douban" }, "domains": [] },
+        { "id": "facebook", "labels": { "en": "Facebook", "ru": "Facebook" }, "domains": [] },
+        { "id": "instagram", "labels": { "en": "Instagram", "ru": "Instagram" }, "domains": [] },
+        { "id": "kook", "labels": { "en": "Kook", "ru": "Kook" }, "domains": [] },
+        { "id": "line", "labels": { "en": "LINE", "ru": "LINE" }, "domains": [] },
+        { "id": "linkedin", "labels": { "en": "LinkedIn", "ru": "LinkedIn" }, "domains": [] },
+        { "id": "mail_ru", "labels": { "en": "Mail.ru", "ru": "Mail.ru" }, "domains": [] },
+        { "id": "mastodon", "labels": { "en": "Mastodon", "ru": "Mastodon" }, "domains": [] },
+        { "id": "odysee", "labels": { "en": "Odysee", "ru": "Odysee" }, "domains": [] },
+        { "id": "ok_ru", "labels": { "en": "OK.ru", "ru": "OK.ru" }, "domains": [] },
+        { "id": "onlyfans", "labels": { "en": "OnlyFans", "ru": "OnlyFans" }, "domains": [] },
+        { "id": "pinterest", "labels": { "en": "Pinterest", "ru": "Pinterest" }, "domains": [] },
+        { "id": "reddit", "labels": { "en": "Reddit", "ru": "Reddit" }, "domains": [] },
+        { "id": "snapchat", "labels": { "en": "Snapchat", "ru": "Snapchat" }, "domains": [] },
+        { "id": "tiktok", "labels": { "en": "TikTok", "ru": "TikTok" }, "domains": [] },
+        { "id": "tumblr", "labels": { "en": "Tumblr", "ru": "Tumblr" }, "domains": [] },
+        { "id": "x_twitter", "labels": { "en": "X (Twitter)", "ru": "X (Twitter)" }, "domains": [] },
+        { "id": "vk_com", "labels": { "en": "VK", "ru": "VK" }, "domains": [] },
+        { "id": "zhihu", "labels": { "en": "Zhihu", "ru": "Zhihu" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "software_development_platforms",
+      "labels": { "en": "Software development platforms", "ru": "Платформы разработки ПО" },
+      "services": [
+        { "id": "nvidia", "labels": { "en": "NVIDIA", "ru": "NVIDIA" }, "domains": [] },
+        { "id": "google_play_store", "labels": { "en": "Google Play Store", "ru": "Google Play Store" }, "domains": [] }
+      ]
+    },
+    {
+      "id": "media_and_streaming",
+      "labels": { "en": "Media and streaming", "ru": "Медиа и стриминг" },
+      "services": [
+        { "id": "bilibili", "labels": { "en": "Bilibili", "ru": "Bilibili" }, "domains": [] },
+        { "id": "canais_globo", "labels": { "en": "Canais Globo", "ru": "Canais Globo" }, "domains": [] },
+        { "id": "claro", "labels": { "en": "Claro", "ru": "Claro" }, "domains": [] },
+        { "id": "crunchyroll", "labels": { "en": "Crunchyroll", "ru": "Crunchyroll" }, "domains": [] },
+        { "id": "dailymotion", "labels": { "en": "Dailymotion", "ru": "Dailymotion" }, "domains": [] },
+        { "id": "deezer", "labels": { "en": "Deezer", "ru": "Deezer" }, "domains": [] },
+        { "id": "directv_go", "labels": { "en": "DirecTV Go", "ru": "DirecTV Go" }, "domains": [] },
+        { "id": "discovery_plus", "labels": { "en": "Discovery+", "ru": "Discovery+" }, "domains": [] },
+        { "id": "disney_plus", "labels": { "en": "Disney+", "ru": "Disney+" }, "domains": [] },
+        { "id": "espn", "labels": { "en": "ESPN", "ru": "ESPN" }, "domains": [] },
+        { "id": "fifa", "labels": { "en": "FIFA", "ru": "FIFA" }, "domains": [] },
+        { "id": "globoplay", "labels": { "en": "Globoplay", "ru": "Globoplay" }, "domains": [] },
+        { "id": "hbo_max", "labels": { "en": "HBO Max", "ru": "HBO Max" }, "domains": [] },
+        { "id": "hulu", "labels": { "en": "Hulu", "ru": "Hulu" }, "domains": [] },
+        { "id": "iheartradio", "labels": { "en": "iHeartRadio", "ru": "iHeartRadio" }, "domains": [] },
+        { "id": "iqiyi", "labels": { "en": "iQIYI", "ru": "iQIYI" }, "domains": [] },
+        { "id": "lionsgate_plus", "labels": { "en": "Lionsgate+", "ru": "Lionsgate+" }, "domains": [] },
+        { "id": "looke", "labels": { "en": "Looke", "ru": "Looke" }, "domains": [] },
+        { "id": "max_streaming", "labels": { "en": "Max", "ru": "Max" }, "domains": [] },
+        { "id": "nebula", "labels": { "en": "Nebula", "ru": "Nebula" }, "domains": [] },
+        { "id": "netflix", "labels": { "en": "Netflix", "ru": "Netflix" }, "domains": [] },
+        { "id": "paramount_plus", "labels": { "en": "Paramount+", "ru": "Paramount+" }, "domains": [] },
+        { "id": "peacock_tv", "labels": { "en": "Peacock TV", "ru": "Peacock TV" }, "domains": [] },
+        { "id": "plex", "labels": { "en": "Plex", "ru": "Plex" }, "domains": [] },
+        { "id": "pluto_tv", "labels": { "en": "Pluto TV", "ru": "Pluto TV" }, "domains": [] },
+        { "id": "rakuten_viki", "labels": { "en": "Rakuten Viki", "ru": "Rakuten Viki" }, "domains": [] },
+        { "id": "samsung_tv_plus", "labels": { "en": "Samsung TV Plus", "ru": "Samsung TV Plus" }, "domains": [] },
+        { "id": "soundcloud", "labels": { "en": "SoundCloud", "ru": "SoundCloud" }, "domains": [] },
+        { "id": "spotify", "labels": { "en": "Spotify", "ru": "Spotify" }, "domains": [] },
+        { "id": "spotify_video", "labels": { "en": "Spotify Video", "ru": "Spotify Video" }, "domains": [] },
+        { "id": "tidal", "labels": { "en": "TIDAL", "ru": "TIDAL" }, "domains": [] },
+        { "id": "twitch", "labels": { "en": "Twitch", "ru": "Twitch" }, "domains": [] },
+        { "id": "vimeo", "labels": { "en": "Vimeo", "ru": "Vimeo" }, "domains": [] },
+        { "id": "vivo_play", "labels": { "en": "Vivo Play", "ru": "Vivo Play" }, "domains": [] },
+        { "id": "voot", "labels": { "en": "Voot", "ru": "Voot" }, "domains": [] },
+        { "id": "weibo", "labels": { "en": "Weibo", "ru": "Weibo" }, "domains": [] },
+        { "id": "youtube", "labels": { "en": "YouTube", "ru": "YouTube" }, "domains": [] },
+        { "id": "yandex", "labels": { "en": "Yandex", "ru": "Yandex" }, "domains": [] },
+        { "id": "vk", "labels": { "en": "VK Video", "ru": "VK Video" }, "domains": [] }
+      ]
+    }
+  ]
+}

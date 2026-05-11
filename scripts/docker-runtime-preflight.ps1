@@ -52,18 +52,77 @@ function Assert-CommandAvailable([string]$CommandName, [string]$Hint) {
     }
 }
 
+function Test-DockerAccessDenied([string]$Message) {
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return $false
+    }
+    return $Message -match "Access is denied" -or
+        $Message -match "permission denied while trying to connect to the docker API" -or
+        $Message -match "open .*\.docker\\config\.json: Access is denied"
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 Push-Location $repoRoot
 try {
+    $script:dockerEngineAvailable = $true
+
     Step "Docker CLI availability" {
         Assert-CommandAvailable "docker" "Install Docker Desktop and ensure docker.exe is available in PATH."
     }
 
     Step "Docker engine availability" {
-        $serverVersion = Invoke-Native "docker" @("version", "--format", "{{.Server.Version}}") -Quiet:$CompactOutput
+        $prevErrorAction = $ErrorActionPreference
+        $hasNativePref = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
+        if ($hasNativePref) {
+            $prevNativePref = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        $ErrorActionPreference = "Continue"
+        try {
+            $serverVersionOutput = & docker version --format "{{.Server.Version}}" 2>&1
+        } finally {
+            $ErrorActionPreference = $prevErrorAction
+            if ($hasNativePref) {
+                $PSNativeCommandUseErrorActionPreference = $prevNativePref
+            }
+        }
+        $serverVersionExitCode = if (Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue) { $LASTEXITCODE } else { 0 }
+        $serverVersion = ($serverVersionOutput | Out-String).Trim()
+        if ($serverVersionExitCode -ne 0) {
+            if (Test-DockerAccessDenied $serverVersion) {
+                Write-Warning "Skipping Docker engine checks: access to local Docker daemon is denied in this environment."
+                $script:dockerEngineAvailable = $false
+                return
+            }
+            throw "command failed ($serverVersionExitCode): docker version --format {{.Server.Version}}`n$serverVersion"
+        }
         if ([string]::IsNullOrWhiteSpace($serverVersion)) {
-            $serverVersion = Invoke-Native "docker" @("info", "--format", "{{.ServerVersion}}") -Quiet:$CompactOutput
+            $prevErrorAction = $ErrorActionPreference
+            $hasNativePref = $null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)
+            if ($hasNativePref) {
+                $prevNativePref = $PSNativeCommandUseErrorActionPreference
+                $PSNativeCommandUseErrorActionPreference = $false
+            }
+            $ErrorActionPreference = "Continue"
+            try {
+                $infoOutput = & docker info --format "{{.ServerVersion}}" 2>&1
+            } finally {
+                $ErrorActionPreference = $prevErrorAction
+                if ($hasNativePref) {
+                    $PSNativeCommandUseErrorActionPreference = $prevNativePref
+                }
+            }
+            $infoExitCode = if (Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue) { $LASTEXITCODE } else { 0 }
+            $serverVersion = ($infoOutput | Out-String).Trim()
+            if ($infoExitCode -ne 0) {
+                if (Test-DockerAccessDenied $serverVersion) {
+                    Write-Warning "Skipping Docker engine checks: access to local Docker daemon is denied in this environment."
+                    $script:dockerEngineAvailable = $false
+                    return
+                }
+                throw "command failed ($infoExitCode): docker info --format {{.ServerVersion}}`n$serverVersion"
+            }
         }
         if ([string]::IsNullOrWhiteSpace($serverVersion)) {
             throw "Docker engine did not report a server version."
@@ -72,11 +131,23 @@ try {
     }
 
     Step "Container runtime source contract" {
-        $runtimeSource = Join-Path $repoRoot "ui\desktop\src-tauri\src\network_sandbox_container_runtime.rs"
-        if (-not (Test-Path $runtimeSource)) {
-            throw "missing container runtime source: $runtimeSource"
+        $runtimeSources = @(
+            "ui\desktop\src-tauri\src\network_sandbox_container_runtime.rs",
+            "ui\desktop\src-tauri\src\network_sandbox_container_runtime_core.rs",
+            "ui\desktop\src-tauri\src\network_sandbox_container_runtime_core_ops.rs",
+            "ui\desktop\src-tauri\src\network_sandbox_container_runtime_core_ops_openvpn.rs",
+            "ui\desktop\src-tauri\src\network_sandbox_container_runtime_core_ops_singbox.rs",
+            "ui\desktop\src-tauri\src\network_sandbox_container_runtime_core_ops_amnezia.rs"
+        )
+        $existingSources = @(
+            $runtimeSources |
+                ForEach-Object { Join-Path $repoRoot $_ } |
+                Where-Object { Test-Path -LiteralPath $_ }
+        )
+        if ($existingSources.Count -eq 0) {
+            throw "missing container runtime source set: $($runtimeSources -join ', ')"
         }
-        $content = Get-Content -Path $runtimeSource -Raw
+        $content = ($existingSources | ForEach-Object { Get-Content -Path $_ -Raw }) -join "`n"
         foreach ($needle in @(
             "cerbena.kind=network-sandbox-runtime",
             "cerbena.profile_id",
@@ -90,6 +161,10 @@ try {
 
     if (-not $SkipNetworkProbe) {
         Step "Managed Docker network probe" {
+            if (-not $script:dockerEngineAvailable) {
+                Write-Warning "Skipping managed Docker network probe because Docker daemon access is unavailable."
+                return
+            }
             $networkName = "cerbena-preflight-" + [Guid]::NewGuid().ToString("N")
             $networkCreated = $false
             try {

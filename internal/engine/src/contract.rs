@@ -10,6 +10,8 @@ pub enum EngineKind {
     Chromium,
     #[serde(rename = "ungoogled-chromium")]
     UngoogledChromium,
+    #[serde(rename = "firefox-esr")]
+    FirefoxEsr,
     #[serde(rename = "librewolf")]
     Librewolf,
 }
@@ -63,6 +65,7 @@ impl EngineKind {
         match self {
             EngineKind::Chromium => "chromium",
             EngineKind::UngoogledChromium => "ungoogled-chromium",
+            EngineKind::FirefoxEsr => "firefox-esr",
             EngineKind::Librewolf => "librewolf",
         }
     }

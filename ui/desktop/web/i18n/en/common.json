@@ -954,6 +954,7 @@
   "settings.tools.docker": "Docker Desktop",
   "settings.tools.chromium": "Chromium",
   "settings.tools.ungoogledChromium": "Ungoogled Chromium",
+  "settings.tools.firefoxEsr": "Firefox ESR",
   "settings.tools.librewolf": "LibreWolf",
   "settings.tools.singBox": "sing-box",
   "settings.tools.openvpn": "OpenVPN",

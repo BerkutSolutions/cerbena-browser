@@ -34,5 +34,11 @@ Start with:
 
 - Rust workspace checks: `cargo test --workspace`.
 - Launcher contract tests: `cmd/launcher/tests/*`.
-- Desktop checks: `ui/desktop/scripts/check-i18n.mjs`, `ui/desktop/scripts/ui-smoke-test.mjs`.
+- Desktop web quality gates (via `npm test` in `ui/desktop`):
+  - text integrity check;
+  - i18n check;
+  - lint gate (`lint:web`);
+  - unit tests (`test:unit:web`);
+  - scenario tests (`test:scenario:web`);
+  - UI smoke checks.
 - Release/operator checks: `scripts/local-ci-preflight.ps1`, `scripts/release.ps1`.

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use browser_engine::{
     ChromiumAdapter, EngineAdapter, EngineUpdateArtifact, EngineUpdatePolicy, EngineUpdateService,
-    LaunchRequest, LibrewolfAdapter, UngoogledChromiumAdapter, UpdateMode,
+    FirefoxEsrAdapter, LaunchRequest, LibrewolfAdapter, UngoogledChromiumAdapter, UpdateMode,
 };
 use browser_profile::{CreateProfileInput, Engine, ProfileManager};
 use uuid::Uuid;
@@ -33,8 +33,9 @@ fn cmd_init_profile(args: &[String]) -> Result<String, String> {
             engine: match engine.as_str() {
                 "chromium" => Engine::Chromium,
                 "ungoogled-chromium" | "ungoogled_chromium" => Engine::UngoogledChromium,
+                "firefox-esr" | "firefox_esr" | "firefox" => Engine::FirefoxEsr,
                 "librewolf" => Engine::Librewolf,
-                _ => return Err("engine must be chromium|ungoogled-chromium|librewolf".to_string()),
+                _ => return Err("engine must be chromium|ungoogled-chromium|firefox-esr|librewolf".to_string()),
             },
             default_start_page: Some("https://duckduckgo.com".to_string()),
             default_search_provider: None,
@@ -95,6 +96,16 @@ fn cmd_build_launch_plan(args: &[String]) -> Result<String, String> {
                 .map_err(|e| e.to_string())?;
             Ok(format!("{:?}", plan.engine))
         }
+        Engine::FirefoxEsr => {
+            let adapter = FirefoxEsrAdapter {
+                install_root: PathBuf::from(".launcher").join("engines"),
+                cache_dir: PathBuf::from(".launcher").join("cache"),
+            };
+            let plan = adapter
+                .build_launch_plan(request)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("{:?}", plan.engine))
+        }
         Engine::Librewolf => {
             let adapter = LibrewolfAdapter {
                 install_root: PathBuf::from(".launcher").join("engines"),
@@ -141,7 +152,7 @@ fn parse_flag(args: &[String], flag: &str) -> Result<String, String> {
 pub fn help() -> String {
     [
         "usage:",
-        "  launcher init-profile --root <dir> --name <name> --engine chromium|ungoogled-chromium|librewolf",
+        "  launcher init-profile --root <dir> --name <name> --engine chromium|ungoogled-chromium|firefox-esr|librewolf",
         "  launcher list-profiles --root <dir>",
         "  launcher build-launch-plan --root <dir> --profile-id <uuid> --binary <path>",
         "  launcher update-apply --version <semver> --signature <sig>",

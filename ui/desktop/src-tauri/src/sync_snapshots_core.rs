@@ -1,0 +1,304 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use browser_fingerprint::IdentityPreset;
+use browser_network_policy::{DnsTabPayload, VpnProxyTabPayload};
+use browser_profile::{PatchProfileInput, ProfileMetadata};
+use browser_sync_client::{
+    decrypt_sync_payload, encrypt_sync_payload, BackupSnapshot, ConflictViewItem, RestoreRequest,
+    RestoreResult, RestoreScope, SyncControlsModel, SyncKeyMaterial,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::state::{
+    persist_identity_store, persist_network_store, persist_sync_store_with_secret, AppState,
+};
+#[path = "sync_snapshots_files.rs"]
+mod files;
+
+const SNAPSHOT_KEY_ID: &str = "cerbena-local-snapshot-v1";
+const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotFileEntry {
+    pub relative_path: String,
+    pub content_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotProfileConfig {
+    pub name: String,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+    pub default_start_page: Option<String>,
+    pub default_search_provider: Option<String>,
+    pub ephemeral_mode: bool,
+    pub panic_frame_enabled: bool,
+    #[serde(default)]
+    pub panic_frame_color: Option<String>,
+    #[serde(default)]
+    pub panic_protected_sites: Vec<String>,
+    #[serde(default)]
+    pub ephemeral_retain_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotMaterial {
+    pub schema_version: u32,
+    pub profile_id: Uuid,
+    pub profile: SnapshotProfileConfig,
+    #[serde(default)]
+    pub files: Vec<SnapshotFileEntry>,
+    pub identity_preset: Option<IdentityPreset>,
+    pub dns_policy: Option<DnsTabPayload>,
+    pub vpn_proxy_policy: Option<VpnProxyTabPayload>,
+    pub sync_controls: Option<SyncControlsModel>,
+    #[serde(default)]
+    pub sync_conflicts: Vec<ConflictViewItem>,
+}
+
+pub fn create_snapshot_for_profile(
+    state: &AppState,
+    profile_id: Uuid,
+) -> Result<(String, String, Vec<String>), String> {
+    let manager = state
+        .manager
+        .lock()
+        .map_err(|_| "manager lock poisoned".to_string())?;
+    manager
+        .ensure_unlocked(profile_id)
+        .map_err(|e| e.to_string())?;
+    let metadata = manager.get_profile(profile_id).map_err(|e| e.to_string())?;
+    drop(manager);
+
+    let material = build_snapshot_material(state, &metadata)?;
+    let plaintext =
+        serde_json::to_vec_pretty(&material).map_err(|e| format!("serialize snapshot: {e}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&plaintext);
+    let plaintext_hash = format!("{:x}", hasher.finalize());
+
+    let key = snapshot_key(state, profile_id);
+    let envelope =
+        encrypt_sync_payload(&key, &plaintext).map_err(|e| format!("encrypt snapshot: {e}"))?;
+    let envelope_bytes =
+        serde_json::to_vec(&envelope).map_err(|e| format!("serialize envelope: {e}"))?;
+    let encrypted_blob_b64 = B64.encode(envelope_bytes);
+    let payload_paths = snapshot_payload_paths(&material);
+    Ok((encrypted_blob_b64, plaintext_hash, payload_paths))
+}
+
+pub fn restore_snapshot_for_profile(
+    state: &AppState,
+    request: &RestoreRequest,
+    snapshot: &BackupSnapshot,
+) -> Result<(RestoreResult, Vec<String>), String> {
+    let material = decode_snapshot_material(state, snapshot)?;
+    if material.schema_version != SNAPSHOT_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported snapshot schema version: {}",
+            material.schema_version
+        ));
+    }
+    if material.profile_id != request.profile_id {
+        return Err("snapshot profile mismatch".to_string());
+    }
+
+    let payload_paths = snapshot_payload_paths(&material);
+    let selected_paths = filter_restore_paths(&payload_paths, request);
+    apply_snapshot_material(
+        state,
+        request.profile_id,
+        &material,
+        &selected_paths,
+        request.scope,
+    )?;
+
+    let restored_items = selected_paths.len();
+    let skipped_items = payload_paths.len().saturating_sub(restored_items);
+    Ok((
+        RestoreResult {
+            restored_snapshot_id: snapshot.snapshot_id.clone(),
+            restored_profile_id: snapshot.profile_id,
+            restored_items,
+            skipped_items,
+        },
+        payload_paths,
+    ))
+}
+
+pub fn verify_snapshot_integrity(
+    state: &AppState,
+    snapshot: &BackupSnapshot,
+) -> Result<(bool, Vec<String>), String> {
+    let material = decode_snapshot_material(state, snapshot)?;
+    let payload_paths = snapshot_payload_paths(&material);
+    let plaintext =
+        serde_json::to_vec_pretty(&material).map_err(|e| format!("serialize snapshot: {e}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&plaintext);
+    let computed = format!("{:x}", hasher.finalize());
+    Ok((
+        snapshot
+            .integrity_sha256_hex
+            .eq_ignore_ascii_case(computed.trim()),
+        payload_paths,
+    ))
+}
+
+fn build_snapshot_material(
+    state: &AppState,
+    metadata: &ProfileMetadata,
+) -> Result<SnapshotMaterial, String> {
+    let profile_key = metadata.id.to_string();
+    let files =
+        collect_profile_data_files(&state.profile_root.join(profile_key.clone()).join("data"))?;
+
+    let identity_preset = {
+        let store = state
+            .identity_store
+            .lock()
+            .map_err(|_| "identity store lock poisoned".to_string())?;
+        store.items.get(&profile_key).cloned()
+    };
+    let (dns_policy, vpn_proxy_policy) = {
+        let store = state
+            .network_store
+            .lock()
+            .map_err(|_| "network store lock poisoned".to_string())?;
+        (
+            store.dns.get(&profile_key).cloned(),
+            store.vpn_proxy.get(&profile_key).cloned(),
+        )
+    };
+    let (sync_controls, sync_conflicts) = {
+        let store = state
+            .sync_store
+            .lock()
+            .map_err(|_| "sync store lock poisoned".to_string())?;
+        (
+            store.controls.get(&profile_key).cloned(),
+            store
+                .conflicts
+                .get(&profile_key)
+                .cloned()
+                .unwrap_or_default(),
+        )
+    };
+
+    Ok(SnapshotMaterial {
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
+        profile_id: metadata.id,
+        profile: SnapshotProfileConfig {
+            name: metadata.name.clone(),
+            description: metadata.description.clone(),
+            tags: metadata.tags.clone(),
+            default_start_page: metadata.default_start_page.clone(),
+            default_search_provider: metadata.default_search_provider.clone(),
+            ephemeral_mode: metadata.ephemeral_mode,
+            panic_frame_enabled: metadata.panic_frame_enabled,
+            panic_frame_color: metadata.panic_frame_color.clone(),
+            panic_protected_sites: metadata.panic_protected_sites.clone(),
+            ephemeral_retain_paths: metadata.ephemeral_retain_paths.clone(),
+        },
+        files,
+        identity_preset,
+        dns_policy,
+        vpn_proxy_policy,
+        sync_controls,
+        sync_conflicts,
+    })
+}
+
+fn decode_snapshot_material(
+    state: &AppState,
+    snapshot: &BackupSnapshot,
+) -> Result<SnapshotMaterial, String> {
+    let bytes = B64
+        .decode(snapshot.encrypted_blob_b64.trim())
+        .map_err(|e| format!("decode snapshot blob: {e}"))?;
+    let envelope =
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse snapshot blob: {e}"))?;
+    let key = snapshot_key(state, snapshot.profile_id);
+    let mut plaintext =
+        decrypt_sync_payload(&key, &envelope).map_err(|e| format!("decrypt snapshot: {e}"))?;
+    let material = serde_json::from_slice::<SnapshotMaterial>(&plaintext)
+        .map_err(|e| format!("parse decrypted snapshot: {e}"))?;
+    plaintext.fill(0);
+    Ok(material)
+}
+
+fn snapshot_key(state: &AppState, profile_id: Uuid) -> SyncKeyMaterial {
+    SyncKeyMaterial {
+        profile_id,
+        key_id: SNAPSHOT_KEY_ID.to_string(),
+        wrapping_secret: state.sensitive_store_secret.clone(),
+    }
+}
+
+fn snapshot_payload_paths(material: &SnapshotMaterial) -> Vec<String> {
+    let mut paths = Vec::new();
+    paths.push("profile/config.json".to_string());
+    if material.identity_preset.is_some() {
+        paths.push("identity/preset.json".to_string());
+    }
+    if material.dns_policy.is_some() {
+        paths.push("network/dns.json".to_string());
+    }
+    if material.vpn_proxy_policy.is_some() {
+        paths.push("network/vpn_proxy.json".to_string());
+    }
+    if material.sync_controls.is_some() {
+        paths.push("sync/controls.json".to_string());
+    }
+    if !material.sync_conflicts.is_empty() {
+        paths.push("sync/conflicts.json".to_string());
+    }
+    paths.extend(
+        material
+            .files
+            .iter()
+            .map(|entry| format!("files/{}", entry.relative_path)),
+    );
+    paths
+}
+
+fn filter_restore_paths(all_paths: &[String], request: &RestoreRequest) -> Vec<String> {
+    match request.scope {
+        RestoreScope::Full => all_paths.to_vec(),
+        RestoreScope::Selective => all_paths
+            .iter()
+            .filter(|path| {
+                request
+                    .include_prefixes
+                    .iter()
+                    .any(|prefix| path.starts_with(prefix))
+            })
+            .cloned()
+            .collect(),
+    }
+}
+
+fn apply_snapshot_material(
+    state: &AppState,
+    profile_id: Uuid,
+    material: &SnapshotMaterial,
+    selected_paths: &[String],
+    scope: RestoreScope,
+) -> Result<(), String> {
+    apply_snapshot_material_impl(state, profile_id, material, selected_paths, scope)
+}
+
+#[path = "sync_snapshots_core_support.rs"]
+mod support;
+pub(crate) use support::*;
+
+

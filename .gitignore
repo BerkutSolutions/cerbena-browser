@@ -71,6 +71,7 @@ Thumbs.db
 *.rej
 *~
 .tmp_cookie*.txt
+ui/desktop/$null
 
 # Local Terraform binaries
 deploy/lab-k8s-terraform/terraform/terraform.exe

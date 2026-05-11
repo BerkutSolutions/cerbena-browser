@@ -14,8 +14,7 @@ use crate::{
     process_tracking::is_process_running,
     route_runtime::{
         cleanup_legacy_route_runtime, cleanup_stale_route_runtime_artifacts,
-        ensure_profile_route_runtime, runtime_session_snapshot, stop_all_route_runtime,
-        stop_profile_route_runtime, RouteRuntimeBackend,
+        ensure_profile_route_runtime, stop_all_route_runtime, stop_profile_route_runtime,
     },
     state::AppState,
     traffic_gateway::{
@@ -174,29 +173,19 @@ fn register_active_stack(
     container_network_name: Option<String>,
 ) {
     let state = app_handle.state::<AppState>();
-    let runtime = runtime_session_snapshot(app_handle, profile_id);
+    eprintln!(
+        "[network-sandbox][trace] profile={} step=register-active-stack-start",
+        profile_id
+    );
     let record = NetworkSandboxLifecycleRecord {
         profile_id: profile_id.to_string(),
         gateway_port,
         adapter,
-        runtime_backend: runtime
-            .as_ref()
-            .map(|value| runtime_backend_label(value.backend).to_string()),
-        runtime_listen_port: runtime.as_ref().and_then(|value| value.listen_port),
-        config_path: runtime
-            .as_ref()
-            .map(|value| value.config_path.to_string_lossy().to_string()),
-        cleanup_paths: runtime
-            .as_ref()
-            .map(|value| {
-                value
-                    .cleanup_paths
-                    .iter()
-                    .map(|path| path.to_string_lossy().to_string())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default(),
-        tunnel_name: runtime.and_then(|value| value.tunnel_name),
+        runtime_backend: None,
+        runtime_listen_port: None,
+        config_path: None,
+        cleanup_paths: Vec::new(),
+        tunnel_name: None,
         container_network_name,
     };
     if let Ok(mut lifecycle) = state.network_sandbox_lifecycle.lock() {
@@ -204,6 +193,10 @@ fn register_active_stack(
             .active_profiles
             .insert(profile_id.to_string(), record);
     };
+    eprintln!(
+        "[network-sandbox][trace] profile={} step=register-active-stack-done",
+        profile_id
+    );
 }
 
 fn unregister_active_stack(app_handle: &AppHandle, profile_id: Uuid) {
@@ -265,13 +258,4 @@ fn prune_stale_lifecycle_records(app_handle: &AppHandle, active_profiles: &BTree
                 .unwrap_or(false)
         });
     };
-}
-
-fn runtime_backend_label(backend: RouteRuntimeBackend) -> &'static str {
-    match backend {
-        RouteRuntimeBackend::SingBox => "sing-box",
-        RouteRuntimeBackend::OpenVpn => "openvpn",
-        RouteRuntimeBackend::AmneziaWg => "amneziawg",
-        RouteRuntimeBackend::ContainerSocks => "container-socks",
-    }
 }

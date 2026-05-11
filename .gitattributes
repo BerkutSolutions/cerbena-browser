@@ -1,0 +1,13 @@
+* text=auto
+
+# Keep frontend web/style sources LF-stable across Windows/Linux.
+ui/desktop/web/**/*.css text eol=lf
+ui/desktop/web/**/*.js text eol=lf
+ui/desktop/web/**/*.mjs text eol=lf
+ui/desktop/web/**/*.html text eol=lf
+
+# Scripts and configs should remain LF in repo.
+scripts/**/*.ps1 text eol=lf
+scripts/**/*.mjs text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

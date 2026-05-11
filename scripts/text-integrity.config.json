@@ -1,0 +1,63 @@
+{
+  "text_roots": [
+    ".work/",
+    "docs/",
+    "scripts/",
+    "styles/",
+    "ui/desktop/web/",
+    "ui/desktop/src-tauri/src/",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    ".github/workflows/"
+  ],
+  "exclude_prefixes": [
+    ".git/",
+    "target/",
+    "node_modules/",
+    "ui/desktop/src-tauri/target/"
+  ],
+  "binary_extensions": [
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".svg",
+    ".svgz",
+    ".pdf",
+    ".zip",
+    ".7z",
+    ".tar",
+    ".gz",
+    ".tgz",
+    ".rar",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".eot",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".bin",
+    ".wasm",
+    ".mp3",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".webm",
+    ".class"
+  ],
+  "mojibake_patterns": [
+    "РІР‚[^\\s]",
+    "Р“Сћ[^\\s]",
+    "Гѓ[\\x80-\\xBF]"
+  ],
+  "mojibake_allowlist_patterns": [
+    "^cmd/launcher/tests/docs_quality_tests\\.rs$",
+    "^scripts/text-integrity\\.config\\.json$"
+  ]
+}

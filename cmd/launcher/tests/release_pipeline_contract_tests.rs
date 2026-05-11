@@ -109,6 +109,8 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
         .expect("read build-installer.ps1");
     let release_script =
         fs::read_to_string(root.join("scripts").join("release.ps1")).expect("read release.ps1");
+    let local_ci_preflight = fs::read_to_string(root.join("scripts").join("local-ci-preflight.ps1"))
+        .expect("read local-ci-preflight.ps1");
     let version_script = fs::read_to_string(root.join("scripts").join("update-version.ps1"))
         .expect("read update-version.ps1");
     let version_manifest =
@@ -207,6 +209,9 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
     );
     for needle in [
         "\"build:deb\"",
+        "\"lint:web\"",
+        "\"test:unit:web\"",
+        "\"test:scenario:web\"",
         "tauri.linux.conf.json",
         "--bundles deb",
         "\"deb\"",
@@ -222,6 +227,22 @@ fn release_scripts_exist_and_reference_current_quality_gates() {
                 || artifacts_script.contains(needle)
                 || release_script.contains(needle),
             "linux deb packaging contract must mention {needle}"
+        );
+    }
+
+    for needle in [
+        "lint:web",
+        "test:unit:web",
+        "test:scenario:web",
+        "npm.cmd\" @(\"run\", \"lint:web\")",
+        "npm.cmd\" @(\"run\", \"test:unit:web\")",
+        "npm.cmd\" @(\"run\", \"test:scenario:web\")",
+    ] {
+        assert!(
+            desktop_package.contains(needle)
+                || release_script.contains(needle)
+                || local_ci_preflight.contains(needle),
+            "desktop web quality-gate contract must mention {needle}"
         );
     }
 }

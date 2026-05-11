@@ -20,6 +20,7 @@ fn gitignore_marks_worktree_and_artifacts_as_local_only() {
         "node_modules/",
         "docs/build/",
         "ui/desktop/src-tauri/target/",
+        "ui/desktop/$null",
     ] {
         assert!(
             gitignore.contains(needle),

@@ -7,10 +7,14 @@ sidebar_position: 90
 ## Baseline cycle
 
 1. Run `cargo test --workspace`.
-2. Run documentation checks, `i18n`, UI smoke checks, and local preflight.
+2. Run desktop validation gates:
+   - docs/text checks;
+   - `i18n` checks;
+   - desktop web `npm test` (`lint + unit + scenario + smoke`);
+   - local preflight.
 3. Prepare operator release-signing material and environment variables.
 4. Build release artifacts and the installer.
-4. Validate `README`, the bilingual wiki, `CHANGELOG.md`, and requirement traceability.
+5. Validate `README`, the bilingual wiki, `CHANGELOG.md`, and requirement traceability.
 
 Read this before packaging:
 

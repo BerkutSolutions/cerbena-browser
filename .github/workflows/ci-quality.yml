@@ -25,6 +25,7 @@ jobs:
             if ($attempt -eq $attempts) { throw "npm ci failed after $attempts attempts" }
             Start-Sleep -Seconds (5 * $attempt)
           }
+      - run: npm run text:check
       - run: npm run docs:build
       - name: Install desktop npm deps (retry)
         shell: pwsh

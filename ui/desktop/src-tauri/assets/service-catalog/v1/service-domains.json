@@ -1,0 +1,414 @@
+{
+    "version":  "1",
+    "services":  [
+                     {
+                         "service":  "4chan",
+                         "domains":  [
+                                         "4cdn.org",
+                                         "4chan.org",
+                                         "4channel.org"
+                                     ]
+                     },
+                     {
+                         "service":  "500px",
+                         "domains":  [
+                                         "500px.com"
+                                     ]
+                     },
+                     {
+                         "service":  "9gag",
+                         "domains":  [
+                                         "9gag.com"
+                                     ]
+                     },
+                     {
+                         "service":  "aliexpress",
+                         "domains":  [
+                                         "aliexpress.com"
+                                     ]
+                     },
+                     {
+                         "service":  "amino",
+                         "domains":  [
+                                         "aminoapps.com"
+                                     ]
+                     },
+                     {
+                         "service":  "betano",
+                         "domains":  [
+                                         "betano.com"
+                                     ]
+                     },
+                     {
+                         "service":  "betfair",
+                         "domains":  [
+                                         "betfair.com"
+                                     ]
+                     },
+                     {
+                         "service":  "betway",
+                         "domains":  [
+                                         "betway.com"
+                                     ]
+                     },
+                     {
+                         "service":  "blaze",
+                         "domains":  [
+                                         "blaze.com"
+                                     ]
+                     },
+                     {
+                         "service":  "box",
+                         "domains":  [
+                                         "box.com",
+                                         "boxcdn.net"
+                                     ]
+                     },
+                     {
+                         "service":  "canais_globo",
+                         "domains":  [
+                                         "globo.com",
+                                         "globoplay.globo.com"
+                                     ]
+                     },
+                     {
+                         "service":  "claro",
+                         "domains":  [
+                                         "claro.com.br"
+                                     ]
+                     },
+                     {
+                         "service":  "crunchyroll",
+                         "domains":  [
+                                         "crunchyroll.com"
+                                     ]
+                     },
+                     {
+                         "service":  "deepseek",
+                         "domains":  [
+                                         "deepseek.ai",
+                                         "deepseek.com"
+                                     ]
+                     },
+                     {
+                         "service":  "deezer",
+                         "domains":  [
+                                         "deezer.com",
+                                         "dzcdn.net"
+                                     ]
+                     },
+                     {
+                         "service":  "directv_go",
+                         "domains":  [
+                                         "directvgo.com"
+                                     ]
+                     },
+                     {
+                         "service":  "douban",
+                         "domains":  [
+                                         "douban.com",
+                                         "douban.fm",
+                                         "doubanio.com"
+                                     ]
+                     },
+                     {
+                         "service":  "fifa",
+                         "domains":  [
+                                         "fifa.com"
+                                     ]
+                     },
+                     {
+                         "service":  "globoplay",
+                         "domains":  [
+                                         "globoplay.globo.com"
+                                     ]
+                     },
+                     {
+                         "service":  "grok",
+                         "domains":  [
+                                         "grok.com",
+                                         "x.ai",
+                                         "x.com"
+                                     ]
+                     },
+                     {
+                         "service":  "iheartradio",
+                         "domains":  [
+                                         "iheartradio.com"
+                                     ]
+                     },
+                     {
+                         "service":  "imgur",
+                         "domains":  [
+                                         "imgur.com",
+                                         "imgur.io",
+                                         "imgurinc.com"
+                                     ]
+                     },
+                     {
+                         "service":  "kik",
+                         "domains":  [
+                                         "kik.com"
+                                     ]
+                     },
+                     {
+                         "service":  "kook",
+                         "domains":  [
+                                         "kookapp.cn"
+                                     ]
+                     },
+                     {
+                         "service":  "lazada",
+                         "domains":  [
+                                         "lazada.com"
+                                     ]
+                     },
+                     {
+                         "service":  "lionsgate_plus",
+                         "domains":  [
+                                         "lionsgateplus.com"
+                                     ]
+                     },
+                     {
+                         "service":  "looke",
+                         "domains":  [
+                                         "looke.com.br"
+                                     ]
+                     },
+                     {
+                         "service":  "mail_ru",
+                         "domains":  [
+                                         "imgsmail.ru",
+                                         "mail.ru",
+                                         "mycdn.me"
+                                     ]
+                     },
+                     {
+                         "service":  "manus",
+                         "domains":  [
+                                         "manus.im"
+                                     ]
+                     },
+                     {
+                         "service":  "mastodon",
+                         "domains":  [
+                                         "mastodon.social"
+                                     ]
+                     },
+                     {
+                         "service":  "max",
+                         "domains":  [
+                                         "max.com"
+                                     ]
+                     },
+                     {
+                         "service":  "mercado_libre",
+                         "domains":  [
+                                         "mercadolibre.com"
+                                     ]
+                     },
+                     {
+                         "service":  "nebula",
+                         "domains":  [
+                                         "nebula.tv"
+                                     ]
+                     },
+                     {
+                         "service":  "odysee",
+                         "domains":  [
+                                         "lbry.com",
+                                         "odysee.com"
+                                     ]
+                     },
+                     {
+                         "service":  "ok_ru",
+                         "domains":  [
+                                         "ok.ru"
+                                     ]
+                     },
+                     {
+                         "service":  "olvid",
+                         "domains":  [
+                                         "olvid.io"
+                                     ]
+                     },
+                     {
+                         "service":  "onlyfans",
+                         "domains":  [
+                                         "onlyfans.com"
+                                     ]
+                     },
+                     {
+                         "service":  "peacock_tv",
+                         "domains":  [
+                                         "peacocktv.com"
+                                     ]
+                     },
+                     {
+                         "service":  "perplexity",
+                         "domains":  [
+                                         "perplexity.ai",
+                                         "pplx.ai"
+                                     ]
+                     },
+                     {
+                         "service":  "plenty_of_fish",
+                         "domains":  [
+                                         "pof.com"
+                                     ]
+                     },
+                     {
+                         "service":  "plex",
+                         "domains":  [
+                                         "plex.direct",
+                                         "plex.tv"
+                                     ]
+                     },
+                     {
+                         "service":  "pluto_tv",
+                         "domains":  [
+                                         "pluto.tv"
+                                     ]
+                     },
+                     {
+                         "service":  "privacy",
+                         "domains":  [
+                                         "privacy.com"
+                                     ]
+                     },
+                     {
+                         "service":  "proton",
+                         "domains":  [
+                                         "proton.me",
+                                         "protonmail.com",
+                                         "protonvpn.com"
+                                     ]
+                     },
+                     {
+                         "service":  "roblox",
+                         "domains":  [
+                                         "rbxcdn.com",
+                                         "roblox.com"
+                                     ]
+                     },
+                     {
+                         "service":  "shein",
+                         "domains":  [
+                                         "shein.com"
+                                     ]
+                     },
+                     {
+                         "service":  "signal",
+                         "domains":  [
+                                         "signal.org"
+                                     ]
+                     },
+                     {
+                         "service":  "skype",
+                         "domains":  [
+                                         "skype.com"
+                                     ]
+                     },
+                     {
+                         "service":  "snapchat",
+                         "domains":  [
+                                         "sc-cdn.net",
+                                         "snapchat.com"
+                                     ]
+                     },
+                     {
+                         "service":  "soundcloud",
+                         "domains":  [
+                                         "p-cdn.us",
+                                         "sndcdn.com",
+                                         "soundcloud.com"
+                                     ]
+                     },
+                     {
+                         "service":  "temu",
+                         "domains":  [
+                                         "temu.com"
+                                     ]
+                     },
+                     {
+                         "service":  "tinder",
+                         "domains":  [
+                                         "tinder.com"
+                                     ]
+                     },
+                     {
+                         "service":  "tumblr",
+                         "domains":  [
+                                         "tmblr.co",
+                                         "tumblr.co",
+                                         "tumblr.com"
+                                     ]
+                     },
+                     {
+                         "service":  "ubisoft",
+                         "domains":  [
+                                         "ubisoft.com",
+                                         "uplaypc-s-ubisoft.cdn.ubi.com"
+                                     ]
+                     },
+                     {
+                         "service":  "valorant",
+                         "domains":  [
+                                         "playvalorant.com",
+                                         "valorant.com"
+                                     ]
+                     },
+                     {
+                         "service":  "viber",
+                         "domains":  [
+                                         "viber.com"
+                                     ]
+                     },
+                     {
+                         "service":  "vk_com",
+                         "domains":  [
+                                         "vk.com",
+                                         "userapi.com"
+                                     ]
+                     },
+                     {
+                         "service":  "voot",
+                         "domains":  [
+                                         "voot.com"
+                                     ]
+                     },
+                     {
+                         "service":  "wargaming",
+                         "domains":  [
+                                         "wargaming.net"
+                                     ]
+                     },
+                     {
+                         "service":  "warner_bros_games",
+                         "domains":  [
+                                         "wbgames.com"
+                                     ]
+                     },
+                     {
+                         "service":  "weibo",
+                         "domains":  [
+                                         "weibo.cn",
+                                         "weibo.com",
+                                         "weibocdn.com"
+                                     ]
+                     },
+                     {
+                         "service":  "wizz",
+                         "domains":  [
+                                         "wizzapp.com"
+                                     ]
+                     },
+                     {
+                         "service":  "zhihu",
+                         "domains":  [
+                                         "zhihu.com",
+                                         "zhimg.com"
+                                     ]
+                     }
+                 ]
+}

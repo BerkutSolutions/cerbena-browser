@@ -14,6 +14,8 @@ use crate::{
     profile_commands::ensure_engine_ready,
     state::AppState,
 };
+#[path = "runtime_tools_commands_status.rs"]
+mod status;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +40,7 @@ enum RuntimeToolId {
     LinuxBrowserSandbox,
     Chromium,
     UngoogledChromium,
+    FirefoxEsr,
     Librewolf,
     SingBox,
     OpenVpn,
@@ -52,6 +55,7 @@ impl RuntimeToolId {
             "linux-browser-sandbox" => Some(Self::LinuxBrowserSandbox),
             "chromium" => Some(Self::Chromium),
             "ungoogled-chromium" => Some(Self::UngoogledChromium),
+            "firefox-esr" => Some(Self::FirefoxEsr),
             "librewolf" => Some(Self::Librewolf),
             "sing-box" => Some(Self::SingBox),
             "openvpn" => Some(Self::OpenVpn),
@@ -67,6 +71,7 @@ impl RuntimeToolId {
             Self::LinuxBrowserSandbox => "linux-browser-sandbox",
             Self::Chromium => "chromium",
             Self::UngoogledChromium => "ungoogled-chromium",
+            Self::FirefoxEsr => "firefox-esr",
             Self::Librewolf => "librewolf",
             Self::SingBox => "sing-box",
             Self::OpenVpn => "openvpn",
@@ -81,6 +86,7 @@ impl RuntimeToolId {
             Self::LinuxBrowserSandbox => "settings.tools.linuxBrowserSandbox",
             Self::Chromium => "settings.tools.chromium",
             Self::UngoogledChromium => "settings.tools.ungoogledChromium",
+            Self::FirefoxEsr => "settings.tools.firefoxEsr",
             Self::Librewolf => "settings.tools.librewolf",
             Self::SingBox => "settings.tools.singBox",
             Self::OpenVpn => "settings.tools.openvpn",
@@ -122,10 +128,14 @@ pub async fn install_runtime_tool(
                     .to_string(),
             )
         }
-        RuntimeToolId::Chromium | RuntimeToolId::UngoogledChromium | RuntimeToolId::Librewolf => {
+        RuntimeToolId::Chromium
+        | RuntimeToolId::UngoogledChromium
+        | RuntimeToolId::FirefoxEsr
+        | RuntimeToolId::Librewolf => {
             let engine = match tool {
                 RuntimeToolId::Chromium => EngineKind::Chromium,
                 RuntimeToolId::UngoogledChromium => EngineKind::UngoogledChromium,
+                RuntimeToolId::FirefoxEsr => EngineKind::FirefoxEsr,
                 RuntimeToolId::Librewolf => EngineKind::Librewolf,
                 _ => unreachable!(),
             };
@@ -166,387 +176,5 @@ pub async fn install_runtime_tool(
 }
 
 fn collect_runtime_tools_status(state: &AppState) -> Result<Vec<RuntimeToolStatusView>, String> {
-    let docker = docker_status(state);
-    #[allow(unused_mut)]
-    let mut tools = vec![
-        docker_view(&docker),
-        engine_view(state, EngineKind::Chromium)?,
-        engine_view(state, EngineKind::UngoogledChromium)?,
-        engine_view(state, EngineKind::Librewolf)?,
-        network_tool_view(state, NetworkTool::SingBox, &docker)?,
-        network_tool_view(state, NetworkTool::OpenVpn, &docker)?,
-        network_tool_view(state, NetworkTool::AmneziaWg, &docker)?,
-        network_tool_view(state, NetworkTool::TorBundle, &docker)?,
-    ];
-    #[cfg(target_os = "linux")]
-    tools.insert(1, linux_browser_sandbox_view());
-    Ok(tools)
-}
-
-#[cfg(target_os = "linux")]
-fn linux_browser_sandbox_view() -> RuntimeToolStatusView {
-    let ready = linux_browser_sandbox_ready();
-    RuntimeToolStatusView {
-        id: RuntimeToolId::LinuxBrowserSandbox.id().to_string(),
-        name_key: RuntimeToolId::LinuxBrowserSandbox.name_key().to_string(),
-        status: if ready {
-            "installed".to_string()
-        } else {
-            "missing".to_string()
-        },
-        version: None,
-        action: if ready {
-            "none".to_string()
-        } else {
-            "guide".to_string()
-        },
-        detail_key: Some(
-            if ready {
-                "settings.tools.detail.linuxBrowserSandboxReady"
-            } else {
-                "settings.tools.detail.linuxBrowserSandboxMissing"
-            }
-            .to_string(),
-        ),
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn linux_browser_sandbox_ready() -> bool {
-    let userns_enabled = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone")
-        .ok()
-        .map(|value| value.trim() == "1")
-        .unwrap_or(false);
-    if !userns_enabled {
-        return false;
-    }
-    let apparmor_restricts_userns =
-        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .ok()
-            .map(|value| value.trim() == "1")
-            .unwrap_or(false);
-    if !apparmor_restricts_userns {
-        return true;
-    }
-    linux_cerbena_apparmor_allowlist_present()
-}
-
-#[cfg(target_os = "linux")]
-fn linux_cerbena_apparmor_allowlist_present() -> bool {
-    let profile = std::fs::read_to_string("/etc/apparmor.d/cerbena-chromium")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if profile.is_empty() {
-        return false;
-    }
-    let dev_path = ".local/share/dev.cerbena.app/engine-runtime/engines/chromium/";
-    let prod_path = ".local/share/cerbena.app/engine-runtime/engines/chromium/";
-    profile.contains("userns") && (profile.contains(dev_path) || profile.contains(prod_path))
-}
-
-fn docker_view(docker: &DockerStatus) -> RuntimeToolStatusView {
-    #[cfg(target_os = "linux")]
-    let missing_action = "guide";
-    #[cfg(not(target_os = "linux"))]
-    let missing_action = "external";
-    RuntimeToolStatusView {
-        id: RuntimeToolId::Docker.id().to_string(),
-        name_key: RuntimeToolId::Docker.name_key().to_string(),
-        status: if docker.installed {
-            "installed".to_string()
-        } else {
-            "missing".to_string()
-        },
-        version: docker.client_version.clone(),
-        action: if docker.installed {
-            "none".to_string()
-        } else {
-            missing_action.to_string()
-        },
-        detail_key: if docker.installed {
-            if docker.runtime_available {
-                Some("settings.tools.detail.dockerReady".to_string())
-            } else {
-                Some("settings.tools.detail.dockerStopped".to_string())
-            }
-        } else {
-            Some("settings.tools.detail.dockerMissing".to_string())
-        },
-    }
-}
-
-fn engine_view(state: &AppState, engine: EngineKind) -> Result<RuntimeToolStatusView, String> {
-    let runtime =
-        EngineRuntime::new(state.engine_runtime_root.clone()).map_err(|e| e.to_string())?;
-    let installation = runtime.installed(engine).map_err(|e| e.to_string())?;
-    Ok(RuntimeToolStatusView {
-        id: engine.as_key().to_string(),
-        name_key: match engine {
-            EngineKind::Chromium => RuntimeToolId::Chromium.name_key(),
-            EngineKind::UngoogledChromium => RuntimeToolId::UngoogledChromium.name_key(),
-            EngineKind::Librewolf => RuntimeToolId::Librewolf.name_key(),
-        }
-        .to_string(),
-        status: if installation.is_some() {
-            "installed".to_string()
-        } else {
-            "missing".to_string()
-        },
-        version: installation.map(|item| item.version),
-        action: if runtime
-            .installed(engine)
-            .map_err(|e| e.to_string())?
-            .is_some()
-        {
-            "none".to_string()
-        } else {
-            "internal".to_string()
-        },
-        detail_key: None,
-    })
-}
-
-fn network_tool_view(
-    state: &AppState,
-    tool: NetworkTool,
-    docker: &DockerStatus,
-) -> Result<RuntimeToolStatusView, String> {
-    let runtime = NetworkRuntime::new(state.network_runtime_root.clone())?;
-    if runtime.installed(tool)?.is_some() {
-        return Ok(RuntimeToolStatusView {
-            id: tool.as_key().to_string(),
-            name_key: tool_name_key(tool).to_string(),
-            status: "installed".to_string(),
-            version: Some(tool_version(tool).to_string()),
-            action: "none".to_string(),
-            detail_key: None,
-        });
-    }
-
-    if let Some(version) = detect_network_tool_version(&state.app_handle, tool) {
-        return Ok(RuntimeToolStatusView {
-            id: tool.as_key().to_string(),
-            name_key: tool_name_key(tool).to_string(),
-            status: "installed".to_string(),
-            version: Some(version),
-            action: "none".to_string(),
-            detail_key: None,
-        });
-    }
-
-    if supports_docker_fallback(tool) && docker.runtime_available {
-        return Ok(RuntimeToolStatusView {
-            id: tool.as_key().to_string(),
-            name_key: tool_name_key(tool).to_string(),
-            status: "docker".to_string(),
-            version: docker
-                .client_version
-                .as_ref()
-                .map(|version| format!("Docker {version}"))
-                .or_else(|| Some("Docker".to_string())),
-            action: "none".to_string(),
-            detail_key: Some("settings.tools.detail.dockerBacked".to_string()),
-        });
-    }
-
-    Ok(RuntimeToolStatusView {
-        id: tool.as_key().to_string(),
-        name_key: tool_name_key(tool).to_string(),
-        status: "missing".to_string(),
-        version: None,
-        action: "internal".to_string(),
-        detail_key: if supports_docker_fallback(tool) {
-            Some("settings.tools.detail.localOrDocker".to_string())
-        } else {
-            None
-        },
-    })
-}
-
-fn tool_name_key(tool: NetworkTool) -> &'static str {
-    match tool {
-        NetworkTool::SingBox => RuntimeToolId::SingBox.name_key(),
-        NetworkTool::OpenVpn => RuntimeToolId::OpenVpn.name_key(),
-        NetworkTool::AmneziaWg => RuntimeToolId::AmneziaWg.name_key(),
-        NetworkTool::TorBundle => RuntimeToolId::TorBundle.name_key(),
-    }
-}
-
-fn tool_version(tool: NetworkTool) -> &'static str {
-    match tool {
-        NetworkTool::SingBox => "1.12.0",
-        NetworkTool::OpenVpn => "2.6.16-I001",
-        NetworkTool::AmneziaWg => "2.0.0",
-        NetworkTool::TorBundle => "15.0.9",
-    }
-}
-
-fn supports_docker_fallback(tool: NetworkTool) -> bool {
-    matches!(
-        tool,
-        NetworkTool::SingBox | NetworkTool::OpenVpn | NetworkTool::AmneziaWg
-    )
-}
-
-fn docker_status(state: &AppState) -> DockerStatus {
-    let client_version = docker_client_version();
-    let probe = probe_container_runtime(state, None);
-    DockerStatus {
-        installed: client_version.is_some(),
-        client_version,
-        runtime_available: probe.runtime_version.is_some(),
-    }
-}
-
-fn docker_client_version() -> Option<String> {
-    let output = hidden_command("docker").arg("--version").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    parse_docker_client_version(&String::from_utf8_lossy(&output.stdout))
-}
-
-fn detect_network_tool_version(app_handle: &AppHandle, tool: NetworkTool) -> Option<String> {
-    match tool {
-        NetworkTool::SingBox => {
-            let path = resolve_sing_box_binary_path(app_handle).ok()?;
-            probe_command_version(&path, &[&["version"], &["--version"]])
-        }
-        NetworkTool::OpenVpn => {
-            let path = resolve_openvpn_binary_path(app_handle).ok()?;
-            probe_command_version(&path, &[&["--version"], &["version"]])
-        }
-        NetworkTool::AmneziaWg => {
-            let path = resolve_amneziawg_binary_path(app_handle).ok()?;
-            probe_command_version(&path, &[&["--version"], &["version"]])
-        }
-        NetworkTool::TorBundle => {
-            let path = resolve_tor_binary_path(app_handle)?;
-            probe_command_version(&path, &[&["--version"], &["version"]])
-        }
-    }
-}
-
-fn probe_command_version(path: &PathBuf, candidates: &[&[&str]]) -> Option<String> {
-    for args in candidates {
-        let output = hidden_command(path.as_os_str()).args(*args).output().ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Some(version) = first_semver_like_token(&stdout) {
-            return Some(version);
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if let Some(version) = first_semver_like_token(&stderr) {
-            return Some(version);
-        }
-        if output.status.success() {
-            return Some("installed".to_string());
-        }
-    }
-    None
-}
-
-fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    #[cfg(target_os = "windows")]
-    let mut command = Command::new(program);
-    #[cfg(not(target_os = "windows"))]
-    let command = Command::new(program);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    command
-}
-
-fn parse_docker_client_version(text: &str) -> Option<String> {
-    let line = text
-        .lines()
-        .map(str::trim)
-        .find(|line| line.to_ascii_lowercase().starts_with("docker version "))?;
-    let raw = line
-        .trim_start_matches("Docker version ")
-        .split(',')
-        .next()?
-        .trim();
-    if raw.is_empty() {
-        None
-    } else {
-        Some(raw.to_string())
-    }
-}
-
-fn first_semver_like_token(text: &str) -> Option<String> {
-    for token in text
-        .split(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';' || ch == '(' || ch == ')')
-    {
-        let trimmed =
-            token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '.' && ch != '-');
-        if looks_like_version(trimmed) {
-            return Some(trimmed.to_string());
-        }
-    }
-    None
-}
-
-fn looks_like_version(value: &str) -> bool {
-    if value.is_empty() {
-        return false;
-    }
-    let mut has_digit = false;
-    let mut dot_count = 0usize;
-    let mut has_separator = false;
-    let mut previous_was_separator = false;
-    for ch in value.chars() {
-        if ch.is_ascii_digit() {
-            has_digit = true;
-            previous_was_separator = false;
-        } else if ch == '.' {
-            dot_count += 1;
-            has_separator = true;
-            if previous_was_separator {
-                return false;
-            }
-            previous_was_separator = true;
-        } else if ch == '-' {
-            has_separator = true;
-            if previous_was_separator {
-                return false;
-            }
-            previous_was_separator = true;
-        } else if ch.is_ascii_alphabetic() {
-            previous_was_separator = false;
-        } else {
-            return false;
-        }
-    }
-    has_digit
-        && dot_count >= 1
-        && has_separator
-        && !previous_was_separator
-        && value.chars().next().is_some_and(|ch| ch.is_ascii_digit())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{first_semver_like_token, parse_docker_client_version};
-
-    #[test]
-    fn docker_client_version_is_parsed() {
-        assert_eq!(
-            parse_docker_client_version("Docker version 29.2.1, build 123456"),
-            Some("29.2.1".to_string())
-        );
-    }
-
-    #[test]
-    fn semver_like_tokens_are_detected() {
-        assert_eq!(
-            first_semver_like_token("OpenVPN 2.6.16-I001 amd64"),
-            Some("2.6.16-I001".to_string())
-        );
-        assert_eq!(
-            first_semver_like_token("sing-box version 1.12.0"),
-            Some("1.12.0".to_string())
-        );
-    }
+    status::collect_runtime_tools_status(state)
 }

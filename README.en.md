@@ -111,6 +111,8 @@ npm ci
 npm test
 ```
 
+`npm test` in `ui/desktop` includes desktop web quality gates: text-integrity, i18n, lint, unit, scenario, and smoke checks.
+
 ```bash
 npm ci
 npm run docs:build

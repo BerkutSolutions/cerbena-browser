@@ -1,9 +1,6 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::OnceLock,
-};
+use std::{collections::BTreeMap, sync::OnceLock};
 
-use crate::service_domains_data::SERVICE_DOMAIN_DATA;
+use crate::service_domains_assets::load_service_domain_map;
 
 static SERVICE_DOMAIN_MAP: OnceLock<BTreeMap<String, Vec<String>>> = OnceLock::new();
 
@@ -17,56 +14,16 @@ pub fn service_domain_seeds(service: &str) -> Vec<String> {
 }
 
 fn build_service_domain_map() -> BTreeMap<String, Vec<String>> {
-    let mut map = BTreeMap::<String, BTreeSet<String>>::new();
-    for (service, domains) in SERVICE_DOMAIN_DATA {
-        let normalized_service = normalize_service_key(service);
-        if !is_service_key(&normalized_service) {
-            continue;
-        }
-        let set = map.entry(normalized_service).or_default();
-        for domain in *domains {
-            let normalized_domain = normalize_domain(domain);
-            if is_valid_domain(&normalized_domain) {
-                set.insert(normalized_domain);
-            }
+    match load_service_domain_map() {
+        Ok(map) => map,
+        Err(error) => {
+            panic!("service domains asset load failed: {error}");
         }
     }
-
-    map.into_iter()
-        .map(|(service, domains)| (service, domains.into_iter().collect::<Vec<_>>()))
-        .collect()
 }
 
 fn normalize_service_key(value: &str) -> String {
     value.trim().to_lowercase()
-}
-
-fn normalize_domain(value: &str) -> String {
-    value
-        .trim()
-        .trim_start_matches("*.")
-        .trim_start_matches('.')
-        .trim_end_matches('.')
-        .to_lowercase()
-}
-
-fn is_service_key(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '+')
-}
-
-fn is_valid_domain(value: &str) -> bool {
-    if value.is_empty() || value == "-" || value.contains('/') || value.contains('*') {
-        return false;
-    }
-    if !value.contains('.') {
-        return false;
-    }
-    value
-        .chars()
-        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '.')
 }
 
 #[cfg(test)]

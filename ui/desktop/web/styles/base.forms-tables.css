@@ -1,0 +1,178 @@
+/* Hide top page title/subtitle in all tabs */
+.app-header {
+  display: none;
+}
+
+#rbac-badge {
+  display: none !important;
+}
+
+#content {
+  padding-top: 20px;
+}
+.settings-tabs-card .waf-card-body {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+#settings-page .tabs.browser-tabs {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 4px 4px 0;
+  border-bottom: 1px solid rgba(125, 155, 255, 0.25);
+  margin-bottom: 10px;
+}
+
+#settings-page .tabs.browser-tabs .tab-btn {
+  border: 1px solid rgba(125, 155, 255, 0.25);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  padding: 8px 14px;
+  background: rgba(10, 14, 24, 0.6);
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease;
+  position: relative;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#settings-page .tabs.browser-tabs .tab-btn:hover {
+  color: #fff;
+  background: rgba(24, 32, 50, 0.8);
+  transform: translateY(-2px);
+}
+
+#settings-page .tabs.browser-tabs .tab-btn.active {
+  background: rgba(20, 26, 38, 0.95);
+  color: #fff;
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.35);
+  transform: translateY(-1px);
+  z-index: 2;
+}
+
+#settings-page .tabs.browser-tabs .tab-btn.active::after {
+  content: '';
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: -2px;
+  height: 4px;
+  background: rgba(20, 26, 38, 0.95);
+}
+
+/* Global overflow safety on narrow viewports */
+:where(.page-card, .card, .table-card, .panel, .section, .modal, .modal-content, .widget, .form-card, .table-responsive, .data-table, .grid, .row, .col, .tabs, .tab-content) {
+  min-width: 0;
+}
+
+:where(.page-card, .card, .table-card, .panel, .section, .modal-content, .widget, .form-card) > * {
+  min-width: 0;
+}
+
+:where(input, select, textarea, button) {
+  max-width: 100%;
+}
+
+:where(th, td, .muted, .label, .badge, .note) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+:where(.card, .page-card, .panel, .widget, .waf-card-body, .dashboard-widget-content, .dashboard-list-row, .dashboard-system-row, .mini-metric, .container-status-grid > *, .waf-modal-card) > :where(h1, h2, h3, h4, p, span, strong, small, div) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.no-page-card-head > .waf-card-head {
+  display: flex;
+}
+
+.waf-pager .select,
+.waf-pager select {
+  min-width: 86px;
+  background: rgba(8, 12, 20, 0.92);
+  border: 1px solid rgba(96, 121, 187, 0.45);
+  border-radius: 10px;
+  color: #f5f7ff;
+  padding: 7px 28px 7px 10px;
+}
+
+.waf-pager .select:focus,
+.waf-pager select:focus {
+  border-color: rgba(125, 155, 255, 0.92);
+  box-shadow: 0 0 0 3px rgba(125, 155, 255, 0.2);
+  outline: none;
+}
+
+/* Global cards / frames */
+:where(.waf-card, .waf-subcard, .waf-modal-card) {
+  border: 1px solid rgba(109, 153, 245, 0.34);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(118, 170, 255, 0.22), transparent 30%),
+    radial-gradient(circle at left bottom, rgba(61, 105, 194, 0.12), transparent 26%),
+    linear-gradient(160deg, rgba(20, 31, 54, 0.94), rgba(12, 18, 31, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 18px 38px rgba(0, 0, 0, 0.24);
+}
+
+:where(.waf-card-head) {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid rgba(109, 153, 245, 0.2);
+  background: linear-gradient(180deg, rgba(117, 168, 255, 0.06), rgba(117, 168, 255, 0));
+}
+
+:where(.waf-card-head h3) {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+  color: #f1f5ff;
+}
+
+:where(.waf-card-head .muted) {
+  margin-top: 4px;
+  color: rgba(198, 209, 237, 0.78);
+}
+
+:where(.waf-card-body) {
+  padding: 20px 20px 20px;
+}
+
+:where(.waf-card-head) + :where(.waf-card-body) {
+  padding-top: 36px;
+}
+
+:where(.waf-card-head) + :where(.revisions-modal-body, .revisions-status-detail) {
+  padding-top: 36px;
+}
+
+:where(.waf-card-head) + :where(.waf-card-body, .revisions-modal-body, .revisions-status-detail) > :first-child {
+  margin-top: 2px;
+}
+
+:where(.waf-note) {
+  border: 1px solid rgba(109, 153, 245, 0.22);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, rgba(15, 24, 40, 0.78), rgba(12, 18, 31, 0.58));
+  color: rgba(209, 220, 247, 0.9);
+}
+
+:where(.waf-empty) {
+  border: 1px dashed rgba(112, 145, 221, 0.24);
+  border-radius: 14px;
+  padding: 18px;
+  background: rgba(11, 18, 30, 0.22);
+}
+

@@ -1454,6 +1454,10 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   color: rgba(255, 211, 186, 0.95);
 }
 
+.engine-firefox-esr {
+  color: rgba(255, 176, 108, 0.98);
+}
+
 .profiles-name {
   font-weight: 700;
   color: #fff;

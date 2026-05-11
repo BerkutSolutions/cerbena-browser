@@ -1,6 +1,6 @@
 # Cerbena Browser Documentation
 
-Version baseline: `repository snapshot 2026-05-01`
+Version baseline: `repository snapshot 2026-05-11`
 
 This directory contains the release-synced bilingual Cerbena Browser documentation set. The Russian and English branches mirror the same product map and are maintained together as one wiki for architecture, UI workflows, networking, DNS filtering, integrations, installer/release operations, and troubleshooting.
 
@@ -55,10 +55,10 @@ This directory contains the release-synced bilingual Cerbena Browser documentati
 - Service filtering, blocklists, domain restrictions, and external-link routing.
 - Launcher CLI, local API, MCP, sync controls, installer packaging, and release gates.
 - Trusted release delivery with signed checksums, a standalone updater, backward-compatible sync encryption, and desktop-shell secret protection.
-- The `TASKS4` hardening validation matrix, residual risks, and release expectations for `U14-2`.
+- Current hardening and regression safety expectations through stages `TASKS11`-`TASKS17` (decomposition closure, shell resilience, strengthened web quality gates, and release/preflight safety).
 
 ## Quality expectations
 
 - RU and EN trees must keep matching page sets.
 - Russian wiki pages should remain fully Russian except for approved product and protocol keywords such as `TLS`, `DNS`, `Cloudflare`, and similar technical names.
-- Documentation changes are covered by Rust repo tests and by the local preflight script: `scripts/local-ci-preflight.ps1`.
+- Documentation changes are covered by Rust repo tests, desktop web quality gates (`npm test` in `ui/desktop`), and the local preflight script: `scripts/local-ci-preflight.ps1`.

@@ -50,7 +50,7 @@ pub fn handle_maintenance_cli() -> Result<bool, String> {
     Ok(false)
 }
 
-fn run_msi_cleanup() -> Result<(), String> {
+pub(crate) fn run_msi_cleanup() -> Result<(), String> {
     let current_exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
     let install_root = current_exe
         .parent()
@@ -64,7 +64,7 @@ fn run_msi_cleanup() -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_local_state(install_root: &Path) {
+pub(crate) fn cleanup_local_state(install_root: &Path) {
     for file_name in CLEANUP_FILES {
         let path = install_root.join(file_name);
         let _ = fs::remove_file(path);
@@ -75,7 +75,7 @@ fn cleanup_local_state(install_root: &Path) {
     }
 }
 
-fn cleanup_legacy_amnezia_services(install_root: &Path) {
+pub(crate) fn cleanup_legacy_amnezia_services(install_root: &Path) {
     let mut service_names = std::collections::BTreeSet::new();
     let profiles_root = install_root.join("profiles");
     if profiles_root.is_dir() {
@@ -107,7 +107,7 @@ fn cleanup_legacy_amnezia_services(install_root: &Path) {
     }
 }
 
-fn cleanup_managed_container_artifacts() {
+pub(crate) fn cleanup_managed_container_artifacts() {
     if let Ok(output) = run_hidden_process(
         "docker.exe",
         &[
@@ -148,7 +148,7 @@ fn cleanup_managed_container_artifacts() {
     );
 }
 
-fn run_hidden_process(command: &str, arguments: &[&str]) -> Result<String, String> {
+pub(crate) fn run_hidden_process(command: &str, arguments: &[&str]) -> Result<String, String> {
     let mut process = Command::new(command);
     process.args(arguments);
     #[cfg(target_os = "windows")]
@@ -170,7 +170,7 @@ fn run_hidden_process(command: &str, arguments: &[&str]) -> Result<String, Strin
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn collect_matching_files(root: &Path, visitor: &mut dyn FnMut(&Path)) {
+pub(crate) fn collect_matching_files(root: &Path, visitor: &mut dyn FnMut(&Path)) {
     let mut stack = vec![PathBuf::from(root)];
     while let Some(current) = stack.pop() {
         let Ok(entries) = fs::read_dir(&current) else {
@@ -186,3 +186,4 @@ fn collect_matching_files(root: &Path, visitor: &mut dyn FnMut(&Path)) {
         }
     }
 }
+
