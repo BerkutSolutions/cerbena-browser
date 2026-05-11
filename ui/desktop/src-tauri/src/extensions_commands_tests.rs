@@ -22,13 +22,13 @@ fn build_zip(entries: &[(&str, &str)]) -> Vec<u8> {
 fn reads_single_extension_archive_metadata() {
     let archive = build_zip(&[(
         "manifest.json",
-        r#"{"name":"Single","version":"1.2.3","minimum_chrome_version":"120"}"#,
+        r#"{"name":"Single","version":"1.2.4","minimum_chrome_version":"120"}"#,
     )]);
     let batch =
         read_extension_archive_metadata_batch_from_bytes(&archive, "single.zip", None).unwrap();
     assert_eq!(batch.len(), 1);
     assert_eq!(batch[0].display_name.as_deref(), Some("Single"));
-    assert_eq!(batch[0].version.as_deref(), Some("1.2.3"));
+    assert_eq!(batch[0].version.as_deref(), Some("1.2.4"));
     assert_eq!(batch[0].engine_scope.as_deref(), Some("chromium"));
 }
 
@@ -144,7 +144,7 @@ fn store_url_import_falls_back_to_manifest_fields_when_store_metadata_unavailabl
                 .to_string(),
         ),
         display_name: Some("Example Extension".to_string()),
-        version: Some("1.2.3".to_string()),
+        version: Some("1.2.4".to_string()),
         logo_url: Some("https://example.invalid/logo.png".to_string()),
         engine_scope: Some("chromium".to_string()),
         tags: Some(Vec::new()),
@@ -160,7 +160,7 @@ fn store_url_import_falls_back_to_manifest_fields_when_store_metadata_unavailabl
         derive_extension_metadata_batch(&request, request.store_url.as_deref()).expect("batch");
     assert_eq!(batch.len(), 1);
     assert_eq!(batch[0].display_name.as_deref(), Some("Example Extension"));
-    assert_eq!(batch[0].version.as_deref(), Some("1.2.3"));
+    assert_eq!(batch[0].version.as_deref(), Some("1.2.4"));
     assert_eq!(batch[0].engine_scope.as_deref(), Some("chromium"));
     assert_eq!(
         batch[0].logo_url.as_deref(),

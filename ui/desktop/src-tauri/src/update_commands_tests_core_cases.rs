@@ -2,17 +2,17 @@ use super::*;
 
 #[test]
 fn version_normalization_drops_leading_v() {
-    assert_eq!(normalize_version("v1.2.3"), "1.2.3");
-    assert_eq!(normalize_version("1.2.3"), "1.2.3");
+    assert_eq!(normalize_version("v9.9.9"), "9.9.9");
+    assert_eq!(normalize_version("9.9.9"), "9.9.9");
 }
 
 #[test]
 fn newer_version_detection_uses_semver_like_order() {
-    assert!(is_version_newer("1.2.4", "1.2.3"));
+    assert!(is_version_newer("9.9.10", "9.9.9"));
     assert!(is_version_newer("2.0.0", "1.9.9"));
     assert!(is_version_newer("1.0.4-1", "1.0.4"));
-    assert!(!is_version_newer("1.2.3", "1.2.3"));
-    assert!(!is_version_newer("1.1.9", "1.2.3"));
+    assert!(!is_version_newer("9.9.9", "9.9.9"));
+    assert!(!is_version_newer("9.9.8", "9.9.9"));
     assert!(!is_version_newer("1.0.4-preview", "1.0.4"));
 }
 
@@ -214,7 +214,7 @@ fn reconcile_update_store_clears_staged_update_once_current_version_is_installed
 fn reconcile_update_store_clears_stale_handoff_state_after_successful_relaunch() {
     let mut store = AppUpdateStore {
         latest_version: Some("1.0.6-1".to_string()),
-        staged_asset_name: Some("cerbena-browser-1.2.3.msi".to_string()),
+        staged_asset_name: Some("cerbena-browser-9.9.9.msi".to_string()),
         staged_asset_path: Some("C:/tmp/update.msi".to_string()),
         selected_asset_type: Some("msi".to_string()),
         selected_asset_reason: Some("windows_installed_context_prefers_msi".to_string()),
@@ -272,7 +272,7 @@ fn msi_apply_helper_uses_quiet_msiexec_and_updates_store() {
         Path::new("C:/tmp/update.msi"),
         Some(Path::new("C:/Users/test/AppData/Local/Cerbena Browser")),
         Some("C:/tmp/app_update_store.json"),
-        Some("1.2.3"),
+        Some("9.9.9"),
         Some("C:/tmp/runtime_logs.log"),
     );
     assert!(script.contains("Start-Process -FilePath 'msiexec.exe'"));

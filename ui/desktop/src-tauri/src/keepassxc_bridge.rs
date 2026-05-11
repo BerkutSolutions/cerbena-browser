@@ -22,6 +22,7 @@ use crate::launcher_commands::push_runtime_log;
 use crate::state::AppState;
 #[cfg(target_os = "windows")]
 use crate::{profile_security::tags_allow_keepassxc, state::app_local_data_root};
+#[cfg(target_os = "windows")]
 #[path = "keepassxc_bridge_helpers.rs"]
 mod helpers;
 

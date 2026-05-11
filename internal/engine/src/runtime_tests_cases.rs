@@ -35,8 +35,8 @@ fn prepares_chromium_blocking_extension_from_blocked_domains() {
 
 #[test]
 fn chromium_extension_version_normalizes_hotfix_suffixes() {
-    assert_eq!(chromium_extension_version("1.2.3"), "1.2.3");
-    assert_eq!(chromium_extension_version("v1.2.3"), "1.2.3");
+    assert_eq!(chromium_extension_version("1.2.4"), "1.2.4");
+    assert_eq!(chromium_extension_version("v1.2.4"), "1.2.4");
     assert_eq!(chromium_extension_version("7"), "7");
 }
 

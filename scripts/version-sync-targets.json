@@ -37,7 +37,6 @@
     { "path": "ui/desktop/src-tauri/src/route_runtime_support.rs", "strategy": "replace_all" },
     { "path": "ui/desktop/src-tauri/src/route_runtime_tests.rs", "strategy": "replace_all" },
     { "path": "ui/desktop/src-tauri/src/extensions_commands_tests.rs", "strategy": "replace_all" },
-    { "path": "ui/desktop/src-tauri/src/update_commands_tests_core_cases.rs", "strategy": "replace_all" },
     { "path": "ui/desktop/web/features/dns/view-core.js", "strategy": "replace_all" },
     { "path": "CHANGELOG.md", "strategy": "changelog_heading" }
   ]

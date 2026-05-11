@@ -1,7 +1,7 @@
 {
     "name":  "browser-desktop-ui",
     "private":  true,
-    "version":  "1.2.3",
+    "version":  "1.2.4",
     "type":  "module",
     "scripts":  {
                     "style:sync":  "node ./scripts/sync-styles.mjs",
