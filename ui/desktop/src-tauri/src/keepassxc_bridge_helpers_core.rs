@@ -33,8 +33,6 @@ pub(crate) fn keepassxc_manifest(
     manifest
 }
 
-#[cfg(target_os = "windows")]
-
 #[path = "keepassxc_bridge_helpers_core_support.rs"]
 mod support;
 pub(crate) use support::*;

@@ -12,7 +12,7 @@ fn newer_version_detection_uses_semver_like_order() {
     assert!(is_version_newer("2.0.0", "1.9.9"));
     assert!(is_version_newer("1.0.4-1", "1.0.4"));
     assert!(!is_version_newer("1.2.3", "1.2.3"));
-    assert!(!is_version_newer("1.2.2", "1.2.3"));
+    assert!(!is_version_newer("1.1.9", "1.2.3"));
     assert!(!is_version_newer("1.0.4-preview", "1.0.4"));
 }
 

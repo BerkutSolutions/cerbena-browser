@@ -308,6 +308,7 @@ fn ensure_windows_path_with_trailing_backslash_impl(path: &Path) -> String {
     value
 }
 
+#[cfg(target_os = "windows")]
 fn copy_dir_recursive_impl(source: &Path, destination: &Path) -> Result<(), EngineError> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
@@ -326,6 +327,7 @@ fn copy_dir_recursive_impl(source: &Path, destination: &Path) -> Result<(), Engi
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn list_target_dir_entries_impl(target_dir: &Path) -> Vec<String> {
     let mut entries = Vec::new();
     if let Ok(read_dir) = fs::read_dir(target_dir) {
