@@ -29,15 +29,6 @@ pub(crate) fn finalize_untracked_profile_state(
     );
 }
 
-pub(crate) fn is_profile_still_tracked(app_handle: &AppHandle, profile_id: Uuid, tracked_pid: u32) -> bool {
-    let state = app_handle.state::<AppState>();
-    let launched = match state.launched_processes.lock() {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    matches!(launched.get(&profile_id).copied(), Some(current_pid) if current_pid == tracked_pid)
-}
-
 pub(crate) fn replace_tracked_pid(app_handle: &AppHandle, profile_id: Uuid, old_pid: u32, new_pid: u32) {
     let state = app_handle.state::<AppState>();
     let mut launched = match state.launched_processes.lock() {
@@ -211,6 +202,23 @@ pub(crate) fn find_profile_process_pid_preferred(
         return None;
     }
 
+    if let Some(tracked_candidate) = candidates.iter().find(|candidate| candidate.pid == tracked_pid) {
+        let firefox_family = tracked_candidate.name.contains("firefox")
+            || tracked_candidate.name.contains("librewolf")
+            || tracked_candidate.name.contains("private_browsing");
+        if firefox_family {
+            let mut direct_children = candidates
+                .iter()
+                .filter(|candidate| candidate.parent_pid == Some(tracked_pid))
+                .map(|candidate| candidate.pid)
+                .collect::<Vec<_>>();
+            direct_children.sort_unstable();
+            if let Some(pid) = direct_children.pop() {
+                return Some(pid);
+            }
+        }
+    }
+
     if candidates.iter().any(|candidate| candidate.pid == tracked_pid) {
         return Some(tracked_pid);
     }
@@ -243,12 +251,19 @@ pub fn find_profile_process_pid_for_dir(profile_data_dir: &Path) -> Option<u32> 
 }
 
 pub fn find_profile_main_window_pid_for_dir(profile_data_dir: &Path) -> Option<u32> {
+    find_visible_profile_main_window_pid_for_dir(profile_data_dir)
+        .or_else(|| find_profile_process_pid(profile_data_dir))
+}
+
+pub(crate) fn find_visible_profile_main_window_pid_for_dir(
+    profile_data_dir: &Path,
+) -> Option<u32> {
     let target = profile_data_dir.to_string_lossy().to_lowercase();
     let system = System::new_with_specifics(
         RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
     );
     let candidates = matching_profile_processes(&system, &target);
-    find_main_window_pid_for_candidates(&candidates).or_else(|| find_profile_process_pid(profile_data_dir))
+    find_main_window_pid_for_candidates(&candidates)
 }
 
 pub fn firefox_profile_lock_present_for_dir(profile_data_dir: &Path) -> bool {
@@ -327,6 +342,76 @@ pub fn find_profile_process_pids_for_dir(profile_data_dir: &Path) -> Vec<u32> {
         .collect()
 }
 
+pub(crate) fn current_tracked_profile_pid(app_handle: &AppHandle, profile_id: Uuid) -> Option<u32> {
+    let state = app_handle.state::<AppState>();
+    let launched = state.launched_processes.lock().ok()?;
+    launched.get(&profile_id).copied()
+}
+
+pub(crate) fn profile_process_candidates_have_no_visible_window(profile_data_dir: &Path) -> bool {
+    let target = profile_data_dir.to_string_lossy().to_lowercase();
+    let system = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    let candidates = matching_profile_processes(&system, &target);
+    !candidates.is_empty() && candidates.iter().all(|candidate| !candidate.has_main_window)
+}
+
+pub(crate) fn profile_process_is_child_of_pid(
+    profile_data_dir: &Path,
+    pid: u32,
+    parent_pid: u32,
+) -> bool {
+    let target = profile_data_dir.to_string_lossy().to_lowercase();
+    let system = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    matching_profile_processes(&system, &target)
+        .into_iter()
+        .any(|candidate| candidate.pid == pid && candidate.parent_pid == Some(parent_pid))
+}
+
+pub(crate) fn firefox_family_left_only_bootstrap_pid(
+    profile_data_dir: &Path,
+    known_session_pids: &[u32],
+) -> Option<u32> {
+    let target = profile_data_dir.to_string_lossy().to_lowercase();
+    let system = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    let candidates = matching_profile_processes(&system, &target);
+    if candidates.len() != 1 {
+        return None;
+    }
+    let only = &candidates[0];
+    let is_firefox_family = only.name.contains("firefox")
+        || only.name.contains("librewolf")
+        || only.name.contains("private_browsing");
+    if !is_firefox_family {
+        return None;
+    }
+    if known_session_pids.len() < 2 {
+        return None;
+    }
+    let seen_other_pid = known_session_pids.iter().any(|pid| *pid != only.pid);
+    if !seen_other_pid {
+        return None;
+    }
+    Some(only.pid)
+}
+
+pub(crate) fn profile_has_firefox_family_processes(profile_data_dir: &Path) -> bool {
+    let target = profile_data_dir.to_string_lossy().to_lowercase();
+    let system = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    matching_profile_processes(&system, &target).into_iter().any(|candidate| {
+        candidate.name.contains("firefox")
+            || candidate.name.contains("librewolf")
+            || candidate.name.contains("private_browsing")
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ProfileProcessCandidate {
     pid: u32,
@@ -379,7 +464,7 @@ pub(crate) fn matching_profile_processes(system: &System, target: &str) -> Vec<P
                     exe_path: format!("{:?}", process.exe()),
                     status: format!("{:?}", process.status()),
                     start_time: process.start_time(),
-                    has_main_window: crate::panic_frame::process_has_visible_main_window(
+                    has_main_window: crate::panic_frame::process_has_top_level_window(
                         process.pid().as_u32(),
                     ),
                     command_line: cmdline.clone(),

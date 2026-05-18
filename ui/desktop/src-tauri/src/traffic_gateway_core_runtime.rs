@@ -83,7 +83,13 @@ pub(crate) fn handle_client(
         .map_err(|e| e.to_string())?;
 
     let started_at = Instant::now();
-    let parsed = read_proxy_request(&mut client)?;
+    let parsed = match read_proxy_request(&mut client) {
+        Ok(value) => value,
+        Err(error) if error == "empty proxy request" => {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let profile_name = profile_name(&app_handle, profile_id);
     let decision = evaluate_request(&app_handle, profile_id, &parsed.host);
     eprintln!(
@@ -124,7 +130,10 @@ pub(crate) fn handle_client(
     };
     let (status, reason) = match processing_result {
         Ok(_) => ("processed".to_string(), "allowed".to_string()),
-        Err(error) => ("error".to_string(), error.to_string()),
+        Err(error) => {
+            let _ = write_bad_gateway(&mut client, &parsed.host, &error.to_string());
+            ("error".to_string(), error.to_string())
+        }
     };
     append_traffic_log(
         &app_handle,
@@ -182,6 +191,21 @@ pub(crate) fn write_forbidden(client: &mut TcpStream, host: &str, reason: &str) 
     let body = format!("Blocked by Cerbena gateway: {host}\nReason: {reason}\n");
     let response = format!(
         "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(response.as_bytes())?;
+    client.flush()
+}
+
+pub(crate) fn write_bad_gateway(
+    client: &mut TcpStream,
+    host: &str,
+    reason: &str,
+) -> std::io::Result<()> {
+    let body = format!("Upstream connection failed for {host}\nReason: {reason}\n");
+    let response = format!(
+        "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     );

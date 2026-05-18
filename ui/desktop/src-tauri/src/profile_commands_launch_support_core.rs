@@ -36,7 +36,7 @@ pub(crate) fn wait_for_profile_process_startup_impl(
     let mut last_seen_pid = spawned_pid;
 
     while started_at.elapsed() < startup_timeout {
-        if matches!(engine, EngineKind::Librewolf) {
+        if matches!(engine, EngineKind::Librewolf | EngineKind::FirefoxEsr) {
             let mut pids =
                 crate::process_tracking::find_profile_process_pids_for_dir(user_data_dir);
             if !pids.is_empty() {
@@ -76,7 +76,7 @@ pub(crate) fn wait_for_profile_process_startup_impl(
                 }
                 if preferred != spawned_pid && is_pid_running(spawned_pid) {
                     eprintln!(
-                        "[profile-launch] librewolf bootstrap pid preserved old_pid={} selected_pid={}",
+                        "[profile-launch] firefox-family bootstrap pid preserved old_pid={} selected_pid={}",
                         spawned_pid,
                         preferred
                     );

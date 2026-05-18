@@ -190,7 +190,7 @@ export function wireRouteNetworkSecurityTab(ctx) {
   const renderCertificateEngineGuard = () => {
     const engine = profileEngineField?.value ?? "chromium";
     const hasCertificates = hasAssignedProfileCertificates(certificateState);
-    const certificatesSupported = engine === "librewolf";
+    const certificatesSupported = engine === "librewolf" || engine === "firefox-esr";
     if (!profileCertificateEngineGuard) return;
     let message = "";
     if (!certificatesSupported && hasCertificates) message = t("profile.security.certificateIsolationWarning");

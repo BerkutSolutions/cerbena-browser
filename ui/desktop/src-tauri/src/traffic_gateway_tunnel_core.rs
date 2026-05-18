@@ -74,14 +74,30 @@ pub(crate) fn handle_connect_request(
     parsed: &ParsedProxyRequest,
     route_policy: &Option<VpnProxyTabPayload>,
 ) -> std::io::Result<()> {
-    let mut upstream = open_upstream_stream(
+    let mut upstream = match open_upstream_stream(
         app_handle,
         profile_id,
         route_policy,
         &parsed.host,
         parsed.port,
         true,
-    )?;
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            let body = format!(
+                "Upstream connection failed for {}\nReason: {}\n",
+                parsed.host, error
+            );
+            let response = format!(
+                "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = client.write_all(response.as_bytes());
+            let _ = client.flush();
+            return Err(error);
+        }
+    };
     if route_uses_http_proxy(app_handle, profile_id, route_policy) {
         upstream.write_all(&parsed.header_bytes)?;
         upstream.flush()?;

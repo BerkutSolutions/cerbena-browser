@@ -368,13 +368,41 @@ pub(crate) fn find_main_window_for_pid(pid: u32) -> Option<Hwnd> {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn process_has_visible_main_window(pid: u32) -> bool {
-    find_main_window_for_pid(pid).is_some()
+pub(crate) fn process_has_top_level_window(pid: u32) -> bool {
+    find_any_top_level_window_for_pid(pid).is_some()
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn process_has_visible_main_window(_pid: u32) -> bool {
+pub(crate) fn process_has_top_level_window(_pid: u32) -> bool {
     false
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_windows_for_pid_any(hwnd: Hwnd, l_param: isize) -> i32 {
+    let state = &mut *(l_param as *mut EnumWindowState);
+    let mut process_id = 0u32;
+    GetWindowThreadProcessId(hwnd, &mut process_id);
+    if process_id != state.pid {
+        return 1;
+    }
+    state.best_hwnd = hwnd;
+    0
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn find_any_top_level_window_for_pid(pid: u32) -> Option<Hwnd> {
+    let mut state = EnumWindowState {
+        pid,
+        best_hwnd: ptr::null_mut(),
+        best_area: 0,
+    };
+    unsafe {
+        EnumWindows(
+            Some(enum_windows_for_pid_any),
+            &mut state as *mut EnumWindowState as isize,
+        );
+    }
+    (!state.best_hwnd.is_null()).then_some(state.best_hwnd)
 }
 
 #[cfg(target_os = "windows")]
