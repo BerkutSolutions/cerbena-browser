@@ -247,10 +247,36 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: release-assets-signed
           path: release-assets
+
+      - name: Build release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${GITHUB_REF_NAME:-}" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(python -c "import json;print(json.load(open('release-assets/release-manifest.json','r',encoding='utf-8'))['version'])")"
+          fi
+          NOTES_PATH="${RUNNER_TEMP}/release-notes.md"
+          awk -v ver="$VERSION" '
+            BEGIN { in_section=0 }
+            $0 ~ "^##[[:space:]]+" ver "([[:space:]]|$)" { in_section=1 }
+            in_section && $0 ~ "^##[[:space:]]+" && $0 !~ "^##[[:space:]]+" ver "([[:space:]]|$)" { exit }
+            in_section { print }
+          ' CHANGELOG.md > "$NOTES_PATH"
+
+          if [ ! -s "$NOTES_PATH" ]; then
+            echo "CHANGELOG.md section for version ${VERSION} was not found or is empty"
+            exit 1
+          fi
+
+          echo "RELEASE_NOTES_PATH=$NOTES_PATH" >> "$GITHUB_ENV"
 
       - name: Publish signed release assets
         uses: softprops/action-gh-release@v2
@@ -261,4 +287,4 @@ jobs:
             release-assets/release-manifest.json
             release-assets/checksums.txt
             release-assets/checksums.sig
-          generate_release_notes: true
+          body_path: ${{ env.RELEASE_NOTES_PATH }}

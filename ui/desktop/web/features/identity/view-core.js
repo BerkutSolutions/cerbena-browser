@@ -24,6 +24,7 @@ import {
   ensureIdentityUi,
   escapeHtml,
   fallbackPreset,
+  formatIdentityPreview,
   refreshAutoDraft,
   renderManualFields,
   resolveEffectivePreset,
@@ -89,7 +90,7 @@ export function renderIdentity(t, model) {
       `}
       <div class="panel" style="margin-top:12px;">
         <strong>${t("identity.preview.title")}</strong>
-        <pre id="identity-preview" class="preview-box">${escapeHtml(model.identityPreview ?? "-")}</pre>
+        <div id="identity-preview">${formatIdentityPreview(model.identityPreview ?? "-", t)}</div>
       </div>
     </div>
   `;

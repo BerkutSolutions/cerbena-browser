@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 fn default_check_default_browser_on_startup() -> bool {
     true
 }
+fn default_traffic_retention_days() -> u16 {
+    7
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +22,8 @@ pub struct ShellPreferenceStore {
     pub launch_on_system_startup: bool,
     #[serde(default)]
     pub startup_profile_id: Option<String>,
+    #[serde(default = "default_traffic_retention_days")]
+    pub traffic_retention_days: u16,
 }
 
 impl Default for ShellPreferenceStore {
@@ -30,6 +35,7 @@ impl Default for ShellPreferenceStore {
             close_to_tray_prompt_declined: false,
             launch_on_system_startup: false,
             startup_profile_id: None,
+            traffic_retention_days: default_traffic_retention_days(),
         }
     }
 }
@@ -43,6 +49,7 @@ pub struct ShellPreferenceUpdateRequest {
     pub close_to_tray_prompt_declined: Option<bool>,
     pub launch_on_system_startup: Option<bool>,
     pub startup_profile_id: Option<Option<String>>,
+    pub traffic_retention_days: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +67,7 @@ pub struct ShellPreferencesState {
     pub close_to_tray_prompt_declined: bool,
     pub launch_on_system_startup: bool,
     pub startup_profile_id: Option<String>,
+    pub traffic_retention_days: u16,
     pub launched_from_system_startup: bool,
     pub is_default_browser: bool,
     pub should_prompt_default_browser_preference: bool,
@@ -72,4 +80,3 @@ pub enum CloseRequestAction {
     HideToTray,
     PromptToEnableTray,
 }
-

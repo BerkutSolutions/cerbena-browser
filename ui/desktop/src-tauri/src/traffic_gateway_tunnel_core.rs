@@ -73,7 +73,8 @@ pub(crate) fn handle_connect_request(
     client: &mut TcpStream,
     parsed: &ParsedProxyRequest,
     route_policy: &Option<VpnProxyTabPayload>,
-) -> std::io::Result<()> {
+) -> std::io::Result<u128> {
+    let started = Instant::now();
     let mut upstream = match open_upstream_stream(
         app_handle,
         profile_id,
@@ -98,10 +99,12 @@ pub(crate) fn handle_connect_request(
             return Err(error);
         }
     };
+    let mut latency_ms = started.elapsed().as_millis().max(1);
     if route_uses_http_proxy(app_handle, profile_id, route_policy) {
         upstream.write_all(&parsed.header_bytes)?;
         upstream.flush()?;
         let response_head = read_proxy_response_head(&mut upstream)?;
+        latency_ms = started.elapsed().as_millis().max(1);
         client.write_all(&response_head)?;
         client.flush()?;
         if !parsed.passthrough_bytes.is_empty() {
@@ -118,7 +121,8 @@ pub(crate) fn handle_connect_request(
     }
     clear_bridge_timeouts(client)?;
     clear_bridge_timeouts(&upstream)?;
-    bridge_streams(client, upstream)
+    bridge_streams(client, upstream)?;
+    Ok(latency_ms)
 }
 
 pub(crate) fn handle_http_request(
@@ -127,7 +131,8 @@ pub(crate) fn handle_http_request(
     client: &mut TcpStream,
     parsed: &ParsedProxyRequest,
     route_policy: &Option<VpnProxyTabPayload>,
-) -> std::io::Result<()> {
+) -> std::io::Result<u128> {
+    let started = Instant::now();
     let mut upstream = open_upstream_stream(
         app_handle,
         profile_id,
@@ -141,9 +146,16 @@ pub(crate) fn handle_http_request(
         upstream.write_all(&parsed.passthrough_bytes)?;
     }
     upstream.flush()?;
+    let response_head = read_proxy_response_head(&mut upstream)?;
+    let latency_ms = started.elapsed().as_millis().max(1);
+    if !response_head.is_empty() {
+        client.write_all(&response_head)?;
+        client.flush()?;
+    }
     clear_bridge_timeouts(client)?;
     clear_bridge_timeouts(&upstream)?;
-    bridge_streams(client, upstream)
+    bridge_streams(client, upstream)?;
+    Ok(latency_ms)
 }
 
 fn clear_bridge_timeouts(stream: &TcpStream) -> std::io::Result<()> {

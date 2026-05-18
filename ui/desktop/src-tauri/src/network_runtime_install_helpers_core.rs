@@ -172,7 +172,7 @@ pub(crate) fn extract_msi(msi_path: &Path, target_dir: &Path) -> Result<(), Stri
         let msi = escape_powershell_single_quoted(&msi_path.to_string_lossy());
         let target = escape_powershell_single_quoted(&target_dir.to_string_lossy());
         let script = format!(
-            "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/a', '{msi}', 'TARGETDIR={target}', '/quiet', '/norestart') -WindowStyle Hidden -PassThru -Wait; exit $p.ExitCode"
+            "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/a', '{msi}', ('TARGETDIR=\"{target}\"'), '/qn', '/norestart', 'REBOOT=ReallySuppress') -WindowStyle Hidden -PassThru -Wait; exit $p.ExitCode"
         );
         let mut command = hidden_command("powershell.exe");
         command

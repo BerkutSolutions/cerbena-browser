@@ -1,8 +1,14 @@
 use std::process::Command;
 
 fn run_powershell_dialog(script: &str, error_context: &str) -> Result<String, String> {
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-Command", script])
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command
         .output()
         .map_err(|e| format!("{error_context}: {e}"))?;
     if !output.status.success() {

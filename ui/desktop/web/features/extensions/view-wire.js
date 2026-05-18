@@ -1,4 +1,9 @@
 export function bindExtensionsWire(root, model, rerender, t, deps) {
+  const suppressModalOpen = (ms = 800) => {
+    model.extensionModalBlockedUntil = Date.now() + ms;
+  };
+  const canOpenModal = () => Date.now() >= Number(model.extensionModalBlockedUntil ?? 0);
+
   const localPicker = root.querySelector("#extension-local-picker");
   const importMenu = root.querySelector("#extension-import-menu");
   const exportMenu = root.querySelector("#extension-export-menu");
@@ -38,10 +43,12 @@ export function bindExtensionsWire(root, model, rerender, t, deps) {
       importMenu?.classList.add("hidden");
       const mode = button.getAttribute("data-extension-import-mode");
       if (mode === "local-file") {
+        suppressModalOpen();
         localPicker?.click();
         return;
       }
       if (mode === "local-folder") {
+        suppressModalOpen();
         const result = await deps.importLocalFolder();
         model.extensionNotice = {
           type: result.ok ? "success" : "error",
@@ -51,6 +58,7 @@ export function bindExtensionsWire(root, model, rerender, t, deps) {
         await rerender();
         return;
       }
+      suppressModalOpen();
       const result = await deps.importExtensionLibrary(mode);
       model.extensionNotice = {
         type: result.ok ? "success" : "error",
@@ -91,6 +99,7 @@ export function bindExtensionsWire(root, model, rerender, t, deps) {
     await rerender();
   });
   localPicker?.addEventListener("change", async (event) => {
+    suppressModalOpen();
     const file = event.target.files?.[0];
     await deps.createFromLocalFile(model, rerender, t, file, "local_file");
     event.target.value = "";
@@ -105,6 +114,7 @@ export function bindExtensionsWire(root, model, rerender, t, deps) {
   dropzone?.addEventListener("drop", async (event) => {
     event.preventDefault();
     dropzone.classList.remove("is-active");
+    suppressModalOpen();
     const file = event.dataTransfer?.files?.[0];
     await deps.createFromLocalFile(model, rerender, t, file, "dropped_file");
   });
@@ -126,6 +136,7 @@ export function bindExtensionsWire(root, model, rerender, t, deps) {
 
   for (const card of root.querySelectorAll(".extension-library-card")) {
     const openModal = async () => {
+      if (!canOpenModal()) return;
       const extensionId = card.getAttribute("data-extension-id");
       const item = model.extensionLibraryState?.items?.[extensionId];
       if (!item) return;

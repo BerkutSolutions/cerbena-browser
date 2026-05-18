@@ -306,6 +306,35 @@ body.healthcheck-page {
   background: rgba(105, 31, 44, 0.34);
 }
 
+.identity-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+
+.identity-preview-head {
+  margin-bottom: 14px;
+}
+
+.identity-preview-section {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(125, 155, 255, 0.2);
+  border-radius: 12px;
+  background: rgba(9, 14, 24, 0.55);
+}
+
+.identity-preview-section h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.identity-preview-raw {
+  margin-top: 10px;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -2400,6 +2429,42 @@ body.sidebar-collapsed .sidebar-footer .sidebar-lang-select {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.traffic-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.traffic-pagination-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.traffic-pagination-right {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.traffic-pagination-right button {
+  min-width: 34px;
+  padding: 6px 10px;
+}
+
+.traffic-pagination-right button.is-active {
+  border-color: rgba(121, 163, 255, 0.7);
+  background: rgba(69, 94, 146, 0.65);
+}
+
+.traffic-pagination-ellipsis {
+  padding: 0 4px;
+  color: rgba(210, 220, 239, 0.86);
 }
 
 #extension-dropzone.is-active {

@@ -124,44 +124,23 @@ pub(super) fn install_windows_msi_archive_impl(
     {
         fs::create_dir_all(target_dir)?;
         let install_path = target_dir.display().to_string();
-        let install_path_backslash = ensure_windows_path_with_trailing_backslash_impl(target_dir);
         let mut errors = Vec::new();
 
         let modes = vec![
-            vec![
-                "/i".to_string(),
-                archive_path.display().to_string(),
-                "/qn".to_string(),
-                "/norestart".to_string(),
-                format!("EXTRACT_DIR={install_path}"),
-            ],
-            vec![
-                "/i".to_string(),
-                archive_path.display().to_string(),
-                "/qn".to_string(),
-                "/norestart".to_string(),
-                format!("INSTALL_DIRECTORY_PATH={install_path}"),
-            ],
-            vec![
-                "/i".to_string(),
-                archive_path.display().to_string(),
-                "/qn".to_string(),
-                "/norestart".to_string(),
-                format!("INSTALLDIR={install_path_backslash}"),
-                "ALLUSERS=2".to_string(),
-                "MSIINSTALLPERUSER=1".to_string(),
-            ],
             vec![
                 "/a".to_string(),
                 archive_path.display().to_string(),
                 "/qn".to_string(),
                 format!("TARGETDIR={install_path}"),
+                "/norestart".to_string(),
+                "REBOOT=ReallySuppress".to_string(),
             ],
             vec![
                 "/i".to_string(),
                 archive_path.display().to_string(),
                 "/qn".to_string(),
                 "/norestart".to_string(),
+                "REBOOT=ReallySuppress".to_string(),
             ],
         ];
 
@@ -297,15 +276,6 @@ fn dedupe_existing_paths_impl(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         }
     }
     deduped
-}
-
-#[cfg(target_os = "windows")]
-fn ensure_windows_path_with_trailing_backslash_impl(path: &Path) -> String {
-    let mut value = path.to_string_lossy().to_string();
-    if !value.ends_with('\\') {
-        value.push('\\');
-    }
-    value
 }
 
 #[cfg(target_os = "windows")]

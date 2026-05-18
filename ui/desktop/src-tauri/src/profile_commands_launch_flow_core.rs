@@ -224,6 +224,13 @@ pub(crate) async fn launch_profile_impl(
         if matches!(engine, EngineKind::Librewolf) {
             super::emit_librewolf_launch_diagnostics("pre-spawn", &context.user_data_dir);
         }
+        if matches!(engine, EngineKind::Chromium | EngineKind::UngoogledChromium) {
+            prepare_chromium_profile_preferences(
+                &context.user_data_dir,
+                context.profile.default_start_page.as_deref(),
+                context.profile.default_search_provider.as_deref(),
+            )?;
+        }
         let private_mode = context.profile.ephemeral_mode
             && context
                 .profile
@@ -360,6 +367,132 @@ pub(crate) async fn launch_profile_impl(
         );
     }
     result
+}
+
+fn prepare_chromium_profile_preferences(
+    profile_dir: &std::path::Path,
+    default_start_page: Option<&str>,
+    default_search_provider: Option<&str>,
+) -> Result<(), String> {
+    let preferences_path = profile_dir.join("Default").join("Preferences");
+    if let Some(parent) = preferences_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create chromium prefs dir: {e}"))?;
+    }
+    let mut value = if preferences_path.exists() {
+        serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(&preferences_path).map_err(|e| format!("read chromium prefs: {e}"))?,
+        )
+        .map_err(|e| format!("parse chromium prefs: {e}"))?
+    } else {
+        serde_json::json!({})
+    };
+    if !value.is_object() {
+        value = serde_json::json!({});
+    }
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| "chromium prefs root is not object".to_string())?;
+
+    if let Some(start_page) = default_start_page
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|raw| {
+            if raw.contains("://") {
+                raw.to_string()
+            } else {
+                format!("https://{raw}")
+            }
+        })
+    {
+        root.insert("homepage".to_string(), serde_json::Value::String(start_page.clone()));
+        root.insert("homepage_is_newtabpage".to_string(), serde_json::Value::Bool(false));
+        root.insert("show_home_button".to_string(), serde_json::Value::Bool(true));
+        root.insert("restore_on_startup".to_string(), serde_json::Value::from(4));
+        root.insert(
+            "restore_on_startup_urls".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String(start_page)]),
+        );
+    }
+
+    if let Some(search) = build_chromium_search_provider_pref(default_search_provider) {
+        root.insert("default_search_provider_data".to_string(), search);
+    }
+
+    let bytes = serde_json::to_vec_pretty(&value)
+        .map_err(|e| format!("serialize chromium prefs: {e}"))?;
+    std::fs::write(&preferences_path, bytes).map_err(|e| format!("write chromium prefs: {e}"))?;
+    Ok(())
+}
+
+fn build_chromium_search_provider_pref(provider: Option<&str>) -> Option<serde_json::Value> {
+    let id = provider.unwrap_or("duckduckgo").trim().to_ascii_lowercase();
+    let (keyword, short_name, search_url, suggestions_url) = match id.as_str() {
+        "google" => (
+            "google.com",
+            "Google",
+            "https://www.google.com/search?q={searchTerms}",
+            "https://suggestqueries.google.com/complete/search?output=chrome&q={searchTerms}",
+        ),
+        "bing" => (
+            "bing.com",
+            "Bing",
+            "https://www.bing.com/search?q={searchTerms}",
+            "https://www.bing.com/osjson.aspx?query={searchTerms}",
+        ),
+        "yandex" => (
+            "yandex.ru",
+            "Yandex",
+            "https://yandex.ru/search/?text={searchTerms}",
+            "https://suggest.yandex.ru/suggest-ff.cgi?part={searchTerms}",
+        ),
+        "brave" => (
+            "search.brave.com",
+            "Brave",
+            "https://search.brave.com/search?q={searchTerms}",
+            "https://search.brave.com/api/suggest?q={searchTerms}",
+        ),
+        "ecosia" => (
+            "ecosia.org",
+            "Ecosia",
+            "https://www.ecosia.org/search?q={searchTerms}",
+            "https://ac.ecosia.org/autocomplete?q={searchTerms}",
+        ),
+        "startpage" => (
+            "startpage.com",
+            "Startpage",
+            "https://www.startpage.com/sp/search?query={searchTerms}",
+            "https://www.startpage.com/suggestions?q={searchTerms}",
+        ),
+        _ => (
+            "duckduckgo.com",
+            "DuckDuckGo",
+            "https://duckduckgo.com/?q={searchTerms}",
+            "https://duckduckgo.com/ac/?q={searchTerms}&type=list",
+        ),
+    };
+    Some(serde_json::json!({
+        "template_url_data": {
+            "short_name": short_name,
+            "keyword": keyword,
+            "search_url_post_params": "",
+            "suggestions_url": suggestions_url,
+            "suggestions_url_post_params": "",
+            "image_url": "",
+            "image_url_post_params": "",
+            "new_tab_url": "",
+            "favicon_url": "",
+            "originating_url": "",
+            "safe_for_autoreplace": false,
+            "input_encodings": ["UTF-8"],
+            "date_created": "0",
+            "last_modified": "0",
+            "sync_guid": "0",
+            "id": "1",
+            "prepopulate_id": 0,
+            "created_by_policy": false,
+            "url": search_url
+        }
+    }))
 }
 
 fn claim_recent_launch_slot(

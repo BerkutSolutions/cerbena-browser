@@ -32,6 +32,8 @@ The Cerbena Browser desktop UI is a local shell on top of `Tauri` backend comman
 - The main `Network` screen owns global route templates and the global `Сетевая изоляция профилей` frame. That frame only appears when global VPN is enabled, because only then does the launcher have an active global route to evaluate.
 - The profile modal `VPN` tab owns profile-specific route selection and the `Сетевая изоляция профиля` frame. That frame is route-aware and only offers isolation modes that are actually compatible with the selected template.
 - `Traffic` is now a denser operational table: the request column is intentionally wider, the result column is more compact, and decision/action overlays render above the rest of the UI instead of being clipped by table rows.
+- `Traffic` now uses server-side pagination: operators can choose `25/50/100` rows per page, and page navigation renders up to 10 page buttons, then `...` and the final page.
+- Chromium policy block interstitial now shows explicit blocked `Domain` and `URL` and avoids self-loop redirects for the internal `cerbena.blocked.local` reporting endpoint.
 - Long profile launches show a temporary progress modal so users can see when launcher is preparing the profile, route runtime, container sandbox, helper image, or browser engine.
 - Network and runtime statuses are not considered valid without backend verification.
 

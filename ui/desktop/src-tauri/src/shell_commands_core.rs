@@ -16,6 +16,8 @@ const TRAY_ID: &str = "main-tray";
 const TRAY_MENU_SHOW_ID: &str = "tray-show";
 const TRAY_MENU_EXIT_ID: &str = "tray-exit";
 const CLOSE_PROMPT_EVENT: &str = "app-close-requested";
+const MIN_TRAFFIC_RETENTION_DAYS: u16 = 1;
+const MAX_TRAFFIC_RETENTION_DAYS: u16 = 30;
 
 #[path = "shell_commands_core_types.rs"]
 mod shell_commands_core_types;
@@ -27,6 +29,10 @@ pub(crate) use shell_commands_core_types::{
     ShellPreferenceUpdateRequest,
     ShellPreferencesState,
 };
+
+fn sanitize_traffic_retention_days(days: u16) -> u16 {
+    days.clamp(MIN_TRAFFIC_RETENTION_DAYS, MAX_TRAFFIC_RETENTION_DAYS)
+}
 
 pub(crate) fn load_shell_preference_store(path: &PathBuf) -> Result<ShellPreferenceStore, String> {
     if !path.exists() {
@@ -218,6 +224,7 @@ fn build_shell_preferences_state(state: &AppState) -> Result<ShellPreferencesSta
         close_to_tray_prompt_declined: store.close_to_tray_prompt_declined,
         launch_on_system_startup: store.launch_on_system_startup,
         startup_profile_id,
+        traffic_retention_days: sanitize_traffic_retention_days(store.traffic_retention_days),
         launched_from_system_startup: launched_from_system_startup(),
         is_default_browser,
         should_prompt_default_browser_preference: !store.default_browser_prompt_decided,
@@ -312,6 +319,9 @@ pub fn save_shell_preferences(
             store.startup_profile_id = value
                 .map(|profile_id| profile_id.trim().to_string())
                 .filter(|profile_id| !profile_id.is_empty());
+        }
+        if let Some(value) = request.traffic_retention_days {
+            store.traffic_retention_days = sanitize_traffic_retention_days(value);
         }
     }
     persist_shell_preferences(&state)?;

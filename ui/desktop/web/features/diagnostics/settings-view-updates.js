@@ -38,11 +38,9 @@ function buildReleaseUrl(updateState) {
 }
 
 export function renderUpdateCard(t, model, helpers) {
-  const { escapeHtml, ensureSettingsModel, startupProfileLabel, startupProfileMenu } = helpers;
+  const { escapeHtml, ensureSettingsModel } = helpers;
   const updateState = model.launcherUpdateState ?? {};
-  const shellState = model.shellPreferencesState ?? {};
   const settingsState = ensureSettingsModel(model);
-  const startupProfileId = settingsState.startupProfileDraft || shellState.startupProfileId || "";
   const releaseUrl = buildReleaseUrl(updateState);
   return `
     <div class="panel settings-card">
@@ -68,26 +66,6 @@ export function renderUpdateCard(t, model, helpers) {
         <input id="settings-update-auto" type="checkbox" ${updateState.autoUpdateEnabled ? "checked" : ""} />
         <span>${t("settings.updates.enabled")}</span>
       </label>
-      <label class="checkbox-inline">
-        <input id="settings-tray-minimize" type="checkbox" ${shellState.minimizeToTrayEnabled ? "checked" : ""} />
-        <span>${t("settings.tray.enabled")}</span>
-      </label>
-      <label class="checkbox-inline">
-        <input id="settings-autostart-enabled" type="checkbox" ${shellState.launchOnSystemStartup ? "checked" : ""} />
-        <span>${t("settings.autostart.enabled")}</span>
-      </label>
-      ${shellState.launchOnSystemStartup ? `
-        <div class="dns-dropdown">
-          <label>${t("settings.startupProfile.label")}</label>
-          <button
-            type="button"
-            class="dns-dropdown-toggle"
-            id="settings-startup-profile-toggle"
-          >${escapeHtml(startupProfileLabel(model, startupProfileId, t))}</button>
-          ${startupProfileMenu(model, startupProfileId)}
-        </div>
-        <p class="meta">${t("settings.startupProfile.hint")}</p>
-      ` : ""}
       <p class="meta">${t("settings.updates.lastChecked")}: ${escapeHtml(updateState.lastCheckedAt ?? t("settings.updates.notChecked"))}</p>
       <p class="meta">${t("settings.updates.statusLabel")}: ${escapeHtml(updateStatusLabel(updateState, t))}</p>
       ${updateState.stagedVersion ? `<p class="meta">${t("settings.updates.staged")}: ${escapeHtml(updateState.stagedVersion)}</p>` : ""}

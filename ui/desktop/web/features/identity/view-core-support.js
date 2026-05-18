@@ -230,8 +230,117 @@ function renderManualFields(preset, t) {
   `;
 }
 
+function formatIdentityPreview(value, t) {
+  const fallback = `<pre class="preview-box">${escapeHtml(value ?? "-")}</pre>`;
+  if (!value || typeof value !== "string") return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    const preview = parsed?.preview ?? {};
+    const payloadJson = typeof preview?.payload_json === "string" ? preview.payload_json : "";
+    const payload = payloadJson ? JSON.parse(payloadJson) : {};
+    const mode = String(payload?.mode ?? preview?.mode ?? parsed?.mode ?? "-");
+    const displayName = String(payload?.display_name ?? preview?.display_name ?? parsed?.display_name ?? "-");
+    const blockingIssues = Array.isArray(preview?.blocking_issues) ? preview.blocking_issues : [];
+    const warningIssues = Array.isArray(preview?.warning_issues) ? preview.warning_issues : [];
+    const issueText = (issue) => {
+      const code = String(issue?.code ?? "").trim();
+      if (code === "low_geo_accuracy") return t("identity.issue.low_geo_accuracy");
+      const message = String(issue?.message ?? "").trim();
+      return message || code || "-";
+    };
+    const renderSection = (title, rows) => `
+      <div class="identity-preview-section">
+        <h4>${escapeHtml(title)}</h4>
+        <div class="identity-preview-grid">
+          ${rows.map((row) => `<div><strong>${escapeHtml(row.label)}:</strong> ${escapeHtml(String(row.value ?? "-"))}</div>`).join("")}
+        </div>
+      </div>
+    `;
+    const toJson = (input) => {
+      try {
+        return JSON.stringify(input);
+      } catch {
+        return "-";
+      }
+    };
+    return `
+      <div class="identity-preview-grid identity-preview-head">
+        <div><strong>${escapeHtml(t("identity.field.mode"))}:</strong> ${escapeHtml(mode)}</div>
+        <div><strong>${escapeHtml(t("identity.field.displayName"))}:</strong> ${escapeHtml(displayName)}</div>
+        <div><strong>${escapeHtml(t("identity.preview.blocking"))}:</strong> ${blockingIssues.length}</div>
+        <div><strong>${escapeHtml(t("identity.preview.warnings"))}:</strong> ${warningIssues.length}</div>
+      </div>
+      ${renderSection(t("identity.preview.section.core"), [
+        { label: t("identity.field.userAgent"), value: payload?.core?.user_agent },
+        { label: t("identity.field.platform"), value: payload?.core?.platform },
+        { label: t("identity.field.platformVersion"), value: payload?.core?.platform_version },
+        { label: t("identity.field.brand"), value: payload?.core?.brand },
+        { label: t("identity.field.brandVersion"), value: payload?.core?.brand_version },
+        { label: t("identity.field.vendor"), value: payload?.core?.vendor },
+        { label: t("identity.field.vendorSub"), value: payload?.core?.vendor_sub },
+        { label: t("identity.field.productSub"), value: payload?.core?.product_sub }
+      ])}
+      ${renderSection(t("identity.preview.section.hardware"), [
+        { label: t("identity.field.cpuThreads"), value: payload?.hardware?.cpu_threads },
+        { label: t("identity.field.touchPoints"), value: payload?.hardware?.max_touch_points },
+        { label: t("identity.field.deviceMemory"), value: payload?.hardware?.device_memory_gb }
+      ])}
+      ${renderSection(t("identity.preview.section.screen"), [
+        { label: t("identity.field.screenWidth"), value: payload?.screen?.width },
+        { label: t("identity.field.screenHeight"), value: payload?.screen?.height },
+        { label: t("identity.field.dpr"), value: payload?.screen?.device_pixel_ratio },
+        { label: t("identity.field.availWidth"), value: payload?.screen?.avail_width },
+        { label: t("identity.field.availHeight"), value: payload?.screen?.avail_height },
+        { label: t("identity.field.colorDepth"), value: payload?.screen?.color_depth }
+      ])}
+      ${renderSection(t("identity.preview.section.window"), [
+        { label: t("identity.field.outerWidth"), value: payload?.window?.outer_width },
+        { label: t("identity.field.outerHeight"), value: payload?.window?.outer_height },
+        { label: t("identity.field.innerWidth"), value: payload?.window?.inner_width },
+        { label: t("identity.field.innerHeight"), value: payload?.window?.inner_height },
+        { label: t("identity.field.screenX"), value: payload?.window?.screen_x },
+        { label: t("identity.field.screenY"), value: payload?.window?.screen_y }
+      ])}
+      ${renderSection(t("identity.preview.section.locale"), [
+        { label: t("identity.field.language"), value: payload?.locale?.navigator_language },
+        { label: t("identity.field.languagesJson"), value: toJson(payload?.locale?.languages ?? []) },
+        { label: t("identity.field.dnt"), value: payload?.locale?.do_not_track },
+        { label: t("identity.field.timezone"), value: payload?.locale?.timezone_iana },
+        { label: t("identity.field.tzOffset"), value: payload?.locale?.timezone_offset_minutes }
+      ])}
+      ${renderSection(t("identity.preview.section.geo"), [
+        { label: t("identity.field.lat"), value: payload?.geo?.latitude },
+        { label: t("identity.field.lon"), value: payload?.geo?.longitude },
+        { label: t("identity.field.accuracy"), value: payload?.geo?.accuracy_meters },
+        { label: t("identity.field.autoGeo"), value: payload?.auto_geo?.enabled ? t("action.yes") : t("action.no") }
+      ])}
+      ${renderSection(t("identity.preview.section.webgl"), [
+        { label: t("identity.field.webglVendor"), value: payload?.webgl?.vendor },
+        { label: t("identity.field.webglRenderer"), value: payload?.webgl?.renderer },
+        { label: t("identity.field.webglParams"), value: payload?.webgl?.params_json }
+      ])}
+      ${renderSection(t("identity.preview.section.other"), [
+        { label: t("identity.field.canvasSeed"), value: payload?.canvas_noise_seed },
+        { label: t("identity.field.fontsJson"), value: toJson(payload?.fonts ?? []) },
+        { label: t("identity.field.audioRate"), value: payload?.audio?.sample_rate },
+        { label: t("identity.field.audioChannels"), value: payload?.audio?.max_channels },
+        { label: t("identity.field.batteryCharging"), value: payload?.battery?.charging ? t("action.yes") : t("action.no") },
+        { label: t("identity.field.batteryLevel"), value: payload?.battery?.level }
+      ])}
+      ${blockingIssues.length ? `<div class="notice error"><strong>${escapeHtml(t("identity.preview.blocking"))}</strong>${blockingIssues.map((item) => `<div>${escapeHtml(issueText(item))}</div>`).join("")}</div>` : ""}
+      ${warningIssues.length ? `<div class="notice"><strong>${escapeHtml(t("identity.preview.warnings"))}</strong>${warningIssues.map((item) => `<div>${escapeHtml(issueText(item))}</div>`).join("")}</div>` : ""}
+      <details class="identity-preview-raw">
+        <summary>${escapeHtml(t("identity.preview.rawJson"))}</summary>
+        <pre class="preview-box">${escapeHtml(JSON.stringify(parsed, null, 2))}</pre>
+      </details>
+    `;
+  } catch {
+    return fallback;
+  }
+}
+
 
 export {
   escapeHtml, fallbackPreset, parseJsonField, setNotice, ensureIdentityUi, collectPreset,
-  refreshAutoDraft, resolveEffectivePreset, renderManualFields
+  refreshAutoDraft, resolveEffectivePreset, renderManualFields, formatIdentityPreview
 };

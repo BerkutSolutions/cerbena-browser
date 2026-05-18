@@ -51,7 +51,7 @@ pub(crate) fn list_traffic_log_impl(state: &AppState) -> Result<Vec<TrafficLogEn
         .lock()
         .map_err(|_| "traffic gateway lock poisoned".to_string())?;
     let original_len = gateway.traffic_log.len();
-    prune_traffic_log(&mut gateway.traffic_log);
+    prune_traffic_log_for_state(state, &mut gateway.traffic_log);
     let changed = gateway.traffic_log.len() != original_len;
     let snapshot = gateway.traffic_log.clone();
     drop(gateway);

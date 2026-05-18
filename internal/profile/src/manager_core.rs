@@ -103,17 +103,6 @@ impl ProfileManager {
                 ));
             }
         }
-        if profile.state == ProfileState::Running
-            && (patch.ephemeral_mode.is_some()
-                || patch.password_lock_enabled.is_some()
-                || patch.panic_frame_enabled.is_some()
-                || patch.engine.is_some())
-        {
-            return Err(ProfileError::Conflict(
-                "cannot change security flags while profile is running".to_string(),
-            ));
-        }
-
         if let Some(name) = patch.name {
             validate_name(&name)?;
             profile.name = name.trim().to_string();

@@ -36,7 +36,7 @@ mod traffic_gateway_policy;
 #[path = "traffic_gateway_tunnel.rs"]
 mod traffic_gateway_tunnel;
 
-const TRAFFIC_RETENTION_MS: u128 = 24 * 60 * 60 * 1000;
+const DEFAULT_TRAFFIC_RETENTION_MS: u128 = 24 * 60 * 60 * 1000;
 const ROUTE_HEALTH_TTL_MS: u128 = 30_000;
 const ROUTE_HEALTH_TIMEOUT_MS: u64 = 1_500;
 

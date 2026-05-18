@@ -169,6 +169,20 @@ export function wireSettingsImpl(root, model, rerender, t, deps) {
     await rerender();
   });
 
+  root.querySelector("#settings-traffic-retention-days")?.addEventListener("change", async (event) => {
+    const parsed = Number.parseInt(String(event.target.value ?? "7"), 10);
+    const days = Number.isFinite(parsed) ? parsed : 7;
+    const result = await saveShellPreferences({
+      trafficRetentionDays: days
+    });
+    model.shellPreferencesState = result.ok ? result.data : model.shellPreferencesState;
+    model.settingsNotice = {
+      type: result.ok ? "success" : "error",
+      text: result.ok ? t("settings.trafficRetention.saved") : String(result.data.error)
+    };
+    await rerender();
+  });
+
   root.querySelector("#settings-startup-profile-toggle")?.addEventListener("click", () => {
     root.querySelector("#settings-startup-profile-menu")?.classList.toggle("hidden");
   });

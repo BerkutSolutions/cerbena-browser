@@ -63,7 +63,7 @@ fn cache_cleanup_profile_and_global_work() {
 }
 
 #[test]
-fn running_profile_rejects_security_flag_changes() {
+fn running_profile_allows_security_flag_changes_for_next_launch() {
     let tmp = tempdir().expect("tempdir");
     let manager = ProfileManager::new(tmp.path()).expect("manager");
     let created = manager
@@ -93,13 +93,20 @@ fn running_profile_rejects_security_flag_changes() {
         )
         .expect("set running");
 
-    let err = manager.update_profile(
+    manager
+        .update_profile(
         created.id,
         PatchProfileInput {
             panic_frame_enabled: Some(true),
             ..PatchProfileInput::default()
         },
-    );
-    assert!(err.is_err());
+    )
+        .expect("running profile accepts security flag update");
+
+    let updated = manager
+        .get_profile(created.id)
+        .expect("load updated profile");
+    assert_eq!(updated.state, ProfileState::Running);
+    assert_eq!(updated.panic_frame_enabled, true);
 }
 

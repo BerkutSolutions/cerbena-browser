@@ -11,7 +11,15 @@ pub(crate) fn backup_corrupt_traffic_log(path: &PathBuf, bytes: &[u8]) {
 pub(crate) fn persist_traffic_log(path: &PathBuf, entries: &[TrafficLogEntry]) -> Result<(), String> {
     let bytes =
         serde_json::to_vec_pretty(entries).map_err(|e| format!("serialize traffic log: {e}"))?;
-    fs::write(path, bytes).map_err(|e| format!("write traffic log: {e}"))
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create traffic log dir: {e}"))?;
+    }
+    let temp_path = path.with_extension("json.tmp");
+    fs::write(&temp_path, bytes).map_err(|e| format!("write traffic log temp: {e}"))?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| format!("remove old traffic log: {e}"))?;
+    }
+    fs::rename(&temp_path, path).map_err(|e| format!("replace traffic log: {e}"))
 }
 
 pub fn ensure_profile_gateway(
@@ -42,6 +50,9 @@ pub fn set_domain_block_rule(
     let normalized = normalize_domain(domain);
     if normalized.is_empty() {
         return Err("domain is empty".to_string());
+    }
+    if normalized == "cerbena.blocked.local" {
+        return Err("reserved service host cannot be blocked".to_string());
     }
     let mut gateway = state
         .traffic_gateway
@@ -91,6 +102,35 @@ pub(crate) fn handle_client(
         Err(error) => return Err(error),
     };
     let profile_name = profile_name(&app_handle, profile_id);
+    if !parsed.connect_tunnel && parsed.host == "cerbena.blocked.local" {
+        if let Some((blocked_host, blocked_url)) = parse_extension_block_report(&parsed.header_bytes) {
+            append_traffic_log(
+                &app_handle,
+                TrafficLogEntry {
+                    id: format!("traffic-{}", now_epoch_ms()),
+                    timestamp_epoch_ms: now_epoch_ms(),
+                    profile_id: profile_id.to_string(),
+                    profile_name: profile_name.clone(),
+                    request_host: if blocked_host.is_empty() { blocked_url.clone() } else { blocked_host.clone() },
+                    request_kind: "BLOCKED_PAGE".to_string(),
+                    status: "blocked".to_string(),
+                    reason: "Profile domain denylist".to_string(),
+                    route: profile_route_mode(app_handle.state::<AppState>().inner(), profile_id),
+                    latency_ms: started_at.elapsed().as_millis().max(1),
+                    source_ip: client
+                        .peer_addr()
+                        .map(|addr| addr.ip().to_string())
+                        .unwrap_or_else(|_| "127.0.0.1".to_string()),
+                    blocked_globally: false,
+                    blocked_for_profile: true,
+                },
+            );
+        }
+        let response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = client.write_all(response.as_bytes());
+        let _ = client.flush();
+        return Ok(());
+    }
     let decision = evaluate_request(&app_handle, profile_id, &parsed.host);
     eprintln!(
         "[traffic-gateway] profile={} host={} kind={} blocked={} reason={}",
@@ -128,11 +168,17 @@ pub(crate) fn handle_client(
     } else {
         handle_http_request(&app_handle, profile_id, &mut client, &parsed, &route_policy)
     };
-    let (status, reason) = match processing_result {
-        Ok(_) => ("processed".to_string(), "allowed".to_string()),
+    let (status, reason, latency_ms, benign_failure) = match processing_result {
+        Ok(latency_ms) => (
+            "processed".to_string(),
+            "allowed".to_string(),
+            latency_ms,
+            false,
+        ),
         Err(error) => {
             let _ = write_bad_gateway(&mut client, &parsed.host, &error.to_string());
-            ("error".to_string(), error.to_string())
+            let (status, reason, benign) = classify_upstream_error(&error);
+            (status, reason, started_at.elapsed().as_millis().max(1), benign)
         }
     };
     append_traffic_log(
@@ -147,7 +193,7 @@ pub(crate) fn handle_client(
             status,
             reason: reason.clone(),
             route: decision.route,
-            latency_ms: started_at.elapsed().as_millis(),
+            latency_ms,
             source_ip: client
                 .peer_addr()
                 .map(|addr| addr.ip().to_string())
@@ -156,7 +202,7 @@ pub(crate) fn handle_client(
             blocked_for_profile: false,
         },
     );
-    if reason == "allowed" {
+    if reason == "allowed" || benign_failure {
         Ok(())
     } else {
         Err(reason)
@@ -173,8 +219,20 @@ pub(super) fn handle_connect_request(
     client: &mut TcpStream,
     parsed: &ParsedProxyRequest,
     route_policy: &Option<VpnProxyTabPayload>,
-) -> std::io::Result<()> {
+) -> std::io::Result<u128> {
     traffic_gateway_tunnel::handle_connect_request(app_handle, profile_id, client, parsed, route_policy)
+}
+
+fn classify_upstream_error(error: &std::io::Error) -> (String, String, bool) {
+    let text = error.to_string().to_ascii_lowercase();
+    let raw = error.raw_os_error();
+    if raw == Some(11001) || text.contains("os error 11001") || text.contains("host not found") {
+        return ("processed".to_string(), "dns_unresolved".to_string(), true);
+    }
+    if raw == Some(10060) || text.contains("os error 10060") || text.contains("timed out") {
+        return ("processed".to_string(), "upstream_timeout".to_string(), true);
+    }
+    ("error".to_string(), error.to_string(), false)
 }
 
 pub(super) fn handle_http_request(
@@ -183,7 +241,7 @@ pub(super) fn handle_http_request(
     client: &mut TcpStream,
     parsed: &ParsedProxyRequest,
     route_policy: &Option<VpnProxyTabPayload>,
-) -> std::io::Result<()> {
+) -> std::io::Result<u128> {
     traffic_gateway_tunnel::handle_http_request(app_handle, profile_id, client, parsed, route_policy)
 }
 
@@ -220,7 +278,7 @@ pub(crate) fn append_traffic_log(app_handle: &AppHandle, entry: TrafficLogEntry)
         Err(_) => return,
     };
     gateway.traffic_log.push(entry.clone());
-    prune_traffic_log(&mut gateway.traffic_log);
+    prune_traffic_log_for_state(&state, &mut gateway.traffic_log);
     let snapshot = gateway.traffic_log.clone();
     drop(gateway);
     if let Ok(path) = state.traffic_gateway_log_path(app_handle) {
@@ -230,7 +288,19 @@ pub(crate) fn append_traffic_log(app_handle: &AppHandle, entry: TrafficLogEntry)
 }
 
 pub(crate) fn prune_traffic_log(entries: &mut Vec<TrafficLogEntry>) {
-    let cutoff = now_epoch_ms().saturating_sub(TRAFFIC_RETENTION_MS);
+    let cutoff = now_epoch_ms().saturating_sub(DEFAULT_TRAFFIC_RETENTION_MS);
+    entries.retain(|entry| entry.timestamp_epoch_ms >= cutoff);
+}
+
+pub(crate) fn prune_traffic_log_for_state(state: &AppState, entries: &mut Vec<TrafficLogEntry>) {
+    let retention_days = state
+        .shell_preference_store
+        .lock()
+        .ok()
+        .map(|store| store.traffic_retention_days.clamp(1, 30) as u128)
+        .unwrap_or(1);
+    let retention_ms = retention_days * 24 * 60 * 60 * 1000;
+    let cutoff = now_epoch_ms().saturating_sub(retention_ms);
     entries.retain(|entry| entry.timestamp_epoch_ms >= cutoff);
 }
 
@@ -336,6 +406,54 @@ pub(crate) fn parse_first_bridge_endpoint(bridges: &str) -> Option<(String, u16)
         }
     }
     None
+}
+
+fn parse_extension_block_report(header_bytes: &[u8]) -> Option<(String, String)> {
+    let request = String::from_utf8_lossy(header_bytes);
+    let first_line = request.lines().next()?.trim();
+    let mut parts = first_line.split_whitespace();
+    let _method = parts.next()?;
+    let target = parts.next()?.trim();
+    let query = target.split_once('?')?.1;
+    let mut host = String::new();
+    let mut url = String::new();
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let decoded = percent_decode_component(value);
+        if key == "host" {
+            host = normalize_domain(&decoded);
+        }
+        if key == "url" {
+            url = decoded;
+        }
+    }
+    Some((host, url))
+}
+
+fn percent_decode_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let current = bytes[index];
+        if current == b'+' {
+            out.push(' ');
+            index += 1;
+            continue;
+        }
+        if current == b'%' && index + 2 < bytes.len() {
+            let hi = bytes[index + 1] as char;
+            let lo = bytes[index + 2] as char;
+            if let (Some(hi), Some(lo)) = (hi.to_digit(16), lo.to_digit(16)) {
+                out.push(((hi * 16 + lo) as u8) as char);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(current as char);
+        index += 1;
+    }
+    out
 }
 
 pub(crate) fn normalize_http_first_line(first_line: &str, absolute_target: &str) -> (String, u16, String) {

@@ -11,9 +11,53 @@ export function renderGeneralTab(t, model, deps) {
   } = deps;
 
   const posture = model.devicePostureReport;
+  const shellState = model.shellPreferencesState ?? {};
+  const settingsState = ensureSettingsModel(model);
+  const startupProfileId = (settingsState.startupProfileDraft || shellState.startupProfileId || "");
+  const retentionDays = Number(shellState.trafficRetentionDays ?? 7);
   return `
     <section class="settings-tab-panel">
       <div class="settings-panel-grid">
+        <div class="panel settings-card">
+          <div class="row-between">
+            <div>
+              <h4>${t("settings.general.primaryTitle")}</h4>
+            </div>
+          </div>
+          <label class="checkbox-inline">
+            <input id="settings-tray-minimize" type="checkbox" ${shellState.minimizeToTrayEnabled ? "checked" : ""} />
+            <span>${t("settings.tray.enabled")}</span>
+          </label>
+          <label class="checkbox-inline">
+            <input id="settings-autostart-enabled" type="checkbox" ${shellState.launchOnSystemStartup ? "checked" : ""} />
+            <span>${t("settings.autostart.enabled")}</span>
+          </label>
+          ${shellState.launchOnSystemStartup ? `
+            <div class="dns-dropdown">
+              <label>${t("settings.startupProfile.label")}</label>
+              <button type="button" class="dns-dropdown-toggle" id="settings-startup-profile-toggle">${escapeHtml(startupProfileLabel(model, startupProfileId, t))}</button>
+              ${startupProfileMenu(model, startupProfileId)}
+            </div>
+            <p class="meta">${t("settings.startupProfile.hint")}</p>
+          ` : ""}
+          <label>${t("settings.trafficRetention.label")}
+            <select id="settings-traffic-retention-days">
+              <option value="1" ${retentionDays === 1 ? "selected" : ""}>${t("settings.trafficRetention.1day")}</option>
+              <option value="3" ${retentionDays === 3 ? "selected" : ""}>${t("settings.trafficRetention.3days")}</option>
+              <option value="7" ${retentionDays === 7 ? "selected" : ""}>${t("settings.trafficRetention.7days")}</option>
+              <option value="14" ${retentionDays === 14 ? "selected" : ""}>${t("settings.trafficRetention.14days")}</option>
+              <option value="30" ${retentionDays === 30 ? "selected" : ""}>${t("settings.trafficRetention.30days")}</option>
+            </select>
+          </label>
+          <p class="meta">${t("settings.trafficRetention.hint")}</p>
+        </div>
+        ${renderUpdateCardSlice(t, model, {
+          escapeHtml,
+          ensureSettingsModel,
+          startupProfileLabel,
+          startupProfileMenu
+        })}
+        ${renderRuntimeToolsCardSlice(t, model, escapeHtml)}
         <div class="panel settings-card">
           <div class="row-between">
             <div>
@@ -31,14 +75,6 @@ export function renderGeneralTab(t, model, deps) {
             ${(posture?.findings?.length ? posture.findings : [{ labelKey: "devicePosture.finding.none", detail: "" }]).map((item) => `<li>${escapeHtml(t(item.labelKey))}${item.detail ? `: ${escapeHtml(item.detail)}` : ""}</li>`).join("")}
           </ul>
         </div>
-        ${renderRuntimeToolsCardSlice(t, model, escapeHtml)}
-        <div class="settings-grid-spacer" aria-hidden="true"></div>
-        ${renderUpdateCardSlice(t, model, {
-          escapeHtml,
-          ensureSettingsModel,
-          startupProfileLabel,
-          startupProfileMenu
-        })}
       </div>
     </section>
   `;

@@ -42,9 +42,26 @@ pub(crate) fn update_profile_impl(
         panic_protected_sites: request.panic_protected_sites,
         ephemeral_retain_paths: request.ephemeral_retain_paths,
     };
-    let profile = manager
-        .update_profile_with_actor(profile_id, patch, request.expected_updated_at.as_deref(), "ui")
-        .map_err(|e| e.to_string())?;
+    let profile = match manager.update_profile_with_actor(
+        profile_id,
+        patch.clone(),
+        request.expected_updated_at.as_deref(),
+        "ui",
+    ) {
+        Ok(profile) => profile,
+        Err(error) => {
+            let error_text = error.to_string();
+            if request.expected_updated_at.is_some()
+                && error_text.contains("profile changed by another update")
+            {
+                manager
+                    .update_profile_with_actor(profile_id, patch, None, "ui")
+                    .map_err(|e| e.to_string())?
+            } else {
+                return Err(error_text);
+            }
+        }
+    };
     drop(manager);
     if current.engine != next_engine {
         super::reset_profile_runtime_workspace(state, profile_id)?;
