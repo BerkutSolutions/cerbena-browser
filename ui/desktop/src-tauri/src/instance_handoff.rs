@@ -17,6 +17,8 @@ const HANDOFF_QUEUE_DIR_NAME: &str = "incoming-events";
 const LINK_EVENT_NAME: &str = "external-link-received";
 const ACTIVATE_EVENT_NAME: &str = "launcher-activate-requested";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(1500);
+const HEARTBEAT_STALE_AFTER: Duration = Duration::from_secs(5);
+const SINGLE_INSTANCE_BOOTSTRAP_GRACE: Duration = Duration::from_secs(10);
 const QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 static PRIMARY_HANDOFF_STARTED: AtomicBool = AtomicBool::new(false);
@@ -90,7 +92,7 @@ pub fn acquire_single_instance_guard(app_data_root: &Path) -> Result<bool, Strin
                 .ok()
                 .and_then(|raw| raw.trim().parse::<u32>().ok());
             if let Some(pid) = existing_pid {
-                if pid != current_pid && is_process_running(pid) {
+                if pid != current_pid && single_instance_lock_is_active(app_data_root, &path, pid) {
                     return Ok(false);
                 }
             }
@@ -243,6 +245,34 @@ fn read_primary_heartbeat_path(
     Ok(Some(heartbeat))
 }
 
+fn single_instance_lock_is_active(app_data_root: &Path, lock_path: &Path, pid: u32) -> bool {
+    if !is_process_running(pid) {
+        return false;
+    }
+    if read_primary_heartbeat_path(app_data_root)
+        .ok()
+        .flatten()
+        .is_some_and(|heartbeat| primary_heartbeat_is_fresh_for_pid(&heartbeat, pid, now_epoch_ms()))
+    {
+        return true;
+    }
+    fs::metadata(lock_path)
+        .and_then(|metadata| metadata.modified())
+        .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
+        .map(|age| age <= SINGLE_INSTANCE_BOOTSTRAP_GRACE)
+        .unwrap_or(false)
+}
+
+fn primary_heartbeat_is_fresh_for_pid(
+    heartbeat: &PrimaryInstanceHeartbeat,
+    pid: u32,
+    now_epoch_ms: u128,
+) -> bool {
+    heartbeat.pid == pid
+        && now_epoch_ms.saturating_sub(heartbeat.updated_at_epoch_ms)
+            <= HEARTBEAT_STALE_AFTER.as_millis()
+}
+
 fn heartbeat_path(app_data_root: &Path) -> PathBuf {
     app_data_root.join(HEARTBEAT_FILE_NAME)
 }
@@ -279,4 +309,30 @@ fn now_epoch_ms() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_heartbeat_does_not_keep_a_reused_pid_locked() {
+        let heartbeat = PrimaryInstanceHeartbeat {
+            pid: 5904,
+            updated_at_epoch_ms: 1_000,
+        };
+
+        assert!(!primary_heartbeat_is_fresh_for_pid(&heartbeat, 5904, 7_000));
+    }
+
+    #[test]
+    fn fresh_heartbeat_only_matches_its_own_pid() {
+        let heartbeat = PrimaryInstanceHeartbeat {
+            pid: 5904,
+            updated_at_epoch_ms: 1_000,
+        };
+
+        assert!(primary_heartbeat_is_fresh_for_pid(&heartbeat, 5904, 5_000));
+        assert!(!primary_heartbeat_is_fresh_for_pid(&heartbeat, 5905, 5_000));
+    }
 }

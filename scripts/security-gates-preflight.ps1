@@ -8,6 +8,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Windows can misidentify Cargo test binaries whose names contain words such
+# as "installer" or "update" as elevation-requiring installers. Keep this
+# preflight and its child processes at the caller's current integrity level.
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+    $compatLayers = @($env:__COMPAT_LAYER -split "\s+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($compatLayers -notcontains "RunAsInvoker") {
+        $env:__COMPAT_LAYER = ($compatLayers + "RunAsInvoker") -join " "
+    }
+}
+
 function Step([string]$Title, [scriptblock]$Action) {
     Write-Host ""
     Write-Host "== $Title ==" -ForegroundColor Cyan

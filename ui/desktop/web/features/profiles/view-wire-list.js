@@ -6,6 +6,7 @@ export function wireProfileListInteractionsImpl(root, model, rerender, t, deps) 
     selectionState,
     ensureProfilesViewState,
     handleProfileLogsAction,
+    askConfirmPrompt,
     deleteProfile,
     openProfileModal,
     setNotice,
